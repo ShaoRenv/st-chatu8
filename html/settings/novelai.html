@@ -148,12 +148,21 @@
         <div class="st-chatu8-field">
             <label for="novelaimode">模型</label>
             <select id="novelaimode" class="st-chatu8-select">
+                <option>nai-diffusion-5-full</option>
+                <option>nai-diffusion-5-curated</option>
                 <option>nai-diffusion-3</option>
                 <option>nai-diffusion-4-full</option>
                 <option>nai-diffusion-4-curated-preview</option>
                 <option>nai-diffusion-4-5-curated</option>
                 <option>nai-diffusion-4-5-full</option>
             </select>
+        </div>
+        <div class="st-chatu8-field" id="st-chatu8-novelai-straight-alpha-field" style="display: none;">
+            <label for="novelai_straight_alpha">透明图片开关 (straight_alpha)</label>
+            <div class="st-chatu8-toggle">
+                <input id="novelai_straight_alpha" type="checkbox"/>
+                <span class="st-chatu8-slider"></span>
+            </div>
         </div>
         <div class="st-chatu8-field">
             <label for="novelai_sampler">采样方法</label>

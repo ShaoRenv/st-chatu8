@@ -1831,6 +1831,7 @@ var init_config = __esm({
       editWorkerid: "\u56FE\u50CF\u7F16\u8F91",
       editWorker: editwk,
       novelaimode: "nai-diffusion-4-5-full",
+      novelai_straight_alpha: false,
       novelaisite: "\u5B98\u7F51",
       novelaiOtherSite: "http://localhost:9696/get-new-token",
       enableCloudQueue: "false",
@@ -2213,6 +2214,7 @@ var init_config = __esm({
           dyn: "true",
           nai3Variety: "true",
           nai3Deceisp: "true",
+          novelai_straight_alpha: false,
           // Vibe Transfer
           enableVibeGroupTransfer: "false",
           randomVibeGroup: "false",
@@ -67842,6 +67844,20 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
   if (extension_settings52[extensionName].novelaimode == "nai-diffusion-4-5-full" && extension_settings52[extensionName].UCP_novelai == "Furry Focus") {
     UCP_novelai = "{worst quality}, distracting watermark, unfinished, bad quality, {widescreen}, upscale, {sequence}, {{grandfathered content}}, blurred foreground, chromatic aberration, sketch, everyone, [sketch background], simple, [flat colors], ych (character), outline, multiple scenes, [[horror (theme)]], comic";
   }
+  const isV5ModelUcp = extension_settings52[extensionName].novelaimode.includes("nai-diffusion-5");
+  if (isV5ModelUcp) {
+    if (extension_settings52[extensionName].UCP_novelai == "humanFocus") {
+      UCP_novelai = "lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page, @_@, mismatched pupils, glowing eyes, bad anatomy";
+    } else if (extension_settings52[extensionName].UCP_novelai == "heavy") {
+      UCP_novelai = "lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page";
+    } else if (extension_settings52[extensionName].UCP_novelai == "light") {
+      UCP_novelai = "lowres, bad hands, bad anatomy, artistic error, sepia, white haze, worst quality, very displeasing, jpeg artifacts, 0::ai-generated::";
+    } else if (extension_settings52[extensionName].UCP_novelai == "furryFocus") {
+      UCP_novelai = "{worst quality}, distracting watermark, unfinished, bad quality, {widescreen}, upscale, {sequence}, {{grandfathered content}}, blurred foreground, chromatic aberration, sketch, everyone, [sketch background], simple, [flat colors], ych (character), outline, multiple scenes, [[horror (theme)]], comic";
+    } else if (extension_settings52[extensionName].UCP_novelai == "none") {
+      UCP_novelai = "";
+    }
+  }
   let negative_prompt = await fumian(_nai_preset.negativePrompt, UCP_novelai);
   if (!Divide_roles && window.collectedCharacterNegatives) {
     const characterNegatives = window.collectedCharacterNegatives.trim();
@@ -68087,6 +68103,17 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
       console.warn("[SingleVibe] Skipped: Current model does not support Single Vibe Transfer (NAI3 only)");
     }
   }
+  const isV5Model = extension_settings52[extensionName].novelaimode.includes("nai-diffusion-5");
+  if (isV5Model) {
+    let tag_hint_uc_preset = 0;
+    if (extension_settings52[extensionName].UCP_novelai == "heavy") tag_hint_uc_preset = 1;
+    if (extension_settings52[extensionName].UCP_novelai == "furryFocus") tag_hint_uc_preset = 2;
+    if (extension_settings52[extensionName].UCP_novelai == "light") tag_hint_uc_preset = 3;
+    if (extension_settings52[extensionName].UCP_novelai == "humanFocus") tag_hint_uc_preset = 4;
+    preset_data.straight_alpha = extension_settings52[extensionName].novelai_straight_alpha === true;
+    preset_data.tag_hint_qt = 1;
+    preset_data.tag_hint_uc_preset = tag_hint_uc_preset;
+  }
   addLog("[Payload] \u5F00\u59CB\u6E05\u7406\u548C\u9A8C\u8BC1 payload...");
   preset_data = cleanNovelAIPayload(preset_data, extension_settings52[extensionName].novelaimode);
   try {
@@ -68203,6 +68230,12 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
         }
       }
       const tavernAIPayload = { prompt: prompt2, model: extension_settings52[extensionName].novelaimode, sampler: preset_data.sampler, scheduler: preset_data.noise_schedule, steps: preset_data.steps, scale: preset_data.scale, width: preset_data.width, height: preset_data.height, negative_prompt: preset_data.negative_prompt, decrisper: preset_data.dynamic_thresholding, variety_boost: preset_data.skip_cfg_above_sigma, sm: preset_data.sm, sm_dyn: preset_data.sm_dyn, seed: preset_data.seed };
+      if (extension_settings52[extensionName].novelaimode.includes("nai-diffusion-5")) {
+        tavernAIPayload.straight_alpha = preset_data.straight_alpha;
+        tavernAIPayload.tag_hint_qt = preset_data.tag_hint_qt;
+        tavernAIPayload.tag_hint_uc_preset = preset_data.tag_hint_uc_preset;
+        tavernAIPayload.use_new_shared_trial = true;
+      }
       addLog(`\u6700\u7EC8\u751F\u56FE\u53C2\u6570 (payload): ${JSON.stringify(tavernAIPayload, null, 2)}`);
       const result = await fetch("/api/novelai/generate-image", { method: "POST", headers: getRequestHeaders(window.token), body: JSON.stringify(tavernAIPayload), signal: currentAbortController2?.signal });
       if (currentCloudQueueInfo) {
@@ -73724,27 +73757,48 @@ function updateNovelaiUcpOptions() {
   const selectedModel = novelaiModeSelect.value;
   const currentValue = settings3.UCP_novelai;
   ucpSelect.innerHTML = "";
-  const options = {
-    "\u65E0": "",
-    "Heavy": "Heavy",
-    "Light": "Light"
-  };
-  if (selectedModel === "nai-diffusion-3" || selectedModel === "nai-diffusion-4-5-full") {
-    options["Human Focus"] = "Human Focus";
+  const isV5 = selectedModel.includes("nai-diffusion-5");
+  const options = {};
+  if (isV5) {
+    options["\u65E0"] = "none";
+    options["Heavy"] = "heavy";
+    options["Furry Focus"] = "furryFocus";
+    options["Light"] = "light";
+    options["Human Focus"] = "humanFocus";
+  } else {
+    options["\u65E0"] = "";
+    options["Heavy"] = "Heavy";
+    options["Light"] = "Light";
+    if (selectedModel === "nai-diffusion-3" || selectedModel === "nai-diffusion-4-5-full") {
+      options["Human Focus"] = "Human Focus";
+    }
+    if (selectedModel === "nai-diffusion-4-5-full") {
+      options["Furry Focus"] = "Furry Focus";
+    }
+    options["\u4F5C\u8005\u9884\u8BBE"] = "bad proportions, out of focus, username, text, bad anatomy, lowres, worstquality, watermark, cropped, bad body, deformed, mutated, disfigured, poorly drawn face, malformed hands, extra arms, extra limb, missing limb, too many fingers, extra legs, bad feet, missing fingers, fused fingers, acnes, floating limbs, disconnected limbs, long neck, long body, mutation, ugly, blurry, low quality, sketches, normal quality, monochrome, grayscale, signature, logo, jpeg artifacts, unfinished, displeasing, chromatic aberration, extra digits, artistic error, scan, abstract, photo, realism, screencap";
+    options["\u4F5C\u8005\u9884set 2"] = "negativeXL_D, negativeXL, source_furry, extra limbs, deformations, long fingers, fused fingers, inaccurate_anatomy, bad proportions, poorly drawn hands, bad hands, extra_fingers, extra_hand, extra_arm, distorted fingers, ugly hands, creepy hands, six fingers, malformed fingers, long_fingers, interlocked fingers:1.2, ugly, deformed, uneven, asymmetrical, unnatural, missing fingers, extra digit, fewer digits, opaque eyes, small eyes, ugly eyes, blurred eyes, bad face, (bad anatomy, ugly face:1.2), (worst quality, low quality, not detailed, low resolution:1.2), motion_blur, blur, blur_censor, blurry, simple_background, text, error, cropped, normal quality, jpeg artifacts, watermark, logo, signature, username, artist name";
   }
-  if (selectedModel === "nai-diffusion-4-5-full") {
-    options["Furry Focus"] = "Furry Focus";
-  }
-  options["\u4F5C\u8005\u9884\u8BBE"] = "bad proportions, out of focus, username, text, bad anatomy, lowres, worstquality, watermark, cropped, bad body, deformed, mutated, disfigured, poorly drawn face, malformed hands, extra arms, extra limb, missing limb, too many fingers, extra legs, bad feet, missing fingers, fused fingers, acnes, floating limbs, disconnected limbs, long neck, long body, mutation, ugly, blurry, low quality, sketches, normal quality, monochrome, grayscale, signature, logo, jpeg artifacts, unfinished, displeasing, chromatic aberration, extra digits, artistic error, scan, abstract, photo, realism, screencap";
-  options["\u4F5C\u8005\u9884set 2"] = "negativeXL_D, negativeXL, source_furry, extra limbs, deformations, long fingers, fused fingers, inaccurate_anatomy, bad proportions, poorly drawn hands, bad hands, extra_fingers, extra_hand, extra_arm, distorted fingers, ugly hands, creepy hands, six fingers, malformed fingers, long_fingers, interlocked fingers:1.2, ugly, deformed, uneven, asymmetrical, unnatural, missing fingers, extra digit, fewer digits, opaque eyes, small eyes, ugly eyes, blurred eyes, bad face, (bad anatomy, ugly face:1.2), (worst quality, low quality, not detailed, low resolution:1.2), motion_blur, blur, blur_censor, blurry, simple_background, text, error, cropped, normal quality, jpeg artifacts, watermark, logo, signature, username, artist name";
   for (const [text, value] of Object.entries(options)) {
     const option = new Option(text, value);
     ucpSelect.add(option);
   }
   ucpSelect.value = currentValue;
   if (ucpSelect.selectedIndex === -1) {
-    ucpSelect.value = "Heavy";
-    settings3.UCP_novelai = "Heavy";
+    if (isV5) {
+      if (currentValue === "Heavy") ucpSelect.value = "heavy";
+      else if (currentValue === "Light") ucpSelect.value = "light";
+      else if (currentValue === "Human Focus") ucpSelect.value = "humanFocus";
+      else if (currentValue === "Furry Focus") ucpSelect.value = "furryFocus";
+      else ucpSelect.value = "none";
+    } else {
+      if (currentValue === "heavy") ucpSelect.value = "Heavy";
+      else if (currentValue === "light") ucpSelect.value = "Light";
+      else if (currentValue === "humanFocus") ucpSelect.value = "Human Focus";
+      else if (currentValue === "furryFocus") ucpSelect.value = "Furry Focus";
+      else if (currentValue === "none") ucpSelect.value = "";
+      else ucpSelect.value = "Heavy";
+    }
+    settings3.UCP_novelai = ucpSelect.value;
     saveSettingsDebounced42();
   }
 }
@@ -73758,9 +73812,14 @@ function updateNovelaiModelSchedule() {
   updateNovelaiUcpOptions();
   updateNovelaiReferenceSectionsVisibility();
   const selectedModel = novelaiModeSelect.value;
+  const isV5 = selectedModel.includes("nai-diffusion-5");
+  const straightAlphaField = document.getElementById("st-chatu8-novelai-straight-alpha-field");
+  if (straightAlphaField) {
+    straightAlphaField.style.display = isV5 ? "flex" : "none";
+  }
   const nativeOption = [...scheduleSelect.options].find((opt) => opt.value === "native");
   const ddimOption = [...samplerSelect.options].find((opt) => opt.value === "ddim_v3");
-  if (selectedModel === "nai-diffusion-3") {
+  if (selectedModel === "nai-diffusion-3" || isV5) {
     if (ddimOption) ddimOption.style.display = "";
     if (!nativeOption) {
       const option = new Option("native", "native");
