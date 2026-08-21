@@ -6921,6 +6921,15 @@ async function fumian(text, UCP) {
   } else {
     finalNegativePrompt = UCP + ", " + text;
   }
+  if (finalNegativePrompt) {
+    let tags = finalNegativePrompt.split(",").map((t) => t.trim()).filter(Boolean);
+    const nsfwIndex = tags.findIndex((t) => t.toLowerCase() === "nsfw");
+    if (nsfwIndex !== -1) {
+      tags = tags.filter((t) => t.toLowerCase() !== "nsfw");
+      tags.unshift("nsfw");
+      finalNegativePrompt = tags.join(", ");
+    }
+  }
   addLog(`\u7EC4\u5408\u540E\u7684\u8D1F\u9762\u63D0\u793A\u8BCD: ${finalNegativePrompt}`);
   return finalNegativePrompt;
 }
@@ -22060,6 +22069,10 @@ function getNovelAIQualityPresetsText(settings3) {
     aqt = "very aesthetic, masterpiece, no text";
   } else if (settings3.AQT_novelai != "" && settings3.novelaimode == "nai-diffusion-4-5-curated") {
     aqt = "very aesthetic, masterpiece, no text, -0.8::feet::, rating:general";
+  } else if (settings3.AQT_novelai != "" && settings3.novelaimode == "nai-diffusion-5-full") {
+    aqt = "very aesthetic, amazing quality, no text";
+  } else if (settings3.AQT_novelai != "" && settings3.novelaimode == "nai-diffusion-5-curated") {
+    aqt = "very aesthetic, masterpiece, no text";
   } else if (settings3.AQT_novelai != "" && settings3.novelaimode == "nai-diffusion-3") {
     aqt = "best quality, amazing quality, very aesthetic, absurdres";
   }
@@ -22091,6 +22104,14 @@ function getNovelAIQualityPresetsText(settings3) {
   } else if (settings3.novelaimode == "nai-diffusion-4-5-full" && settings3.UCP_novelai == "Light") {
     ucp = "lowres, artistic error, scan artifacts, worst quality, bad quality, jpeg artifacts, multiple views, very displeasing, too many watermarks, negative space, blank page";
   } else if (settings3.novelaimode == "nai-diffusion-4-5-full" && settings3.UCP_novelai == "Furry Focus") {
+    ucp = "{worst quality}, distracting watermark, unfinished, bad quality, {widescreen}, upscale, {sequence}, {{grandfathered content}}, blurred foreground, chromatic aberration, sketch, everyone, [sketch background], simple, [flat colors], ych (character), outline, multiple scenes, [[horror (theme)]], comic";
+  } else if (settings3.novelaimode.includes("nai-diffusion-5") && settings3.UCP_novelai == "heavy") {
+    ucp = "lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page";
+  } else if (settings3.novelaimode.includes("nai-diffusion-5") && settings3.UCP_novelai == "light") {
+    ucp = "lowres, bad hands, bad anatomy, artistic error, sepia, white haze, worst quality, very displeasing, jpeg artifacts, 0::ai-generated::";
+  } else if (settings3.novelaimode.includes("nai-diffusion-5") && settings3.UCP_novelai == "humanFocus") {
+    ucp = "lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page, @_@, mismatched pupils, glowing eyes, bad anatomy";
+  } else if (settings3.novelaimode.includes("nai-diffusion-5") && settings3.UCP_novelai == "furryFocus") {
     ucp = "{worst quality}, distracting watermark, unfinished, bad quality, {widescreen}, upscale, {sequence}, {{grandfathered content}}, blurred foreground, chromatic aberration, sketch, everyone, [sketch background], simple, [flat colors], ych (character), outline, multiple scenes, [[horror (theme)]], comic";
   }
   return { aqt, ucp };
@@ -67268,6 +67289,7 @@ var currentCloudQueueInfo = null;
 function cleanNovelAIPayload(payload, modelVersion) {
   const isNAI3 = modelVersion === "nai-diffusion-3";
   const isNAI4or45 = modelVersion.includes("nai-diffusion-4");
+  const isNAI5 = modelVersion.includes("nai-diffusion-5");
   const cleanedPayload = { ...payload };
   if (isNAI3) {
     delete cleanedPayload.reference_image_multiple_cached;
@@ -67281,6 +67303,20 @@ function cleanNovelAIPayload(payload, modelVersion) {
     delete cleanedPayload.reference_image_multiple;
     delete cleanedPayload.reference_information_extracted_multiple;
     addLog("[PayloadClean] \u5DF2\u79FB\u9664 NAI3 \u6570\u7EC4\uFF08\u4F7F\u7528 NAI4/4.5 \u6A21\u578B\uFF09");
+  } else if (isNAI5) {
+    delete cleanedPayload.reference_image_multiple;
+    delete cleanedPayload.reference_information_extracted_multiple;
+    delete cleanedPayload.skip_cfg_above_sigma;
+    if (Array.isArray(cleanedPayload.reference_strength_multiple) && cleanedPayload.reference_strength_multiple.length === 0) {
+      delete cleanedPayload.reference_strength_multiple;
+    }
+    if (Array.isArray(cleanedPayload.reference_image_multiple_cached) && cleanedPayload.reference_image_multiple_cached.length === 0) {
+      delete cleanedPayload.reference_image_multiple_cached;
+    }
+    if (cleanedPayload.sampler === "ddim_v3") {
+      cleanedPayload.sampler = "k_euler_ancestral";
+    }
+    addLog("[PayloadClean] \u5DF2\u9488\u5BF9 NAI5 \u6A21\u578B\u6E05\u7406\u7279\u5B9A\u4E0D\u652F\u6301\u7684\u53C2\u6570");
   }
   return cleanedPayload;
 }
@@ -67725,7 +67761,7 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
     currentTaskId4 = null;
     throw new Error("\u8BF7\u586B\u5199 NovelAI API Key");
   }
-  const promptForGeneration = change && change.trim() !== "" ? change : link;
+  let promptForGeneration = change && change.trim() !== "" ? change : link;
   addLog(`\u7528\u4E8E\u751F\u6210\u7684Tag: ${promptForGeneration}`);
   let Divide_roles = false;
   const modelMode = extension_settings52[extensionName].novelaimode || "";
@@ -67743,6 +67779,10 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
     aqt = "very aesthetic, masterpiece, no text";
   } else if (extension_settings52[extensionName].AQT_novelai != "" && extension_settings52[extensionName].novelaimode == "nai-diffusion-4-5-curated") {
     aqt = "very aesthetic, masterpiece, no text, -0.8::feet::, rating:general";
+  } else if (extension_settings52[extensionName].AQT_novelai != "" && extension_settings52[extensionName].novelaimode == "nai-diffusion-5-full") {
+    aqt = "very aesthetic, amazing quality, no text";
+  } else if (extension_settings52[extensionName].AQT_novelai != "" && extension_settings52[extensionName].novelaimode == "nai-diffusion-5-curated") {
+    aqt = "very aesthetic, masterpiece, no text";
   } else if (extension_settings52[extensionName].AQT_novelai != "" && extension_settings52[extensionName].novelaimode == "nai-diffusion-3") {
     aqt = "best quality, amazing quality, very aesthetic, absurdres";
   }
@@ -67917,6 +67957,7 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
       for (let i = 1; i <= 4; i++) {
         if (prompt_data[`Character ${i} Prompt`]) {
           prompt_data[`Character ${i} Prompt`] = await prompt_replace_for_character(prompt_data[`Character ${i} Prompt`], (mainPrompt || "") + " " + (other_prompt || ""));
+          prompt_data[`Character ${i} Prompt`] = prompt_data[`Character ${i} Prompt`].replace(/1boy/gi, "boy").replace(/1girl/gi, "girl");
         }
       }
       let characterPrompts = [];
@@ -68107,13 +68148,31 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
   const isV5Model = extension_settings52[extensionName].novelaimode.includes("nai-diffusion-5");
   if (isV5Model) {
     let tag_hint_uc_preset = 0;
-    if (extension_settings52[extensionName].UCP_novelai == "heavy") tag_hint_uc_preset = 1;
-    if (extension_settings52[extensionName].UCP_novelai == "furryFocus") tag_hint_uc_preset = 2;
-    if (extension_settings52[extensionName].UCP_novelai == "light") tag_hint_uc_preset = 3;
-    if (extension_settings52[extensionName].UCP_novelai == "humanFocus") tag_hint_uc_preset = 4;
+    let ucPresetId = "heavy";
+    if (extension_settings52[extensionName].UCP_novelai == "heavy") {
+      tag_hint_uc_preset = 1;
+      ucPresetId = "heavy";
+    } else if (extension_settings52[extensionName].UCP_novelai == "furryFocus") {
+      tag_hint_uc_preset = 2;
+      ucPresetId = "furry_focus";
+    } else if (extension_settings52[extensionName].UCP_novelai == "light") {
+      tag_hint_uc_preset = 3;
+      ucPresetId = "light";
+    } else if (extension_settings52[extensionName].UCP_novelai == "humanFocus") {
+      tag_hint_uc_preset = 4;
+      ucPresetId = "human_focus";
+    } else if (extension_settings52[extensionName].UCP_novelai == "none") {
+      tag_hint_uc_preset = 0;
+      ucPresetId = "none";
+    }
     preset_data.straight_alpha = extension_settings52[extensionName].novelai_straight_alpha === true;
     preset_data.tag_hint_qt = 1;
     preset_data.tag_hint_uc_preset = tag_hint_uc_preset;
+    preset_data.ucPresetId = ucPresetId;
+    preset_data.qualityPresetId = preset_data.qualityToggle ? "standard" : "none";
+    delete preset_data.ucPreset;
+    delete preset_data.qualityToggle;
+    preset_data.image_format = "png";
   }
   addLog("[Payload] \u5F00\u59CB\u6E05\u7406\u548C\u9A8C\u8BC1 payload...");
   preset_data = cleanNovelAIPayload(preset_data, extension_settings52[extensionName].novelaimode);
@@ -73818,9 +73877,13 @@ function updateNovelaiModelSchedule() {
   if (straightAlphaField) {
     straightAlphaField.style.display = isV5 ? "flex" : "none";
   }
+  const varietyField = document.querySelector("#nai3Variety")?.closest(".st-chatu8-field");
+  if (varietyField) {
+    varietyField.style.display = isV5 ? "none" : "flex";
+  }
   const nativeOption = [...scheduleSelect.options].find((opt) => opt.value === "native");
   const ddimOption = [...samplerSelect.options].find((opt) => opt.value === "ddim_v3");
-  if (selectedModel === "nai-diffusion-3" || isV5) {
+  if (selectedModel === "nai-diffusion-3") {
     if (ddimOption) ddimOption.style.display = "";
     if (!nativeOption) {
       const option = new Option("native", "native");
@@ -73833,7 +73896,7 @@ function updateNovelaiModelSchedule() {
     if (ddimOption) {
       ddimOption.style.display = "none";
       if (samplerSelect.value === "ddim_v3") {
-        samplerSelect.value = "k_euler";
+        samplerSelect.value = isV5 ? "k_euler_ancestral" : "k_euler";
         $(samplerSelect).trigger("change");
       }
     }
@@ -73845,6 +73908,7 @@ function updateNovelaiModelSchedule() {
       nativeOption.remove();
     }
   }
+  updateNovelaiScheduleVisibility();
 }
 function updateNovelaiOtherSiteVisibility() {
   const clientSelect = document.getElementById("client");
@@ -73855,16 +73919,17 @@ function updateNovelaiOtherSiteVisibility() {
   otherSiteField.style.display = shouldShow ? "flex" : "none";
 }
 function updateNovelaiScheduleVisibility() {
+  const novelaiModeSelect = document.getElementById("novelaimode");
+  const isV5 = novelaiModeSelect && novelaiModeSelect.value.includes("nai-diffusion-5");
   const sampler = document.getElementById("novelai_sampler");
   const scheduleField = document.querySelector("#Schedule")?.closest(".st-chatu8-field");
   const scheduleSelect = document.getElementById("Schedule");
   if (!sampler || !scheduleField || !scheduleSelect) return;
   const selectedSampler = sampler.value;
-  if (selectedSampler === "ddim_v3") {
+  if (isV5 || selectedSampler === "ddim_v3") {
     scheduleField.style.display = "none";
   } else {
     scheduleField.style.display = "flex";
-    $(scheduleSelect).trigger("change");
   }
 }
 function initNovelaiUI(settingsModal) {
