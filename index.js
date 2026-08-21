@@ -67728,7 +67728,8 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
   const promptForGeneration = change && change.trim() !== "" ? change : link;
   addLog(`\u7528\u4E8E\u751F\u6210\u7684Tag: ${promptForGeneration}`);
   let Divide_roles = false;
-  if (promptForGeneration.includes("Scene Composition") && (extension_settings52[extensionName].novelaimode == "nai-diffusion-4-curated-preview" || extension_settings52[extensionName].novelaimode == "nai-diffusion-4-full" || extension_settings52[extensionName].novelaimode == "nai-diffusion-4-5-full" || extension_settings52[extensionName].novelaimode == "nai-diffusion-4-5-curated")) {
+  const modelMode = extension_settings52[extensionName].novelaimode || "";
+  if (promptForGeneration.includes("Scene Composition") && (modelMode.includes("nai-diffusion-4") || modelMode.includes("nai-diffusion-5"))) {
     Divide_roles = true;
   }
   addLog(`\u662F\u5426\u542F\u7528\u5206\u89D2\u8272\u6A21\u5F0F (Divide_roles): ${Divide_roles}`);
@@ -67921,13 +67922,13 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
       let characterPrompts = [];
       for (let i = 1; i <= 4; i++) {
         if (prompt_data[`Character ${i} Prompt`]) {
-          characterPrompts[i - 1] = { enabled: true, prompt: prompt_data[`Character ${i} Prompt`], center: prompt_data[`Character ${i} coordinates`], uc: prompt_data[`Character ${i} UC`] ? prompt_data[`Character ${i} UC`] : "one arms,lowres, aliasing, jaggy lines,bad hands,one legs" };
+          characterPrompts.push({ enabled: true, prompt: prompt_data[`Character ${i} Prompt`], center: prompt_data[`Character ${i} coordinates`], uc: prompt_data[`Character ${i} UC`] ? prompt_data[`Character ${i} UC`] : "" });
         }
       }
       let v4_negative_prompt = { caption: { base_caption: negative_prompt, char_captions: [] }, legacy_uc: false };
       for (let i = 1; i <= 4; i++) {
         if (prompt_data[`Character ${i} Prompt`]) {
-          v4_negative_prompt.caption.char_captions.push({ char_caption: prompt_data[`Character ${i} UC`] ? prompt_data[`Character ${i} UC`] : "one arms,lowres, aliasing, jaggy lines,bad hands,one legs", centers: [prompt_data[`Character ${i} coordinates`]] });
+          v4_negative_prompt.caption.char_captions.push({ char_caption: prompt_data[`Character ${i} UC`] ? prompt_data[`Character ${i} UC`] : "", centers: [prompt_data[`Character ${i} coordinates`]] });
         }
       }
       let v4_prompt = { caption: { base_caption: prompt2, char_captions: [] }, use_coords, use_order: true };
@@ -67947,7 +67948,7 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
         "autoSmea": false,
         "normalize_reference_strength_multiple": extension_settings52[extensionName].normalizeRefStrength === "true",
         "inpaintImg2ImgStrength": 1,
-        "params_version": 3,
+        "params_version": extension_settings52[extensionName].novelaimode.includes("nai-diffusion-5") ? 4 : 3,
         "width": Number(Xwidth ? Xwidth : extension_settings52[extensionName].novelai_width),
         "height": Number(Xheight ? Xheight : extension_settings52[extensionName].novelai_height),
         "scale": Number(extension_settings52[extensionName].nai3Scale),
@@ -67988,7 +67989,7 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
         "autoSmea": false,
         "normalize_reference_strength_multiple": extension_settings52[extensionName].normalizeRefStrength === "true",
         "inpaintImg2ImgStrength": 1,
-        "params_version": 3,
+        "params_version": extension_settings52[extensionName].novelaimode.includes("nai-diffusion-5") ? 4 : 3,
         "width": Number(Xwidth ? Xwidth : extension_settings52[extensionName].novelai_width),
         "height": Number(Xheight ? Xheight : extension_settings52[extensionName].novelai_height),
         "scale": Number(extension_settings52[extensionName].nai3Scale),
