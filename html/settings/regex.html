@@ -62,7 +62,7 @@
         </div>
         <div class="st-chatu8-field-col">
             <label for="ch-word-replace-ai-editor">AI返回替换 (解析AI输出前替换)</label>
-            <textarea id="ch-word-replace-ai-editor" class="st-chatu8-textarea" rows="3" placeholder="每行一条规则，格式: 词汇1=词汇2&#10;例如: safe_="></textarea>
+            <textarea id="ch-word-replace-ai-editor" class="st-chatu8-textarea" rows="3" placeholder="每行一条规则，格式: 词汇1=词汇2&#10;例如: safe_=  (替换为空，即删除)&#10;替换成空格用 \s，例如: _=\s"></textarea>
         </div>
     </div>
     <div class="st-chatu8-settings-section">
@@ -96,6 +96,13 @@
                 <span class="st-chatu8-slider"></span>
             </div>
         </div>
+        <div class="st-chatu8-field">
+            <label for="ch-visual-prep-demand-enabled">视材需求弹窗</label>
+            <div class="st-chatu8-toggle">
+                <input id="ch-visual-prep-demand-enabled" type="checkbox" />
+                <span class="st-chatu8-slider"></span>
+            </div>
+        </div>
         <div class="st-chatu8-field-col">
             <label for="ch-default-char-demand">生成角色默认用户需求</label>
             <textarea id="ch-default-char-demand" class="st-chatu8-textarea" rows="2" placeholder="当用户需求为空时使用此默认值..."></textarea>
@@ -103,6 +110,10 @@
         <div class="st-chatu8-field-col">
             <label for="ch-default-image-demand">生成图片默认用户需求</label>
             <textarea id="ch-default-image-demand" class="st-chatu8-textarea" rows="2" placeholder="当用户需求为空时使用此默认值..."></textarea>
+        </div>
+        <div class="st-chatu8-field-col">
+            <label for="ch-default-visual-prep-demand">视材准备默认用户需求</label>
+            <textarea id="ch-default-visual-prep-demand" class="st-chatu8-textarea" rows="2" placeholder="当用户需求为空时使用此默认值..."></textarea>
         </div>
         <div class="st-chatu8-field">
             <label for="ch-gesture-show-recognition">识别展示</label>

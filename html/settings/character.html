@@ -46,10 +46,28 @@
                 <button class="st-chatu8-btn" id="char_photo_upload" style="margin-top: 10px;">
                     <i class="fa-solid fa-upload"></i> 上传照片
                 </button>
+                <div class="st-chatu8-field-col" style="width: 100%; max-width: 420px; margin-top: 10px;">
+                    <label for="char_photo_description">当前图片说明</label>
+                    <textarea id="char_photo_description" class="st-chatu8-textarea" rows="2" placeholder="输入当前图片的说明"></textarea>
+                </div>
                 <div class="st-chatu8-field" style="margin-top: 10px; display: flex; align-items: center; gap: 10px;">
                     <label for="char_send_photo" class="st-chatu8-checkbox-label" style="margin: 0; display: flex; align-items: center; gap: 8px; cursor: pointer;">
                         <input type="checkbox" id="char_send_photo" class="st-chatu8-checkbox">
                         <span>发送图片</span>
+                    </label>
+                </div>
+                <div class="st-chatu8-field-col" style="width: 100%; max-width: 420px; margin-top: 14px;">
+                    <label for="char_audio_upload">角色音频</label>
+                    <input type="file" id="char_audio_upload_input" accept="audio/*" style="display: none;">
+                    <button class="st-chatu8-btn" id="char_audio_upload" type="button">
+                        <i class="fa-solid fa-volume-high"></i> 上传音频
+                    </button>
+                    <audio id="char_audio_preview" controls style="display: none; width: 100%; margin-top: 8px;"></audio>
+                    <label for="char_audio_description" style="margin-top: 8px;">当前音频说明</label>
+                    <textarea id="char_audio_description" class="st-chatu8-textarea" rows="2" placeholder="输入当前音频的说明"></textarea>
+                    <label for="char_send_audio" class="st-chatu8-checkbox-label" style="margin-top: 8px; display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="char_send_audio" class="st-chatu8-checkbox">
+                        <span>发送音频</span>
                     </label>
                 </div>
             </div>
@@ -652,6 +670,9 @@
                     <button class="st-chatu8-icon-btn" id="injection_template_update" title="保存方案"><i class="fa-solid fa-save"></i></button>
                     <button class="st-chatu8-icon-btn" id="injection_template_save_as" title="另存为"><i class="fa-solid fa-file-export"></i></button>
                     <button class="st-chatu8-icon-btn" id="injection_template_rename" title="重命名方案"><i class="fa-solid fa-pen"></i></button>
+                    <button class="st-chatu8-icon-btn" id="injection_template_export" title="导出当前方案"><i class="fa-solid fa-upload"></i></button>
+                    <button class="st-chatu8-icon-btn" id="injection_template_export_all" title="导出全部方案"><i class="fa-solid fa-cloud-upload-alt"></i></button>
+                    <button class="st-chatu8-icon-btn" id="injection_template_import" title="导入方案"><i class="fa-solid fa-download"></i></button>
                     <button class="st-chatu8-icon-btn" id="injection_template_reset" title="恢复默认内容"><i class="fa-solid fa-rotate-left"></i></button>
                     <button class="st-chatu8-icon-btn danger" id="injection_template_delete" title="删除方案"><i class="fa-solid fa-trash"></i></button>
                 </div>
@@ -720,6 +741,10 @@
                     <button type="button" class="st-chatu8-btn st-chatu8-var-btn" data-var="{lowerNSFWBack}">{lowerNSFWBack}　下半身NSFW（背面）</button>
                     <button type="button" class="st-chatu8-btn st-chatu8-var-btn" data-var="{negative}">{negative}　负向提示词</button>
                     <button type="button" class="st-chatu8-btn st-chatu8-var-btn" data-var="{outfits}">{outfits}　专属服装展开点</button>
+                    <button type="button" class="st-chatu8-btn st-chatu8-var-btn" data-var="{imageId}">{imageId}　图片ID</button>
+                    <button type="button" class="st-chatu8-btn st-chatu8-var-btn" data-var="{imageDesc}">{imageDesc}　图片说明</button>
+                    <button type="button" class="st-chatu8-btn st-chatu8-var-btn" data-var="{audioId}">{audioId}　音频ID</button>
+                    <button type="button" class="st-chatu8-btn st-chatu8-var-btn" data-var="{audioDesc}">{audioDesc}　音频说明</button>
                 </div>
 
                 <div id="var-panel-outfit" class="var-panel" style="display: none; flex-direction: column; gap: 6px; overflow-y: auto; max-height: 520px;">

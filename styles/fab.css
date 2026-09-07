@@ -67,7 +67,9 @@
 }
 
 #st-chatu8-fab.st-chatu8-fab-dragging {
-    transition: none;
+    transition: none !important;
+    user-select: none;
+    -webkit-user-select: none;
     /* ✅ 拖动时禁用所有过渡效果，确保即时响应 */
 }
 
@@ -207,3 +209,52 @@
     color: var(--SmartThemeEmColor, #888);
     font-size: 12px;
 }
+
+/* ============================================================
+   悬浮球生图/视频：与 LLM 请求同款·逆时针旋转圆环
+   ============================================================ */
+
+#st-chatu8-fab.st-chatu8-fab-generating i {
+    display: none !important;
+}
+
+#st-chatu8-fab.st-chatu8-fab-generating .st-chatu8-fab-custom-icon {
+    display: none !important;
+}
+
+#st-chatu8-fab.st-chatu8-fab-generating .st-chatu8-fab-video {
+    display: none !important;
+}
+
+/* 旋转圆环：24px 居中圆环，与 LLM 完全一致的规格，方向为逆时针 */
+#st-chatu8-fab.st-chatu8-fab-generating::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 24px;
+    height: 24px;
+    border: 3px solid rgba(255, 255, 255, 0.3);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: st-chatu8-fab-spin-reverse 0.8s linear infinite;
+    z-index: 3;
+}
+
+/* 视频模式专属顶色高光（极光翡翠绿） */
+#st-chatu8-fab.st-chatu8-fab-generating.is-video-generating::after {
+    border-top-color: #10b981;
+}
+
+/* 逆时针匀速旋转关键帧 */
+@keyframes st-chatu8-fab-spin-reverse {
+    from {
+        transform: translate(-50%, -50%) rotate(360deg);
+    }
+    to {
+        transform: translate(-50%, -50%) rotate(0deg);
+    }
+}
+
+
