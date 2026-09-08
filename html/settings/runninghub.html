@@ -143,6 +143,18 @@
             <div id="runninghub_key_status_container" style="margin-top: 10px; display: none;"></div>
             <div id="runninghub_key_consumption_container" style="margin-top: 10px;"></div>
         </div>
+        <div class="st-chatu8-field" style="margin-top: 10px;">
+            <label for="runninghub_instance_type">v2 实例规格 (Instance Type)</label>
+            <select id="runninghub_instance_type" class="st-chatu8-select">
+                <option value="default">default (默认 24G 显存)</option>
+                <option value="plus">plus (48G 显存)</option>
+                <option value="ultra">ultra (84G 显存)</option>
+            </select>
+        </div>
+        <div class="st-chatu8-field">
+            <label for="runninghub_retain_seconds">v2 实例保活秒数 (可选 10~180 秒)</label>
+            <input type="number" id="runninghub_retain_seconds" class="st-chatu8-input" min="10" max="180" placeholder="留空不保活，填写如 60 (热复用防冷启动)">
+        </div>
     </div>
 
     <!-- 其他设置 (与 ComfyUI 一致) -->
