@@ -2419,7 +2419,7 @@ var init_config = __esm({
       aiAutonomousResolution: true,
       // AI自主分辨率：开启后，从提示词中提取到的尺寸会覆盖设置中的分辨率参数
       videoChannel: "comfyui",
-      // 视频渠道选择：comfyui / runninghub
+      // 视频渠道选择：none(无) / comfyui / runninghub
       prompt_replace: { "\u9ED8\u8BA4": { "text": "\u89E6\u53D1\u8BCD1=\u524D\u7F6E\u524D|\u63D2\u5165\u8BCD1\n\u89E6\u53D1\u8BCD2=\u524D\u7F6E\u540E|\u63D2\u5165\u8BCD2\n\u89E6\u53D1\u8BCD3=\u66FF\u6362|\u66FF\u6362\u8BCD3\n\u89E6\u53D1\u8BCD4=\u66FF\u6362|\n\u89E6\u53D1\u8BCD5=\u66FF\u6362\u5206\u89D2\u8272|\u66FF\u6362\u8BCD5\n\u89E6\u53D1\u8BCD6=\u540E\u7F6E\u524D|\u63D2\u5165\u8BCD6\n\u89E6\u53D1\u8BCD7=\u540E\u7F6E\u540E|\u63D2\u5165\u8BCD7\n\u89E6\u53D1\u8BCD8=\u6700\u540E\u7F6E|\u63D2\u5165\u8BCD8" } },
       prompt_replace_id: "\u9ED8\u8BA4",
       prompt_replace_id_runninghub: "\u9ED8\u8BA4",
@@ -3091,6 +3091,14 @@ var init_config = __esm({
       defaultImageDemand: "",
       visualPrepDemandEnabled: false,
       defaultVisualPrepDemand: "",
+      current_demand_profile: "\u9ED8\u8BA4",
+      demand_profiles: {
+        "\u9ED8\u8BA4": {
+          defaultCharDemand: "",
+          defaultImageDemand: "",
+          defaultVisualPrepDemand: ""
+        }
+      },
       // NovelAI 配置档案
       novelai_profiles: {
         "\u9ED8\u8BA4": {
@@ -9307,6 +9315,22 @@ function createVideoPlayer(container, options) {
   startVideoLoad(draggingVideo);
   startVideoLoad(idleVideoClone);
   startVideoLoad(draggingVideoClone);
+  const preloadThinking = () => {
+    if (state3.hasError) return;
+    ensureVideoLoaded(state3, "thinkingVideo", "thinkingVideoSrc", "st-chatu8-fab-video-thinking").then((video) => {
+      if (!video._endedHandlerRegistered) {
+        setupThinkingEndedHandler(state3);
+        video._endedHandlerRegistered = true;
+      }
+    }).catch((err) => {
+      console.warn("[st-chatu8] \u9884\u8F7D\u601D\u8003\u89C6\u9891\u63D0\u793A:", err?.message || err);
+    });
+  };
+  if (typeof requestIdleCallback === "function") {
+    requestIdleCallback(preloadThinking, { timeout: 3e3 });
+  } else {
+    setTimeout(preloadThinking, 1500);
+  }
   const handleContextLost = (e) => {
     e.preventDefault();
     console.log("[st-chatu8] WebGL context lost, stopping render loop...");
@@ -9719,19 +9743,8 @@ function setupHeadPatEndedHandler(state3) {
       state3.isPlayingHeadPat = false;
       const fab = document.getElementById("st-chatu8-fab");
       const isLoading = fab && fab.dataset.isLoading === "true";
-      if (isLoading && state3.thinkingVideo && state3.thinkingVideo.readyState >= 2) {
-        state3.currentVideo = "thinking";
-        state3.isPlayingThinking = true;
-        state3.alphaCacheDirty = true;
-        state3.lastVideoTime = -1;
-        state3.activeVideo = state3.thinkingVideo;
-        state3.thinkingVideo.currentTime = 0;
-        state3.thinkingVideo.play().catch((err) => {
-          console.error("Failed to play thinking video after head pat:", err);
-          state3.isPlayingThinking = false;
-          switchToIdleVideo(state3);
-        });
-        startRenderLoop(state3);
+      if (isLoading) {
+        playThinkingVideo(state3);
       } else {
         switchToIdleVideo(state3);
       }
@@ -9915,16 +9928,22 @@ async function playThinkingVideo(state3) {
       video._endedHandlerRegistered = true;
     }
   } catch (err) {
-    console.warn("\u601D\u8003\u89C6\u9891\u4E0D\u53EF\u7528\uFF0C\u4F7F\u7528\u4F20\u7EDF\u52A0\u8F7D\u52A8\u753B");
-    if (state3.thinkingRequested) {
-      const fab = document.getElementById("st-chatu8-fab");
-      if (fab) fab.classList.add("st-chatu8-fab-loading");
-    }
+    console.warn("[st-chatu8] \u601D\u8003\u89C6\u9891\u4E0D\u53EF\u7528\u6216\u52A0\u8F7D\u5F02\u5E38:", err);
     return;
   }
   if (!state3.thinkingRequested) return;
-  if (!state3.thinkingVideo || state3.thinkingVideo.readyState < 2) {
-    console.warn("Thinking video not ready");
+  if (!state3.thinkingVideo) {
+    console.warn("[st-chatu8] Thinking video element not found");
+    return;
+  }
+  if (state3.thinkingVideo.readyState < 2) {
+    const onCanPlay = () => {
+      state3.thinkingVideo.removeEventListener("canplay", onCanPlay);
+      if (state3.thinkingRequested && !state3.isPlayingThinking) {
+        playThinkingVideo(state3);
+      }
+    };
+    state3.thinkingVideo.addEventListener("canplay", onCanPlay, { once: true });
     return;
   }
   if (state3.isPlayingThinking && state3.currentVideo === "thinking") {
@@ -10091,7 +10110,13 @@ function stopTalkVideo(state3) {
   if (state3.talkVideo) {
     state3.talkVideo.pause();
   }
-  switchToIdleVideo(state3);
+  const fab = document.getElementById("st-chatu8-fab");
+  const isLoading = fab && fab.dataset.isLoading === "true";
+  if (isLoading) {
+    playThinkingVideo(state3);
+  } else {
+    switchToIdleVideo(state3);
+  }
 }
 function pause(state3) {
   if (state3.hasError) return;
@@ -13337,7 +13362,7 @@ function updateBubbleDirection() {
 }
 function evaluateActiveState() {
   const allTasks = taskQueue.getAllTasks();
-  const runningTasks = allTasks.filter((t) => t.status === TaskStatus.RUNNING && t.type !== TaskType.AUTO_CLICK);
+  const runningTasks = allTasks.filter((t) => t.status === TaskStatus.RUNNING && t.type !== TaskType.AUTO_CLICK && t.type !== TaskType.LLM);
   const queueCount = runningTasks.length;
   if (queueCount === 0 && currentlyGeneratingCount === 0) {
     if (inFlightRequests.size > 0) {
@@ -13378,6 +13403,27 @@ function refreshBubbleState() {
   if (!fab) return;
   cleanupLegacyFabDOM();
   const state3 = evaluateActiveState();
+  const isVideoMode = fab.classList.contains("st-chatu8-fab-video-mode");
+  const videoPlayer = getGlobalVideoPlayer();
+  if (isVideoMode) {
+    fab.classList.remove("st-chatu8-fab-generating");
+    fab.classList.remove("is-video-generating");
+    if (videoPlayer) {
+      const playerState = videoPlayer.getState ? videoPlayer.getState() : null;
+      const isPlayingTalk = playerState && playerState.isPlayingTalk;
+      if (state3.isActive) {
+        if (!isPlayingTalk && videoPlayer.playThinkingVideo) {
+          videoPlayer.playThinkingVideo();
+        }
+      } else {
+        const isLlmLoading = fab.dataset.isLoading === "true";
+        if (!isLlmLoading && !isPlayingTalk && videoPlayer.stopThinkingVideo) {
+          videoPlayer.stopThinkingVideo();
+        }
+      }
+    }
+    return;
+  }
   if (state3.isActive) {
     if (hideTimer) {
       clearTimeout(hideTimer);
@@ -13430,6 +13476,7 @@ var init_fabBubble = __esm({
     init_taskQueue();
     init_config();
     init_generation_status();
+    init_ui_common();
     hideTimer = null;
     isInitialized = false;
     inFlightRequests = /* @__PURE__ */ new Set();
@@ -13832,40 +13879,66 @@ function initFab() {
   };
   initFabBubble();
 }
+function isFabVideoModeEnabled() {
+  const fab = document.getElementById("st-chatu8-fab");
+  if (fab && fab.classList.contains("st-chatu8-fab-video-mode")) {
+    return true;
+  }
+  const settings4 = extension_settings8[extensionName];
+  return settings4?.enable_chatu8_fab_video === true || settings4?.enable_chatu8_fab_video === "true";
+}
 function startFabLoading() {
   const fab = document.getElementById("st-chatu8-fab");
   if (!fab) return;
+  fabGlobalLoadingCount++;
   fab.dataset.isLoading = "true";
+  const isVideoMode = isFabVideoModeEnabled();
   const videoPlayer = getGlobalVideoPlayer();
-  if (videoPlayer) {
-    const state3 = videoPlayer.getState();
-    if (state3 && state3.isPlayingTalk) {
-      return;
+  if (isVideoMode) {
+    fab.classList.remove("st-chatu8-fab-loading");
+    if (videoPlayer) {
+      const state3 = videoPlayer.getState();
+      if (state3 && state3.isPlayingTalk) {
+        return;
+      }
+      if (videoPlayer.playThinkingVideo) {
+        videoPlayer.playThinkingVideo();
+      }
     }
-  }
-  if (videoPlayer && videoPlayer.playThinkingVideo) {
-    videoPlayer.playThinkingVideo();
   } else {
     fab.classList.add("st-chatu8-fab-loading");
   }
 }
-function stopFabLoading() {
+function stopFabLoading(force = false) {
   const fab = document.getElementById("st-chatu8-fab");
   if (!fab) return;
+  if (force) {
+    fabGlobalLoadingCount = 0;
+  } else {
+    fabGlobalLoadingCount = Math.max(0, fabGlobalLoadingCount - 1);
+  }
+  if (fabGlobalLoadingCount > 0) {
+    return;
+  }
   fab.dataset.isLoading = "false";
+  const isVideoMode = isFabVideoModeEnabled();
   const videoPlayer = getGlobalVideoPlayer();
-  if (videoPlayer) {
+  fab.classList.remove("st-chatu8-fab-loading");
+  if (isVideoMode && videoPlayer) {
     const state3 = videoPlayer.getState();
     if (state3 && state3.isPlayingTalk) {
       return;
     }
-  }
-  if (videoPlayer && videoPlayer.stopThinkingVideo) {
-    videoPlayer.stopThinkingVideo();
-  } else {
-    fab.classList.remove("st-chatu8-fab-loading");
+    const activeTasks = evaluateActiveState();
+    if (activeTasks && activeTasks.isActive) {
+      return;
+    }
+    if (videoPlayer.stopThinkingVideo) {
+      videoPlayer.stopThinkingVideo();
+    }
   }
 }
+var fabGlobalLoadingCount;
 var init_fab = __esm({
   "utils/settings/fab.js"() {
     init_config();
@@ -13873,6 +13946,7 @@ var init_fab = __esm({
     init_fabVideoPlayerWebGL();
     init_fabVideoController();
     init_fabBubble();
+    fabGlobalLoadingCount = 0;
   }
 });
 
@@ -18639,39 +18713,116 @@ function abortLLMChannelRequest(channel) {
   }
   return aborted;
 }
-function shouldRetryError(error, attempt, maxRetries) {
-  if (attempt >= maxRetries) return false;
+function isNonRetryableError(error) {
+  if (!error) return false;
+  if (error.name === "AbortError" || error.message?.includes("aborted") || error.message?.includes("Request aborted")) {
+    return true;
+  }
   const errorMsg = error.message || String(error);
-  const errorMsgLower = errorMsg.toLowerCase();
-  if (errorMsg.includes("429") || errorMsgLower.includes("rate limit") || errorMsgLower.includes("too many requests")) {
+  const lower = errorMsg.toLowerCase();
+  if (errorMsg.includes("\u672A\u914D\u7F6E")) {
     return true;
   }
-  if (errorMsg.includes("500") || errorMsg.includes("502") || errorMsg.includes("503") || errorMsg.includes("504")) {
+  if (lower.includes("401") || lower.includes("403") || lower.includes("unauthorized") || lower.includes("forbidden") || lower.includes("invalid_api_key") || lower.includes("invalid api key")) {
     return true;
   }
-  if (errorMsgLower.includes("network") || errorMsgLower.includes("fetch")) {
+  if (lower.includes("insufficient_quota") || lower.includes("quota") || lower.includes("balance") || lower.includes("credit") || lower.includes("\u6B20\u8D39") || lower.includes("\u989D\u5EA6\u4E0D\u8DB3")) {
     return true;
   }
   return false;
+}
+function shouldRetryError(error, attempt, maxRetries) {
+  if (attempt >= maxRetries) return false;
+  if (isNonRetryableError(error)) return false;
+  return true;
 }
 function isEmptyResponse(reply) {
   return !reply || reply.trim() === "";
 }
-function isNonRetryableError(error) {
-  if (error.name === "AbortError") {
-    return true;
+function extractApiErrorMessage(response, raw) {
+  let errorDetail = "";
+  let parsedJson = null;
+  if (typeof raw === "object" && raw !== null) {
+    parsedJson = raw;
+  } else if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        parsedJson = JSON.parse(trimmed);
+      } catch (_e) {
+      }
+    }
   }
-  const errorMsg = error.message || "";
-  if (errorMsg.includes("\u672A\u914D\u7F6E")) {
-    return true;
+  if (parsedJson) {
+    if (parsedJson.error) {
+      if (typeof parsedJson.error === "object" && parsedJson.error !== null) {
+        errorDetail = parsedJson.error.message || JSON.stringify(parsedJson.error);
+        const meta = [];
+        if (parsedJson.error.type) meta.push(`\u7C7B\u578B: ${parsedJson.error.type}`);
+        if (parsedJson.error.code) meta.push(`\u4EE3\u7801: ${parsedJson.error.code}`);
+        if (meta.length > 0) errorDetail += ` (${meta.join(", ")})`;
+      } else {
+        errorDetail = String(parsedJson.error);
+      }
+    } else if (parsedJson.detail) {
+      if (Array.isArray(parsedJson.detail)) {
+        errorDetail = parsedJson.detail.map((d) => typeof d === "object" ? d.msg || JSON.stringify(d) : String(d)).join("; ");
+      } else if (typeof parsedJson.detail === "object") {
+        errorDetail = JSON.stringify(parsedJson.detail);
+      } else {
+        errorDetail = String(parsedJson.detail);
+      }
+    } else if (parsedJson.message) {
+      errorDetail = String(parsedJson.message);
+    } else if (parsedJson.msg) {
+      errorDetail = String(parsedJson.msg);
+    } else if (parsedJson.error_msg) {
+      errorDetail = String(parsedJson.error_msg);
+    } else if (Array.isArray(parsedJson.errors) && parsedJson.errors.length > 0) {
+      errorDetail = parsedJson.errors.map((e) => typeof e === "object" ? e.message || JSON.stringify(e) : String(e)).join("; ");
+    }
   }
-  if (errorMsg.includes("401") || errorMsg.includes("403")) {
-    return true;
+  if (!errorDetail && typeof raw === "string" && raw.trim()) {
+    const text = raw.trim();
+    if (/<[a-z][\s\S]*>/i.test(text)) {
+      const titleMatch = text.match(/<title>([^<]+)<\/title>/i);
+      const h1Match = text.match(/<h1>([^<]+)<\/h1>/i);
+      if (titleMatch && titleMatch[1]) {
+        errorDetail = `[\u7F51\u9875\u8FD4\u56DE] ${titleMatch[1].trim()}`;
+      } else if (h1Match && h1Match[1]) {
+        errorDetail = `[\u7F51\u9875\u8FD4\u56DE] ${h1Match[1].trim()}`;
+      } else {
+        const clean = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+        errorDetail = clean.length > 150 ? clean.substring(0, 150) + "..." : clean;
+      }
+    } else {
+      errorDetail = text.length > 300 ? text.substring(0, 300) + "..." : text;
+    }
   }
-  if (errorMsg.includes("400")) {
-    return true;
+  const statusText = response ? `${response.status} ${response.statusText || ""}`.trim() : "";
+  let finalMsg = errorDetail ? statusText ? `[${statusText}] ${errorDetail}` : errorDetail : `\u8BF7\u6C42\u5931\u8D25: ${statusText || "\u672A\u77E5\u9519\u8BEF"}`;
+  const lower = finalMsg.toLowerCase();
+  const suggestions = [];
+  if (lower.includes("context_length") || lower.includes("maximum context") || lower.includes("token") && (lower.includes("limit") || lower.includes("exceed") || lower.includes("too large") || lower.includes("greater than"))) {
+    suggestions.push("\u4E0A\u4E0B\u6587\u8D85\u51FA\u6A21\u578B\u4E0A\u9650\uFF0C\u5EFA\u8BAE\u8C03\u5C0F max_tokens\u3001\u51CF\u5C11\u9644\u52A0\u4FE1\u606F\u6216\u5207\u6362\u5927\u4E0A\u4E0B\u6587\u6A21\u578B");
   }
-  return false;
+  if (lower.includes("image") || lower.includes("vision") || lower.includes("multimodal") || lower.includes("image_url")) {
+    suggestions.push("\u5F53\u524D\u6A21\u578B\u53EF\u80FD\u4E0D\u652F\u6301\u56FE\u7247\u8F93\u5165\uFF0C\u8BF7\u5728\u8BBE\u7F6E\u4E2D\u5173\u95ED\u300C\u53D1\u9001\u56FE\u7247\u300D\u6216\u66F4\u6362\u89C6\u89C9\u591A\u6A21\u6001\u6A21\u578B");
+  }
+  if (lower.includes("role") || lower.includes("system") || lower.includes("consecutive") || lower.includes("alternate") || lower.includes("must alternate")) {
+    suggestions.push("\u6D88\u606F\u683C\u5F0F\u6216\u89D2\u8272\u987A\u5E8F\u4E0D\u517C\u5BB9\uFF0C\u8BF7\u5C1D\u8BD5\u5F00\u542F\u300C\u5408\u5E76\u76F8\u90BB\u6D88\u606F\u300D\u6216\u300C\u5408\u5E76 System \u5230 User\u300D");
+  }
+  if (lower.includes("quota") || lower.includes("balance") || lower.includes("credit") || lower.includes("insufficient") || lower.includes("\u6B20\u8D39") || lower.includes("\u989D\u5EA6")) {
+    suggestions.push("API \u8D26\u6237\u989D\u5EA6\u4E0D\u8DB3\u6216\u5DF2\u6B20\u8D39");
+  }
+  if (lower.includes("model") && (lower.includes("not found") || lower.includes("does not exist") || lower.includes("invalid_model"))) {
+    suggestions.push("\u6A21\u578B\u540D\u79F0\u4E0D\u5B58\u5728\u6216\u4E2D\u8F6C\u7F51\u5173\u672A\u6620\u5C04\u8BE5\u6A21\u578B");
+  }
+  if (suggestions.length > 0) {
+    finalMsg += `
+\u{1F4A1} \u5EFA\u8BAE: ${suggestions.join("\uFF1B")}`;
+  }
+  return finalMsg;
 }
 function countImageParts(messages) {
   if (!Array.isArray(messages)) return 0;
@@ -18951,6 +19102,7 @@ async function executeTypedLLMRequest(data, requestType, responseEventName, upda
   const maxRetries = extension_settings16[extensionName].llm_retry_count ?? 0;
   let attempt = 0;
   let lastError = null;
+  let taskId = null;
   while (attempt <= maxRetries) {
     const controller = new AbortController();
     const signal = controller.signal;
@@ -18961,7 +19113,6 @@ async function executeTypedLLMRequest(data, requestType, responseEventName, upda
       requestType,
       id
     });
-    let taskId;
     if (attempt === 0) {
       taskId = taskQueue.addTask({
         name: `LLM: ${typeName}`,
@@ -18972,7 +19123,9 @@ async function executeTypedLLMRequest(data, requestType, responseEventName, upda
       taskQueue.updateStatus(taskId, TaskStatus.RUNNING);
       acquireFabLoading();
     } else {
-      llmTaskControllers.set(taskId, controller);
+      if (taskId) {
+        llmTaskControllers.set(taskId, controller);
+      }
     }
     const isAiAssistantRequest = String(id).startsWith("ai-assistant-") || String(id).length === 13;
     if (!isAiAssistantRequest && attempt === 0) {
@@ -19009,10 +19162,11 @@ async function executeTypedLLMRequest(data, requestType, responseEventName, upda
       const errorMsg = `${typeName}: API URL, API Key, \u6216 Model \u672A\u914D\u7F6E\u3002`;
       toastr.error(errorMsg);
       activeRequests.delete(requestKey);
-      if (attempt === 0) {
-        releaseFabLoading();
+      if (taskId) {
+        taskQueue.completeTask(taskId, false);
         llmTaskControllers.delete(taskId);
       }
+      releaseFabLoading();
       eventSource6.emit(responseEventName, { success: false, result: errorMsg, id });
       return;
     }
@@ -19069,29 +19223,13 @@ async function executeTypedLLMRequest(data, requestType, responseEventName, upda
         signal
       });
       if (!response.ok) {
+        let errorBodyText = "";
         try {
-          const errorData = await response.json();
-          if (errorData.error) {
-            let errorMsg;
-            if (typeof errorData.error === "object" && errorData.error.message) {
-              errorMsg = `${errorData.error.message}`;
-              const details = [];
-              if (errorData.error.type) details.push(`\u7C7B\u578B: ${errorData.error.type}`);
-              if (errorData.error.code) details.push(`\u4EE3\u7801: ${errorData.error.code}`);
-              if (details.length > 0) {
-                errorMsg += ` (${details.join(", ")})`;
-              }
-            } else {
-              errorMsg = `${JSON.stringify(errorData.error)}`;
-            }
-            throw new Error(errorMsg);
-          }
-        } catch (parseError) {
-          if (parseError.message.includes("\u7C7B\u578B:") || parseError.message.includes("\u4EE3\u7801:")) {
-            throw parseError;
-          }
+          errorBodyText = await response.text();
+        } catch (_readErr) {
         }
-        throw new Error(`\u8BF7\u6C42\u5931\u8D25: ${response.status} ${response.statusText}`);
+        const formattedError = extractApiErrorMessage(response, errorBodyText);
+        throw new Error(formattedError);
       }
       let reply = "";
       if (stream) {
@@ -19191,20 +19329,9 @@ async function executeTypedLLMRequest(data, requestType, responseEventName, upda
         }
       } else {
         const responseData = await response.json();
-        if (responseData.error) {
-          let errorMsg;
-          if (typeof responseData.error === "object" && responseData.error.message) {
-            errorMsg = `${responseData.error.message}`;
-            const details = [];
-            if (responseData.error.type) details.push(`\u7C7B\u578B: ${responseData.error.type}`);
-            if (responseData.error.code) details.push(`\u4EE3\u7801: ${responseData.error.code}`);
-            if (details.length > 0) {
-              errorMsg += ` (${details.join(", ")})`;
-            }
-          } else {
-            errorMsg = `${JSON.stringify(responseData.error)}`;
-          }
-          throw new Error(errorMsg);
+        if (responseData.error || !responseData.choices && (responseData.detail || responseData.message || responseData.msg)) {
+          const formattedError = extractApiErrorMessage(response, responseData);
+          throw new Error(formattedError);
         }
         if (isToolCallEnabled || responseData.choices?.[0]?.message?.tool_calls) {
           const normResult = normalizeNonStreamingToolCall(responseData, syntheticToolName, toolFields);
@@ -19263,8 +19390,10 @@ async function executeTypedLLMRequest(data, requestType, responseEventName, upda
     } catch (error) {
       activeRequests.delete(requestKey);
       if (error.name === "AbortError") {
-        taskQueue.updateStatus(taskId, TaskStatus.CANCELLED);
-        llmTaskControllers.delete(taskId);
+        if (taskId) {
+          taskQueue.updateStatus(taskId, TaskStatus.CANCELLED);
+          llmTaskControllers.delete(taskId);
+        }
         releaseFabLoading();
         eventSource6.emit(responseEventName, {
           success: false,
@@ -19289,12 +19418,19 @@ async function executeTypedLLMRequest(data, requestType, responseEventName, upda
         updateResultUI(errorMessage);
       }
       toastr.error(errorMessage);
-      taskQueue.completeTask(taskId, false);
-      llmTaskControllers.delete(taskId);
+      if (taskId) {
+        taskQueue.completeTask(taskId, false);
+        llmTaskControllers.delete(taskId);
+      }
       releaseFabLoading();
       eventSource6.emit(responseEventName, { success: false, result: errorMessage, id });
       return;
     }
+  }
+  if (taskId) {
+    taskQueue.completeTask(taskId, false);
+    llmTaskControllers.delete(taskId);
+    releaseFabLoading();
   }
 }
 async function executeDefaultLLMRequest(data, profileData, updateResultUI = null, channel = "default") {
@@ -19311,6 +19447,7 @@ async function executeDefaultLLMRequest(data, profileData, updateResultUI = null
   const maxRetries = extension_settings16[extensionName].llm_retry_count ?? 0;
   let attempt = 0;
   let lastError = null;
+  let taskId = null;
   while (attempt <= maxRetries) {
     const controller = new AbortController();
     const signal = controller.signal;
@@ -19321,7 +19458,6 @@ async function executeDefaultLLMRequest(data, profileData, updateResultUI = null
       channel,
       id
     });
-    let taskId;
     if (attempt === 0) {
       taskId = taskQueue.addTask({
         name: "LLM: \u5916\u90E8\u8BF7\u6C42",
@@ -19332,7 +19468,9 @@ async function executeDefaultLLMRequest(data, profileData, updateResultUI = null
       taskQueue.updateStatus(taskId, TaskStatus.RUNNING);
       acquireFabLoading();
     } else {
-      llmTaskControllers.set(taskId, controller);
+      if (taskId) {
+        llmTaskControllers.set(taskId, controller);
+      }
     }
     const isAiAssistantRequest = String(id).startsWith("ai-assistant-") || String(id).length === 13;
     if (!isAiAssistantRequest && attempt === 0) {
@@ -19368,10 +19506,11 @@ async function executeDefaultLLMRequest(data, profileData, updateResultUI = null
       const errorMsg = "API URL, API Key, \u6216 Model \u672A\u914D\u7F6E\u3002";
       toastr.error(errorMsg);
       activeRequests.delete(requestKey);
-      if (attempt === 0) {
-        releaseFabLoading();
+      if (taskId) {
+        taskQueue.completeTask(taskId, false);
         llmTaskControllers.delete(taskId);
       }
+      releaseFabLoading();
       eventSource6.emit(eventNames.LLM_EXECUTE_RESPONSE, { success: false, result: errorMsg, id });
       return;
     }
@@ -19433,25 +19572,20 @@ async function executeDefaultLLMRequest(data, profileData, updateResultUI = null
         signal
       });
       console.log("[DEBUG-SVC] \u2705 fetch \u54CD\u5E94\u5DF2\u6536\u5230, status:", response.status, response.statusText);
+      if (!response.ok) {
+        let errorBodyText = "";
+        try {
+          errorBodyText = await response.text();
+        } catch (_readErr) {
+        }
+        const formattedError = extractApiErrorMessage(response, errorBodyText);
+        throw new Error(formattedError);
+      }
       const responseData = await response.json();
       console.log("[DEBUG-SVC]   responseData \u5DF2\u89E3\u6790, choices \u6570\u91CF:", responseData.choices?.length);
-      if (responseData.error) {
-        let errorMsg;
-        if (typeof responseData.error === "object" && responseData.error.message) {
-          errorMsg = `${responseData.error.message}`;
-          const details = [];
-          if (responseData.error.type) details.push(`\u7C7B\u578B: ${responseData.error.type}`);
-          if (responseData.error.code) details.push(`\u4EE3\u7801: ${responseData.error.code}`);
-          if (details.length > 0) {
-            errorMsg += ` (${details.join(", ")})`;
-          }
-        } else {
-          errorMsg = `${JSON.stringify(responseData.error)}`;
-        }
-        throw new Error(errorMsg);
-      }
-      if (!response.ok) {
-        throw new Error(`\u8BF7\u6C42\u5931\u8D25: ${response.status} ${response.statusText}`);
+      if (responseData.error || !responseData.choices && (responseData.detail || responseData.message || responseData.msg)) {
+        const formattedError = extractApiErrorMessage(response, responseData);
+        throw new Error(formattedError);
       }
       let reply = "";
       if (isToolCallEnabled || responseData.choices?.[0]?.message?.tool_calls) {
@@ -19513,8 +19647,10 @@ async function executeDefaultLLMRequest(data, profileData, updateResultUI = null
       activeRequests.delete(requestKey);
       if (error.name === "AbortError") {
         console.log("LLM execute request aborted.");
-        taskQueue.updateStatus(taskId, TaskStatus.CANCELLED);
-        llmTaskControllers.delete(taskId);
+        if (taskId) {
+          taskQueue.updateStatus(taskId, TaskStatus.CANCELLED);
+          llmTaskControllers.delete(taskId);
+        }
         releaseFabLoading();
         eventSource6.emit(eventNames.LLM_EXECUTE_RESPONSE, {
           success: false,
@@ -19539,12 +19675,19 @@ async function executeDefaultLLMRequest(data, profileData, updateResultUI = null
         updateResultUI(errorMessage);
       }
       toastr.error(errorMessage);
-      taskQueue.completeTask(taskId, false);
-      llmTaskControllers.delete(taskId);
+      if (taskId) {
+        taskQueue.completeTask(taskId, false);
+        llmTaskControllers.delete(taskId);
+      }
       releaseFabLoading();
       eventSource6.emit(eventNames.LLM_EXECUTE_RESPONSE, { success: false, result: errorMessage, id });
       return;
     }
+  }
+  if (taskId) {
+    taskQueue.completeTask(taskId, false);
+    llmTaskControllers.delete(taskId);
+    releaseFabLoading();
   }
 }
 function createGetPromptHandler(requestType, responseEventName) {
@@ -21123,12 +21266,19 @@ async function onFetchModelsClick() {
         custom_include_headers: buildProxyIncludeHeaders(apiKey, customHeadersMap)
       })
     });
-    const data = await response.json();
-    if (data.error) {
-      throw new Error(data.error.message || JSON.stringify(data.error));
-    }
     if (!response.ok) {
-      throw new Error(`\u83B7\u53D6\u6A21\u578B\u5217\u8868\u5931\u8D25: ${response.status} ${response.statusText}`);
+      let errorBodyText = "";
+      try {
+        errorBodyText = await response.text();
+      } catch (_readErr) {
+      }
+      const formattedError = extractApiErrorMessage(response, errorBodyText);
+      throw new Error(`\u83B7\u53D6\u6A21\u578B\u5217\u8868\u5931\u8D25: ${formattedError}`);
+    }
+    const data = await response.json();
+    if (data.error || !data.data && (data.detail || data.message || data.msg)) {
+      const formattedError = extractApiErrorMessage(response, data);
+      throw new Error(`\u83B7\u53D6\u6A21\u578B\u5217\u8868\u5931\u8D25: ${formattedError}`);
     }
     const models = data.data || [];
     models.sort((a, b) => a.id.localeCompare(b.id));
@@ -21212,12 +21362,19 @@ async function onTestLLMClick() {
         signal
       });
     }
-    const data = await response.json();
-    if (data.error) {
-      throw new Error(data.error.message || JSON.stringify(data.error));
-    }
     if (!response.ok) {
-      throw new Error(`\u8BF7\u6C42\u5931\u8D25: ${response.status} ${response.statusText}`);
+      let errorBodyText = "";
+      try {
+        errorBodyText = await response.text();
+      } catch (_readErr) {
+      }
+      const formattedError = extractApiErrorMessage(response, errorBodyText);
+      throw new Error(formattedError);
+    }
+    const data = await response.json();
+    if (data.error || !data.choices && (data.detail || data.message || data.msg)) {
+      const formattedError = extractApiErrorMessage(response, data);
+      throw new Error(formattedError);
     }
     const reply = data.choices?.[0]?.message?.content || "\u672A\u6536\u5230\u6709\u6548\u56DE\u590D\u3002";
     resultTextarea.val(reply);
@@ -29156,6 +29313,25 @@ function setupCharacterControls(container) {
     document.getElementById("char_photo_upload_input")?.click();
   });
   container.find("#char_photo_upload_input").on("change", handleCharacterPhotoUpload);
+  container.find("#char_extra_media_toggle").on("click", function() {
+    const extraContainer = document.getElementById("char_extra_media_container");
+    const icon = this.querySelector("i");
+    if (!extraContainer) return;
+    const isHidden = window.getComputedStyle(extraContainer).display === "none";
+    if (isHidden) {
+      extraContainer.style.display = "flex";
+      if (icon) {
+        icon.className = "fa-solid fa-minus";
+      }
+      this.title = "\u6536\u8D77\u8BF4\u660E\u53CA\u97F3\u9891\u8BBE\u7F6E";
+    } else {
+      extraContainer.style.display = "none";
+      if (icon) {
+        icon.className = "fa-solid fa-plus";
+      }
+      this.title = "\u5C55\u5F00\u8BF4\u660E\u53CA\u97F3\u9891\u8BBE\u7F6E";
+    }
+  });
   container.find("#char_photo_description").on("input", function() {
     const settings5 = extension_settings27[extensionName];
     const preset = settings5.characterPresets?.[settings5.characterPresetId];
@@ -36961,14 +37137,28 @@ async function processImageLikeRequest(el, gestureId, requestType, title, llmFun
       await new Promise((resolve) => setTimeout(resolve, 1500));
     }
     const llmTimer = debugTimer(`LLM_${requestType.toUpperCase()}`, `LLM ${title}\u8BF7\u6C42${attempt > 0 ? ` (\u7B2C${attempt}\u6B21\u91CD\u8BD5)` : ""}`);
-    const llmResponse = await llmFunction(promt, { timeoutMs: 6e5 });
+    let llmResponse;
+    try {
+      llmResponse = await llmFunction(promt, { timeoutMs: 6e5 });
+    } catch (llmErr) {
+      llmTimer.end("LLM \u8BF7\u6C42\u5F02\u5E38\u5931\u8D25");
+      if (llmErr?.name === "AbortError" || llmErr?.message?.includes("aborted") || llmErr?.message?.includes("Request aborted")) {
+        console.log(`[promptReq] ${title} \u8BF7\u6C42\u5DF2\u88AB\u7528\u6237\u4E2D\u6B62`);
+        mainTimer.end("\u7528\u6237\u4E2D\u6B62");
+        return;
+      }
+      console.error(`[promptReq] ${title} \u8BF7\u6C42\u5931\u8D25:`, llmErr);
+      toastr.error(`${title} \u8BF7\u6C42\u5931\u8D25: ${llmErr?.message || "\u672A\u77E5\u9519\u8BEF"}`);
+      mainTimer.end("LLM \u8BF7\u6C42\u5931\u8D25");
+      return;
+    }
     llmTimer.end(`\u54CD\u5E94\u957F\u5EA6: ${llmResponse?.result?.length || 0}`);
-    if (llmResponse.testMode) {
+    if (llmResponse?.testMode) {
       debugBranch(requestType, "LLM\u8FD4\u56DE\u6D4B\u8BD5\u6A21\u5F0F", true);
       mainTimer.end("LLM \u6D4B\u8BD5\u6A21\u5F0F\u8FD4\u56DE");
       return;
     }
-    next_promt = llmResponse.result || "";
+    next_promt = llmResponse?.result || "";
     cleanedPrompt = removeThinkingTags(next_promt);
     images = [];
     if (requestType === "visual_mat_prep") {
@@ -40548,30 +40738,6 @@ ${keyword}`);
         _triggerGeneration2(button);
       }
       closeDialog();
-      return;
-    }
-    if (firstLine.includes("id:") || firstLine.includes("Overview")) {
-      sendButton.disabled = true;
-      toastr.info("\u68C0\u6D4B\u5230\u89C6\u9891\u914D\u7F6E\uFF0C\u6B63\u5728\u5904\u7406...");
-      processOverviewVideoGen(input.value, button, input).then(async (finalResult) => {
-        if (finalResult && finalResult.trim() !== "") {
-          button.dataset.video = finalResult;
-          button.dataset.activeMode = "video";
-          button.textContent = "\u751F\u6210\u89C6\u9891";
-          videoText = finalResult;
-          if (button.dataset.link) {
-            await updateItemImgVideo(button.dataset.link, finalResult);
-            await updateItemImgActiveMode(button.dataset.link, "video");
-          }
-          toastr.success("\u5DF2\u4F5C\u4E3A\u89C6\u9891\u914D\u7F6E\u5904\u7406\u5E76\u4FDD\u5B58\u5230\u89C6\u9891\u5C5E\u6027");
-          switchMode("video");
-        }
-      }).catch((err) => {
-        console.error("[OverviewVideoGen]", err);
-        toastr.error("\u5904\u7406\u5931\u8D25: " + err.message);
-      }).finally(() => {
-        sendButton.disabled = false;
-      });
       return;
     }
     toastr.info("\u6B63\u5728\u751F\u6210\u56FE\u50CF...");
@@ -48683,6 +48849,11 @@ var init_generation = __esm({
             toastr.error("\u52A0\u8F7D\u89C6\u9891\u751F\u6210\u6A21\u5757\u5931\u8D25: " + err.message);
           });
           return;
+        } else if (channel === "none") {
+          toastr.warning("\u89C6\u9891\u6E20\u9053\u5DF2\u8BBE\u7F6E\u4E3A\u300C\u65E0\u300D\uFF0C\u8DF3\u8FC7\u89C6\u9891\u751F\u6210\u3002\u5982\u9700\u751F\u6210\u89C6\u9891\u8BF7\u5728\u4E3B\u8981\u8BBE\u7F6E\u4E2D\u914D\u7F6E\u89C6\u9891\u6E20\u9053\u3002");
+          button.removeAttribute("data-loading");
+          button.textContent = "\u751F\u6210\u89C6\u9891";
+          return;
         } else {
           toastr.warning(`\u672A\u77E5\u7684\u89C6\u9891\u6E20\u9053: ${channel}`);
           button.removeAttribute("data-loading");
@@ -48729,44 +48900,6 @@ var init_generation = __esm({
           });
           return;
         }
-      }
-      const currentText = change || link || "";
-      if (currentText && (currentText.split("\n")[0].includes("id:") || currentText.split("\n")[0].includes("Overview"))) {
-        button.setAttribute("data-loading", "true");
-        button.textContent = "\u89E3\u6790\u7D20\u6750\u4E2D...";
-        Promise.resolve().then(() => (init_overviewVideoProcessor(), overviewVideoProcessor_exports)).then(({ processOverviewVideoGen: processOverviewVideoGen2 }) => {
-          processOverviewVideoGen2(currentText, button, null).then(async (finalResult) => {
-            if (finalResult && finalResult.trim() !== "") {
-              button.dataset.video = finalResult;
-              button.dataset.activeMode = "video";
-              button.textContent = "\u89C6\u9891\u751F\u6210\u4E2D...";
-              if (button.dataset.link) {
-                const { updateItemImgVideo: updateItemImgVideo2, updateItemImgActiveMode: updateItemImgActiveMode2 } = await Promise.resolve().then(() => (init_database(), database_exports));
-                await updateItemImgVideo2(button.dataset.link, finalResult);
-                await updateItemImgActiveMode2(button.dataset.link, "video");
-              }
-              toastr.success("\u89C6\u9891\u7D20\u6750\u914D\u7F6E\u5DF2\u751F\u6210");
-              button.removeAttribute("data-loading");
-              console.log("[OverviewVideoGen] \u89C6\u9891\u914D\u7F6E\u5904\u7406\u5B8C\u6210\uFF0C\u81EA\u52A8\u53D1\u8D77\u89C6\u9891\u751F\u6210");
-              setTimeout(() => {
-                triggerGeneration(button);
-              }, 50);
-            } else {
-              button.removeAttribute("data-loading");
-              button.textContent = "\u751F\u6210\u89C6\u9891";
-            }
-          }).catch((err) => {
-            console.error("[OverviewVideoGen]", err);
-            toastr.error("\u5904\u7406\u5931\u8D25: " + err.message);
-            button.removeAttribute("data-loading");
-            button.textContent = "\u751F\u6210\u89C6\u9891";
-          });
-        }).catch((err) => {
-          console.error("\u5BFC\u5165 overviewVideoProcessor \u5931\u8D25", err);
-          button.removeAttribute("data-loading");
-          button.textContent = "\u751F\u6210\u56FE\u7247";
-        });
-        return;
       }
       const startGenerationProcess = () => {
         console.log("Triggering generation for button:", button);
@@ -59058,7 +59191,7 @@ var init_mainSettingsModule = __esm({
 - imageGenInterval: \u6570\u5B57, \u751F\u56FE\u95F4\u9694\u65F6\u95F4\uFF08\u6BEB\u79D2\uFF09
 - randomYushe: \u5E03\u5C14\u5B57\u7B26\u4E32 "true"/"false", \u968F\u673A\u63D0\u793A\u8BCD\u9884\u8BBE\uFF08\u6BCF\u6B21\u751F\u56FE\u968F\u673A\u9009\u62E9\u9884\u8BBE\uFF09
 - aiAutonomousResolution: \u5E03\u5C14\u503C true/false, AI\u81EA\u4E3B\u5206\u8FA8\u7387\uFF08\u63A7\u5236\u662F\u5426\u7528\u63D0\u793A\u8BCD\u4E2D\u7684\u5206\u8FA8\u7387\u8986\u76D6\u8BBE\u7F6E\uFF09
-- videoChannel: \u5B57\u7B26\u4E32, \u53EF\u9009 "comfyui" / "runninghub", \u89C6\u9891\u6E20\u9053\u9009\u62E9
+- videoChannel: \u5B57\u7B26\u4E32, \u53EF\u9009 "none" / "comfyui" / "runninghub", \u89C6\u9891\u6E20\u9053\u9009\u62E9\uFF08none \u4E3A\u65E0\uFF0C\u4F1A\u9690\u85CF\u6240\u6709\u89C6\u9891\u76F8\u5173\u9875\u9762\uFF09
 - imageAlignment: \u5B57\u7B26\u4E32, \u53EF\u9009 "left" / "center" / "right"
 - startTag: \u5B57\u7B26\u4E32, \u56FE\u7247\u89E6\u53D1\u7684\u5F00\u59CB\u6807\u8BB0
 - endTag: \u5B57\u7B26\u4E32, \u56FE\u7247\u89E6\u53D1\u7684\u7ED3\u675F\u6807\u8BB0
@@ -59091,7 +59224,7 @@ var init_mainSettingsModule = __esm({
 - autoLLMImageGen\uFF08\u81EA\u52A8LLM\u8BF7\u6C42\u751F\u56FE\uFF09\uFF1A\u5F00\u542F\u540E\u5F53\u975E\u540C\u5C42\u6D88\u606F\u5339\u914D\u5230\u89E6\u53D1\u6807\u8BB0\u65F6\uFF0C\u81EA\u52A8\u8C03\u7528 LLM \u5C06\u6587\u672C\u53D1\u9001\u7ED9ai\u5E76\u751F\u6210\u56FE\u7247\u63D0\u793A\u8BCD\u3002
 - randomYushe\uFF08\u968F\u673A\u63D0\u793A\u8BCD\u9884\u8BBE\uFF09\uFF1A\u5F00\u542F\u540E\u6BCF\u6B21\u751F\u56FE\u65F6\u4ECE\u6240\u6709\u63D0\u793A\u8BCD\u9884\u8BBE\u4E2D\u968F\u673A\u9009\u62E9\u4E00\u4E2A\u4F7F\u7528\uFF0C\u800C\u975E\u4F7F\u7528\u5F53\u524D\u56FA\u5B9A\u7684\u9884\u8BBE\u3002\u9002\u5408\u5E0C\u671B\u6BCF\u6B21\u751F\u56FE\u98CE\u683C\u591A\u53D8\u7684\u573A\u666F\u3002
 - aiAutonomousResolution\uFF08AI\u81EA\u4E3B\u5206\u8FA8\u7387\uFF09\uFF1A\u5F00\u542F\u540E\uFF0C\u5F53\u751F\u56FE\u811A\u672C\u4ECE\u63D0\u793A\u8BCD\u4E2D\u63D0\u53D6\u5230\u5C3A\u5BF8\uFF08\u5982 832x1216\uFF09\u65F6\uFF0C\u5C06\u81EA\u52A8\u4F7F\u7528\u8BE5\u5C3A\u5BF8\u8986\u76D6\u56FA\u5B9A\u5206\u8FA8\u7387\u8BBE\u7F6E\u3002\u5173\u95ED\u65F6\u4E0D\u518D\u8986\u76D6\uFF0C\u4F46\u4ECD\u4F1A\u4ECE\u63D0\u793A\u8BCD\u4E2D\u5220\u9664\u8BE5\u5C3A\u5BF8\u6807\u8BB0\u3002\u9ED8\u8BA4\u5F00\u542F\u3002
-- videoChannel\uFF08\u89C6\u9891\u6E20\u9053\u9009\u62E9\uFF09\uFF1A\u63A7\u5236\u751F\u6210\u89C6\u9891\u65F6\u4F7F\u7528\u7684\u540E\u7AEF\u6E20\u9053\uFF0C\u53EF\u9009 ComfyUI \u6216 RunningHub\u3002
+- videoChannel\uFF08\u89C6\u9891\u6E20\u9053\u9009\u62E9\uFF09\uFF1A\u63A7\u5236\u751F\u6210\u89C6\u9891\u65F6\u4F7F\u7528\u7684\u540E\u7AEF\u6E20\u9053\uFF0C\u53EF\u9009 \u65E0(none)\u3001ComfyUI \u6216 RunningHub\u3002\u9009\u62E9\u65E0\u65F6\u5C06\u9690\u85CF\u6240\u6709\u89C6\u9891\u548C\u8D44\u4EA7\u76F8\u5173\u5BFC\u822A\u9875\u9762\u3002
 - imageGenInterval\uFF08\u751F\u56FE\u95F4\u9694\u65F6\u95F4\uFF09\uFF1A\u8FDE\u7EED\u751F\u56FE\u4E4B\u95F4\u7684\u6700\u5C0F\u95F4\u9694\uFF08\u6BEB\u79D2\uFF09\uFF0C\u9632\u6B62\u8BF7\u6C42\u8FC7\u4E8E\u9891\u7E41\u3002\u8BBE\u4E3A 0 \u5219\u4E0D\u9650\u5236\u3002
 - imageAlignment\uFF08\u56FE\u7247\u5BF9\u9F50\u65B9\u5F0F\uFF09\uFF1A\u63A7\u5236\u751F\u6210\u56FE\u7247\u5728\u804A\u5929\u6846\u4E2D\u7684\u5BF9\u9F50\u65B9\u5411\uFF0C\u53EF\u9009\u9760\u5DE6\u3001\u5C45\u4E2D\u3001\u9760\u53F3\u3002
 
@@ -59155,36 +59288,48 @@ var init_comfyuiWorkflowModule = __esm({
       name: "\u5DE5\u4F5C\u6D41\u52A9\u624B\u4E0E\u5360\u4F4D\u7B26\u89C4\u8303",
       summary: "\u5E2E\u52A9\u7528\u6237\u5206\u6790\u3001\u67E5\u770B\u3001\u7406\u89E3\u548C\u4FEE\u6539 ComfyUI \u4E0E RunningHub \u5DE5\u4F5C\u6D41\u4E2D\u7684\u53D8\u91CF\u53C2\u6570\uFF08%xxx% \u5360\u4F4D\u7B26\uFF09\u548C\u8282\u70B9\u914D\u7F6E\u3002\u5305\u542B\u667A\u80FD\u5206\u6790\u5DE5\u4F5C\u6D41\u7ED3\u6784\u3001\u626B\u63CF/\u66FF\u6362\u5360\u4F4D\u7B26\u3001\u7CBE\u786E\u7F16\u8F91/\u589E\u5220\u8282\u70B9\u3001\u5168\u5957\u4E2D\u82F1\u6587\u4E0E\u89C6\u9891\u5DE5\u4F5C\u6D41\u5360\u4F4D\u7B26\u6807\u51C6\uFF08\u79CD\u5B50\u3001\u6B65\u6570\u3001\u89C6\u9891\u6B65\u6570\u3001\u50CF\u7D20\u3001\u63D0\u793A\u8BCD\u3001\u56FE\u72471~9\u53CA\u63A7\u5236\u5F00\u5173\u3001\u97F3\u98911~3\u7B49\uFF09\u3002\u5F53\u7528\u6237\u63D0\u5230\u5DE5\u4F5C\u6D41\u3001ComfyUI\u53D8\u91CF\u3001RunningHub\u5DE5\u4F5C\u6D41\u3001\u5360\u4F4D\u7B26\u66FF\u6362\u3001\u8282\u70B9\u7F16\u8F91\u3001\u5C06\u5DE5\u4F5C\u6D41\u8F6C\u4E3A\u63D2\u4EF6\u6A21\u677F\u7B49\u9700\u6C42\u65F6\u52A0\u8F7D\u6B64\u6A21\u5757\u3002",
       commands: `
-\u3010\u5DE5\u4F5C\u6D41\u6A21\u5757\u53EF\u7528\u547D\u4EE4 (\u652F\u6301 target: "comfyui" | "runninghub"\uFF0C\u9ED8\u8BA4\u4E3A "comfyui")\u3011
+\u3010\u5DE5\u4F5C\u6D41\u6A21\u5757\u53EF\u7528\u547D\u4EE4\u3011
+- \u76EE\u6807\u540E\u7AEF target \u53C2\u6570\u652F\u6301\uFF1A
+  * "comfyui": ComfyUI \u57FA\u7840\u751F\u56FE\u5DE5\u4F5C\u6D41\uFF08\u9ED8\u8BA4\uFF09
+  * "comfyui_video" \u6216 "comfyui_img2vid": ComfyUI \u56FE\u751F\u89C6\u9891/\u89C6\u9891\u5DE5\u4F5C\u6D41\uFF08\u72EC\u7ACB\u9884\u8BBE\u6C60\uFF09
+  * "comfyui_ref2vid": ComfyUI \u53C2\u8003\u751F\u89C6\u9891\u5DE5\u4F5C\u6D41
+  * "runninghub": RunningHub \u57FA\u7840\u751F\u56FE\u5DE5\u4F5C\u6D41
+  * "runninghub_video": RunningHub \u89C6\u9891\u5DE5\u4F5C\u6D41
+\u26A0\uFE0F \u6781\u4E3A\u91CD\u8981\uFF1A\u5F53\u7528\u6237\u8981\u6C42\u67E5\u770B\u3001\u5206\u6790\u3001\u4FEE\u6539\u300C\u56FE\u751F\u89C6\u9891\u300D\u3001\u300C\u89C6\u9891\u5DE5\u4F5C\u6D41\u300D\u65F6\uFF0Ctarget \u5FC5\u987B\u6307\u5B9A\u4E3A "comfyui_video"\uFF01
 
 \u25A0 \u5DE5\u4F5C\u6D41\u7BA1\u7406\u4E0E\u5206\u6790\u547D\u4EE4 (\u9996\u9009\u7531 AI \u76F4\u63A5\u8BFB\u53D6\u5B8C\u6574\u5DE5\u4F5C\u6D41\u81EA\u4E3B\u5206\u6790)
 
-1. \u3010\u6838\u5FC3\u9996\u9009\u3011\u8BFB\u53D6\u6307\u5B9A\u5DE5\u4F5C\u6D41\u7684\u5B8C\u6574 JSON \u5185\u5BB9\uFF08\u7531 AI \u76F4\u63A5\u901A\u8BFB\u5168\u90E8\u8282\u70B9\u7ED3\u6784\u4E0E\u62D3\u6251\u8FDE\u7EBF\u81EA\u4E3B\u5206\u6790\uFF09\uFF1A
-- \u8BFB\u53D6 ComfyUI \u5DE5\u4F5C\u6D41\u5B8C\u6574 JSON:
+1. \u3010\u6838\u5FC3\u9996\u9009\u3011\u8BFB\u53D6\u6307\u5B9A\u5DE5\u4F5C\u6D41\u7684\u5B8C\u6574 JSON \u5185\u5BB9\uFF1A
+- \u8BFB\u53D6 ComfyUI \u751F\u56FE\u5DE5\u4F5C\u6D41:
 <SystemQuery>{"type": "workflow_read", "target": "comfyui", "name": "\u5DE5\u4F5C\u6D41\u540D\u79F0"}</SystemQuery>
-- \u8BFB\u53D6 RunningHub \u5DE5\u4F5C\u6D41\u5B8C\u6574 JSON:
+- \u8BFB\u53D6 ComfyUI \u56FE\u751F\u89C6\u9891\u5DE5\u4F5C\u6D41:
+<SystemQuery>{"type": "workflow_read", "target": "comfyui_video", "name": "\u5DE5\u4F5C\u6D41\u540D\u79F0"}</SystemQuery>
+- \u8BFB\u53D6 RunningHub \u5DE5\u4F5C\u6D41:
 <SystemQuery>{"type": "workflow_read", "target": "runninghub", "name": "\u5DE5\u4F5C\u6D41\u540D\u79F0"}</SystemQuery>
 
 2. \u5217\u51FA\u5DF2\u4FDD\u5B58\u7684\u5DE5\u4F5C\u6D41\u9884\u8BBE\u5217\u8868\uFF1A
-- ComfyUI \u5DE5\u4F5C\u6D41\u5217\u8868:
+- ComfyUI \u751F\u56FE\u5DE5\u4F5C\u6D41\u5217\u8868:
 <SystemQuery>{"type": "workflow_list", "target": "comfyui"}</SystemQuery>
+- ComfyUI \u56FE\u751F\u89C6\u9891\u5DE5\u4F5C\u6D41\u5217\u8868:
+<SystemQuery>{"type": "workflow_list", "target": "comfyui_video"}</SystemQuery>
 - RunningHub \u5DE5\u4F5C\u6D41\u5217\u8868:
 <SystemQuery>{"type": "workflow_list", "target": "runninghub"}</SystemQuery>
 
 3. \u626B\u63CF\u6307\u5B9A\u5DE5\u4F5C\u6D41\u4E2D\u7684\u6240\u6709 %xxx% \u5360\u4F4D\u7B26\u53D8\u91CF\uFF1A
-<SystemQuery>{"type": "workflow_variables", "target": "comfyui", "name": "\u5DE5\u4F5C\u6D41\u540D\u79F0"}</SystemQuery>
+<SystemQuery>{"type": "workflow_variables", "target": "comfyui_video", "name": "\u5DE5\u4F5C\u6D41\u540D\u79F0"}</SystemQuery>
 
 4. \u5728\u6307\u5B9A\u5DE5\u4F5C\u6D41\u4E2D\u5168\u5C40\u66FF\u6362\u67D0\u4E2A\u5360\u4F4D\u7B26\u7684\u503C\uFF1A
-<SystemQuery>{"type": "workflow_replace_var", "target": "comfyui", "name": "\u5DE5\u4F5C\u6D41\u540D\u79F0", "variable": "%prompt%", "value": "\u65B0\u7684\u503C"}</SystemQuery>
+<SystemQuery>{"type": "workflow_replace_var", "target": "comfyui_video", "name": "\u5DE5\u4F5C\u6D41\u540D\u79F0", "variable": "%prompt%", "value": "\u65B0\u7684\u503C"}</SystemQuery>
 
 5. \u4FDD\u5B58/\u521B\u5EFA\u5DE5\u4F5C\u6D41\u5185\u5BB9\uFF08\u5168\u91CF\u8986\u76D6\u6216\u65B0\u5EFA\uFF09\uFF1A
-<SystemQuery>{"type": "workflow_save", "target": "runninghub", "name": "\u65B0\u5DE5\u4F5C\u6D41\u540D\u79F0", "content": "\u5B8C\u6574\u7684\u5DE5\u4F5C\u6D41JSON\u5B57\u7B26\u4E32"}</SystemQuery>
+<SystemQuery>{"type": "workflow_save", "target": "comfyui_video", "name": "\u65B0\u89C6\u9891\u5DE5\u4F5C\u6D41\u540D\u79F0", "content": "\u5B8C\u6574\u7684\u5DE5\u4F5C\u6D41JSON\u5B57\u7B26\u4E32"}</SystemQuery>
 
 6. \u5207\u6362\u5F53\u524D\u4F7F\u7528\u7684\u5DE5\u4F5C\u6D41\u9884\u8BBE\uFF1A
-- \u5207\u6362 ComfyUI: <SystemQuery>{"type": "write", "path": "workerid", "value": "\u5DE5\u4F5C\u6D41\u540D\u79F0"}</SystemQuery>
+- \u5207\u6362 ComfyUI \u751F\u56FE\u5DE5\u4F5C\u6D41: <SystemQuery>{"type": "write", "path": "workerid", "value": "\u5DE5\u4F5C\u6D41\u540D\u79F0"}</SystemQuery>
+- \u5207\u6362 ComfyUI \u56FE\u751F\u89C6\u9891\u5DE5\u4F5C\u6D41: <SystemQuery>{"type": "write", "path": "comfyui_img2vid_workerid", "value": "\u5DE5\u4F5C\u6D41\u540D\u79F0"}</SystemQuery>
 - \u5207\u6362 RunningHub: <SystemQuery>{"type": "write", "path": "runninghub_workerid", "value": "\u5DE5\u4F5C\u6D41\u540D\u79F0"}</SystemQuery>
 
-\u25A0 \u8282\u70B9\u7EA7\u522B\u7CBE\u786E\u64CD\u4F5C\u547D\u4EE4\uFF08\u63A8\u8350\u4F7F\u7528\uFF0C\u4FDD\u7559\u5176\u4F59\u8F93\u5165\u5B57\u6BB5\uFF09
+\u25A0 \u8282\u70B9\u7EA7\u522B\u7CBE\u786E\u64CD\u4F5C\u547D\u4EE4\uFF08\u63A8\u8350\u4F7F\u7528\uFF0C\u4FDD\u7559\u5176\u4F59\u8F93\u5165\u5B57\u6BB5\uFF1B\u89C6\u9891\u5DE5\u4F5C\u6D41\u8BF7\u5C06 target \u6539\u4E3A "comfyui_video"\uFF09
 
 \u26A0\uFE0F \u91CD\u8981\u51C6\u5219\uFF1A\u4FEE\u6539\u8282\u70B9\u53C2\u6570\u65F6\uFF0C\u53EA\u4FEE\u6539\u6307\u5B9A\u7684 inputKey\uFF0C\u5FC5\u987B\u4FDD\u7559 inputs \u4E2D\u7684\u5176\u4ED6\u6240\u6709\u8FDE\u7EBF\u4E0E\u5B57\u6BB5\uFF01
 
@@ -65636,7 +65781,7 @@ var init_configDescriptions = __esm({
       collapseImage: "\u662F\u5426\u9ED8\u8BA4\u6298\u53E0\u5927\u56FE\u7247 (\u5E03\u5C14\u5B57\u7B26\u4E32 'true'/'false')",
       // 后端工作模式
       mode: "\u5F53\u524D\u9009\u62E9\u7684\u56FE\u50CF\u751F\u6210\u540E\u7AEF\uFF0C\u53EF\u9009\u503C\u4E3A\uFF1A'comfyui', 'novelai', 'sd', 'banana'",
-      videoChannel: "\u5F53\u524D\u9009\u62E9\u7684\u89C6\u9891\u751F\u6210\u6E20\u9053\uFF0C\u53EF\u9009\u503C\u4E3A\uFF1A'comfyui', 'runninghub'",
+      videoChannel: "\u5F53\u524D\u9009\u62E9\u7684\u89C6\u9891\u751F\u6210\u6E20\u9053\uFF0C\u53EF\u9009\u503C\u4E3A\uFF1A'none', 'comfyui', 'runninghub'",
       client: "\u5BA2\u6237\u7AEF\u73AF\u5883\u6807\u8BC6\uFF0C\u5E38\u89C4\u4E3A 'browser','jiuguan'\u51B3\u5B9A\u4E86\u4ECE\u54EA\u91CC\u53D1\u8D77\u751F\u56FE\u8BF7\u6C42\uFF0C\u5982\u679C\u4ECE\u6D4F\u89C8\u5668\u53D1\u60C5\u8BF7\u6C42\u53EF\u80FD\u4F1A\u78B0\u5230\u8DE8\u57DF\u95EE\u9898",
       scriptEnabled: "\u4E3B\u63D2\u4EF6\u529F\u80FD\u662F\u5426\u5DF2\u5F00\u542F (\u5E03\u5C14\u503C)",
       // API 连接地址
@@ -65769,6 +65914,9 @@ var init_configDescriptions = __esm({
       imageGenInterval: "\u8FDE\u7EED\u751F\u56FE\u7684\u95F4\u9694\u65F6\u95F4\uFF08\u6BEB\u79D2\uFF09\uFF0C\u9632\u6B62\u8BF7\u6C42\u8FC7\u5FEB\uFF0C\u9ED8\u8BA4 100",
       defaultCharDemand: "\u9ED8\u8BA4\u7684\u89D2\u8272\u9700\u6C42\u63CF\u8FF0\u6587\u672C\uFF0C\u4EC5\u5728\u7528\u6237\u672A\u8F93\u5165\u4EFB\u4F55\u5185\u5BB9\u65F6\u751F\u6548",
       defaultImageDemand: "\u9ED8\u8BA4\u7684\u56FE\u7247\u9700\u6C42\u63CF\u8FF0\u6587\u672C\uFF0C\u4EC5\u5728\u7528\u6237\u672A\u8F93\u5165\u4EFB\u4F55\u5185\u5BB9\u65F6\u751F\u6548",
+      defaultVisualPrepDemand: "\u9ED8\u8BA4\u7684\u89C6\u6750\u51C6\u5907\u9700\u6C42\u63CF\u8FF0\u6587\u672C\uFF0C\u4EC5\u5728\u7528\u6237\u672A\u8F93\u5165\u4EFB\u4F55\u5185\u5BB9\u65F6\u751F\u6548",
+      current_demand_profile: "\u5F53\u524D\u6FC0\u6D3B\u7684\u9700\u6C42\u9884\u8BBE\u540D\u79F0",
+      demand_profiles: "\u9ED8\u8BA4\u7528\u6237\u9700\u6C42\u9884\u8BBE\u96C6\u5408\uFF08\u5305\u542B\u751F\u6210\u89D2\u8272\u3001\u751F\u6210\u56FE\u7247\u3001\u89C6\u6750\u51C6\u5907\u7B49\u9700\u6C42\uFF09",
       // 大对象/集合类配置（供 browse 时附带说明）
       workers: "ComfyUI \u5DE5\u4F5C\u6D41\u9884\u8BBE\u96C6\u5408\uFF0C\u5305\u542B\u7528\u6237\u5B9A\u4E49\u7684\u6240\u6709\u5DE5\u4F5C\u6D41\u914D\u7F6E",
       yushe: "\u63D0\u793A\u8BCD\u9884\u8BBE\u96C6\u5408\uFF0C\u5305\u542B\u6B63\u9762/\u8D1F\u9762\u63D0\u793A\u8BCD\u7B49\u914D\u7F6E\u6A21\u677F",
@@ -66065,15 +66213,22 @@ function refreshWorkflowSelectors(settings4) {
       idKey: "editWorkerid",
       contentKey: "editWorker"
     });
+  }
+  const comfyVideoStorage = settings4.comfyui_video_workers || settings4.workers;
+  if (comfyVideoStorage) {
     updateWorkerSelectGroup({
       selectId: "comfyui_img2vid_workerid",
-      storage: settings4.workers,
-      idKey: "comfyui_img2vid_workerid"
+      textareaId: "comfyui_img2vid_worker",
+      storage: comfyVideoStorage,
+      idKey: "comfyui_img2vid_workerid",
+      contentKey: "comfyui_img2vid_worker"
     });
     updateWorkerSelectGroup({
       selectId: "comfyui_ref2vid_workerid",
-      storage: settings4.workers,
-      idKey: "comfyui_ref2vid_workerid"
+      textareaId: "comfyui_ref2vid_worker",
+      storage: comfyVideoStorage,
+      idKey: "comfyui_ref2vid_workerid",
+      contentKey: "comfyui_ref2vid_worker"
     });
   }
   if (settings4.runninghub_workers) {
@@ -66727,6 +66882,8 @@ function refreshInputFields(changedSettings, settings4) {
     // 正则页面
     "defaultCharDemand": "ch-default-char-demand",
     "defaultImageDemand": "ch-default-image-demand",
+    "defaultVisualPrepDemand": "ch-default-visual-prep-demand",
+    "current_demand_profile": "ch-demand-profile-select",
     // 词库页面
     "vocabulary_search_limit": "vocabulary_search_limit",
     // 悬浮球页面
@@ -67432,14 +67589,66 @@ var init_configRegexBridge = __esm({
 // utils/configHelper/configWorkflowBridge.js
 
 
-function getWorkflowStorage(target = "comfyui") {
+function getWorkflowStorage(target = "comfyui", name = "") {
   const s = extension_settings101[extensionName];
   if (!s) return { storage: null, currentId: "", currentIdKey: "", currentContentKey: "", targetLabel: "", settings: null };
-  const isRunningHub = String(target || "").toLowerCase() === "runninghub";
-  const storageKey = isRunningHub ? "runninghub_workers" : "workers";
-  const currentIdKey = isRunningHub ? "runninghub_workerid" : "workerid";
-  const currentContentKey = isRunningHub ? "runninghub_worker" : "worker";
-  const targetLabel = isRunningHub ? "RunningHub" : "ComfyUI";
+  const t = String(target || "").toLowerCase().trim();
+  let isRunningHub = false;
+  let isVideo = false;
+  let isRef2Vid = false;
+  if (t.includes("runninghub") || t.includes("rh")) {
+    isRunningHub = true;
+    if (t.includes("ref") || t.includes("\u53C2\u8003")) {
+      isRef2Vid = true;
+    } else if (t.includes("vid") || t.includes("video") || t.includes("\u89C6\u9891") || t.includes("img2vid")) {
+      isVideo = true;
+    }
+  } else {
+    if (t.includes("ref") || t.includes("\u53C2\u8003")) {
+      isRef2Vid = true;
+    } else if (t.includes("vid") || t.includes("video") || t.includes("\u89C6\u9891") || t.includes("img2vid")) {
+      isVideo = true;
+    }
+  }
+  if (!isRunningHub && !isVideo && !isRef2Vid && name) {
+    const inCommon = s.workers && name in s.workers;
+    const inVideo = s.comfyui_video_workers && name in s.comfyui_video_workers;
+    if (!inCommon && inVideo) {
+      isVideo = true;
+    }
+  }
+  let storageKey = "workers";
+  let currentIdKey = "workerid";
+  let currentContentKey = "worker";
+  let targetLabel = "ComfyUI";
+  if (isRunningHub) {
+    storageKey = "runninghub_workers";
+    if (isRef2Vid) {
+      currentIdKey = "runninghub_ref2vid_workerid";
+      currentContentKey = "runninghub_ref2vid_worker";
+      targetLabel = "RunningHub\u53C2\u8003\u751F\u89C6\u9891";
+    } else if (isVideo) {
+      currentIdKey = "runninghub_img2vid_workerid";
+      currentContentKey = "runninghub_img2vid_worker";
+      targetLabel = "RunningHub\u56FE\u751F\u89C6\u9891";
+    } else {
+      currentIdKey = "runninghub_workerid";
+      currentContentKey = "runninghub_worker";
+      targetLabel = "RunningHub";
+    }
+  } else {
+    if (isRef2Vid) {
+      storageKey = "comfyui_video_workers";
+      currentIdKey = "comfyui_ref2vid_workerid";
+      currentContentKey = "comfyui_ref2vid_worker";
+      targetLabel = "ComfyUI\u53C2\u8003\u751F\u89C6\u9891";
+    } else if (isVideo) {
+      storageKey = "comfyui_video_workers";
+      currentIdKey = "comfyui_img2vid_workerid";
+      currentContentKey = "comfyui_img2vid_worker";
+      targetLabel = "ComfyUI\u56FE\u751F\u89C6\u9891";
+    }
+  }
   if (!s[storageKey]) {
     s[storageKey] = {};
   }
@@ -67468,10 +67677,17 @@ function getWorkflowList(target = "comfyui") {
     result += `  - ${name} (${size}\u5B57\u7B26)${isCurrent}
 `;
   }
+  const t = String(target || "").toLowerCase().trim();
+  const s = extension_settings101[extensionName];
+  if ((t === "comfyui" || t === "") && s?.comfyui_video_workers) {
+    const videoCount = Object.keys(s.comfyui_video_workers).length;
+    result += `
+\u{1F4A1} \u63D0\u793A\uFF1A\u53E6\u6709\u3010ComfyUI \u56FE\u751F\u89C6\u9891\u5DE5\u4F5C\u6D41\u3011\u9884\u8BBE\u6C60 (\u5171 ${videoCount} \u4E2A)\uFF0C\u53EF\u7528 target: "comfyui_video" \u5355\u72EC\u67E5\u8BE2\u4E0E\u7F16\u8F91\u3002`;
+  }
   return result;
 }
 function readWorkflow(name, target = "comfyui") {
-  const { storage, targetLabel } = getWorkflowStorage(target);
+  const { storage, targetLabel } = getWorkflowStorage(target, name);
   if (!storage) return `\u274C \u672A\u627E\u5230 ${targetLabel} \u5DE5\u4F5C\u6D41\u6570\u636E\u3002`;
   if (!name) return "\u274C \u8BF7\u6307\u5B9A\u5DE5\u4F5C\u6D41\u540D\u79F0\u3002";
   if (!(name in storage)) {
@@ -67484,7 +67700,7 @@ function readWorkflow(name, target = "comfyui") {
 ${content}`;
 }
 function scanWorkflowVariables(name, target = "comfyui") {
-  const { storage, targetLabel } = getWorkflowStorage(target);
+  const { storage, targetLabel } = getWorkflowStorage(target, name);
   if (!storage) return `\u274C \u672A\u627E\u5230 ${targetLabel} \u5DE5\u4F5C\u6D41\u6570\u636E\u3002`;
   if (!name) return "\u274C \u8BF7\u6307\u5B9A\u5DE5\u4F5C\u6D41\u540D\u79F0\u3002";
   if (!(name in storage)) {
@@ -67584,7 +67800,7 @@ function scanWorkflowVariables(name, target = "comfyui") {
   return result;
 }
 function replaceWorkflowVariable(name, variable, value, target = "comfyui") {
-  const { storage, currentId, currentContentKey, targetLabel, settings: settings4 } = getWorkflowStorage(target);
+  const { storage, currentId, currentContentKey, targetLabel, settings: settings4 } = getWorkflowStorage(target, name);
   if (!storage) return `\u274C \u672A\u627E\u5230 ${targetLabel} \u5DE5\u4F5C\u6D41\u6570\u636E\u3002`;
   if (!name) return "\u274C \u8BF7\u6307\u5B9A\u5DE5\u4F5C\u6D41\u540D\u79F0\u3002";
   if (!variable) return "\u274C \u8BF7\u6307\u5B9A\u53D8\u91CF\u540D\u3002";
@@ -67625,7 +67841,7 @@ function replaceWorkflowVariable(name, variable, value, target = "comfyui") {
   return `\u2705 \u5DF2\u5728 [${targetLabel}] \u5DE5\u4F5C\u6D41 "${name}" \u4E2D\u66FF\u6362 %${cleanVar}% (${count} \u5904)`;
 }
 function saveWorkflow(name, content, target = "comfyui") {
-  const { storage, currentId, currentContentKey, targetLabel, settings: settings4 } = getWorkflowStorage(target);
+  const { storage, currentId, currentContentKey, targetLabel, settings: settings4 } = getWorkflowStorage(target, name);
   if (!storage || !settings4) return `\u274C \u63D2\u4EF6\u914D\u7F6E\u5C1A\u672A\u521D\u59CB\u5316\u3002`;
   if (!name) return "\u274C \u8BF7\u6307\u5B9A\u5DE5\u4F5C\u6D41\u540D\u79F0\u3002";
   if (!content) return "\u274C \u8BF7\u63D0\u4F9B\u5DE5\u4F5C\u6D41\u5185\u5BB9\u3002";
@@ -67647,7 +67863,7 @@ function saveWorkflow(name, content, target = "comfyui") {
   return `\u2705 [${targetLabel}] \u5DE5\u4F5C\u6D41 "${name}" \u5DF2${isNew ? "\u521B\u5EFA" : "\u4FDD\u5B58"} (${content.length}\u5B57\u7B26)`;
 }
 function listWorkflowNodes(name, target = "comfyui") {
-  const { storage, targetLabel } = getWorkflowStorage(target);
+  const { storage, targetLabel } = getWorkflowStorage(target, name);
   if (!storage) return `\u274C \u672A\u627E\u5230 ${targetLabel} \u5DE5\u4F5C\u6D41\u6570\u636E\u3002`;
   if (!name) return "\u274C \u8BF7\u6307\u5B9A\u5DE5\u4F5C\u6D41\u540D\u79F0\u3002";
   if (!(name in storage)) {
@@ -67682,7 +67898,7 @@ function listWorkflowNodes(name, target = "comfyui") {
   return result;
 }
 function readWorkflowNode(name, nodeId, target = "comfyui") {
-  const { storage, targetLabel } = getWorkflowStorage(target);
+  const { storage, targetLabel } = getWorkflowStorage(target, name);
   if (!storage) return `\u274C \u672A\u627E\u5230 ${targetLabel} \u5DE5\u4F5C\u6D41\u6570\u636E\u3002`;
   if (!name) return "\u274C \u8BF7\u6307\u5B9A\u5DE5\u4F5C\u6D41\u540D\u79F0\u3002";
   if (!nodeId) return "\u274C \u8BF7\u6307\u5B9A\u8282\u70B9ID\u3002";
@@ -67710,7 +67926,7 @@ function readWorkflowNode(name, nodeId, target = "comfyui") {
   return result;
 }
 function updateWorkflowNodeInput(name, nodeId, inputKey, value, target = "comfyui") {
-  const { storage, currentId, currentContentKey, targetLabel, settings: settings4 } = getWorkflowStorage(target);
+  const { storage, currentId, currentContentKey, targetLabel, settings: settings4 } = getWorkflowStorage(target, name);
   if (!storage) return `\u274C \u672A\u627E\u5230 ${targetLabel} \u5DE5\u4F5C\u6D41\u6570\u636E\u3002`;
   if (!name) return "\u274C \u8BF7\u6307\u5B9A\u5DE5\u4F5C\u6D41\u540D\u79F0\u3002";
   if (!nodeId) return "\u274C \u8BF7\u6307\u5B9A\u8282\u70B9ID\u3002";
@@ -67760,7 +67976,7 @@ function updateWorkflowNodeInput(name, nodeId, inputKey, value, target = "comfyu
   return result;
 }
 function batchUpdateWorkflowNodes(name, updates, target = "comfyui") {
-  const { storage, currentId, currentContentKey, targetLabel, settings: settings4 } = getWorkflowStorage(target);
+  const { storage, currentId, currentContentKey, targetLabel, settings: settings4 } = getWorkflowStorage(target, name);
   if (!storage) return `\u274C \u672A\u627E\u5230 ${targetLabel} \u5DE5\u4F5C\u6D41\u6570\u636E\u3002`;
   if (!name) return "\u274C \u8BF7\u6307\u5B9A\u5DE5\u4F5C\u6D41\u540D\u79F0\u3002";
   if (!Array.isArray(updates) || updates.length === 0) {
@@ -67826,7 +68042,7 @@ function batchUpdateWorkflowNodes(name, updates, target = "comfyui") {
   return result;
 }
 function deleteWorkflowNode(name, nodeId, target = "comfyui") {
-  const { storage, currentId, currentContentKey, targetLabel, settings: settings4 } = getWorkflowStorage(target);
+  const { storage, currentId, currentContentKey, targetLabel, settings: settings4 } = getWorkflowStorage(target, name);
   if (!storage) return `\u274C \u672A\u627E\u5230 ${targetLabel} \u5DE5\u4F5C\u6D41\u6570\u636E\u3002`;
   if (!name) return "\u274C \u8BF7\u6307\u5B9A\u5DE5\u4F5C\u6D41\u540D\u79F0\u3002";
   if (!nodeId) return "\u274C \u8BF7\u6307\u5B9A\u8282\u70B9ID\u3002";
@@ -67860,7 +68076,7 @@ function deleteWorkflowNode(name, nodeId, target = "comfyui") {
   return `\u2705 \u5DF2\u5728 [${targetLabel}] \u4E2D\u5220\u9664\u8282\u70B9 [${nodeId}] ${title}`;
 }
 function addWorkflowNode(name, nodeId, nodeData, target = "comfyui") {
-  const { storage, currentId, currentContentKey, targetLabel, settings: settings4 } = getWorkflowStorage(target);
+  const { storage, currentId, currentContentKey, targetLabel, settings: settings4 } = getWorkflowStorage(target, name);
   if (!storage) return `\u274C \u672A\u627E\u5230 ${targetLabel} \u5DE5\u4F5C\u6D41\u6570\u636E\u3002`;
   if (!name) return "\u274C \u8BF7\u6307\u5B9A\u5DE5\u4F5C\u6D41\u540D\u79F0\u3002";
   if (!nodeId) return "\u274C \u8BF7\u6307\u5B9A\u8282\u70B9ID\u3002";
@@ -67898,7 +68114,8 @@ function addWorkflowNode(name, nodeId, nodeData, target = "comfyui") {
 function analyzeWorkflow(contentOrName, target = "comfyui") {
   let jsonStr = "";
   let workflowName = "";
-  const { storage, targetLabel } = getWorkflowStorage(target);
+  const potentialName = typeof contentOrName === "string" && !contentOrName.trim().startsWith("{") ? contentOrName.trim() : "";
+  const { storage, targetLabel } = getWorkflowStorage(target, potentialName);
   if (storage && contentOrName in storage) {
     jsonStr = storage[contentOrName];
     workflowName = contentOrName;
@@ -81360,6 +81577,8 @@ init_ui_common();
 // utils/settings/taskManager.js
 init_taskQueue();
 init_config();
+init_fab();
+init_fabBubble();
 
 
 var statusIcons = {
@@ -81463,6 +81682,13 @@ function handleCancelTask(taskId) {
       console.log("[TaskManager] \u5DF2\u89E6\u53D1\u76F4\u8FDE\u53D6\u6D88\u4E8B\u4EF6");
     }
   }
+  if (taskQueue.getRunningCount() === 0) {
+    try {
+      stopFabLoading(false);
+      refreshBubbleState();
+    } catch (_e) {
+    }
+  }
   toastr.info("\u4EFB\u52A1\u5DF2\u53D6\u6D88");
 }
 function handleCancelAll() {
@@ -81470,6 +81696,12 @@ function handleCancelAll() {
   taskQueue.cancelAllQueued();
   for (const task of runningTasks) {
     handleCancelTask(task.id);
+  }
+  try {
+    stopFabLoading(true);
+    refreshBubbleState();
+  } catch (e) {
+    console.warn("[TaskManager] \u5168\u90E8\u53D6\u6D88\u590D\u4F4D\u5F02\u5E38:", e);
   }
   toastr.info("\u5DF2\u53D6\u6D88\u6240\u6709\u4EFB\u52A1");
 }
@@ -81597,7 +81829,8 @@ async function handleExportLog() {
 `;
   settingsInfo += `- AI\u81EA\u4E3B\u5206\u8FA8\u7387: ${isSettingTrue(settings4.aiAutonomousResolution) ? "\u662F" : "\u5426"}
 `;
-  settingsInfo += `- \u89C6\u9891\u6E20\u9053: ${settings4.videoChannel || "comfyui"}
+  const displayChannel = settings4.videoChannel === "none" ? "\u65E0 (none)" : settings4.videoChannel || "comfyui";
+  settingsInfo += `- \u89C6\u9891\u6E20\u9053: ${displayChannel}
 `;
   settingsInfo += `- \u751F\u56FE\u95F4\u9694\u65F6\u95F4\uFF08\u6BEB\u79D2\uFF09: ${settings4.imageGenInterval || "0"}
 `;
@@ -83120,6 +83353,123 @@ function handleImageUpload2(presetName, settings4, container) {
 // utils/settings/prompt.js
 init_configDatabase();
 init_novelaiTokenCalculator();
+
+// utils/settings/presetBox.js
+var isGlobalListenerBound = false;
+function setupPresetBoxes(container = document) {
+  const $container4 = $(container);
+  const wrappers = $container4.hasClass("st-chatu8-preset-box-wrapper") ? $container4 : $container4.find(".st-chatu8-preset-box-wrapper");
+  wrappers.each(function() {
+    const wrapper = $(this);
+    if (wrapper.data("preset-box-initialized")) return;
+    wrapper.data("preset-box-initialized", true);
+    const toggleBtn = wrapper.find(".st-chatu8-preset-box-btn");
+    const dropdown = wrapper.find(".st-chatu8-preset-box-dropdown");
+    const closeBtn = wrapper.find(".st-chatu8-preset-box-close");
+    toggleBtn.off("click.presetbox").on("click.presetbox", function(e) {
+      e.stopPropagation();
+      const isOpen = dropdown.hasClass("is-open");
+      closeAllPresetBoxes();
+      if (!isOpen) {
+        openPresetBox(wrapper);
+      }
+    });
+    closeBtn.off("click.presetbox").on("click.presetbox", function(e) {
+      e.stopPropagation();
+      closePresetBox(wrapper);
+    });
+    dropdown.find(".st-chatu8-preset-box-item").off("click.presetbox-item").on("click.presetbox-item", function() {
+      setTimeout(() => {
+        closePresetBox(wrapper);
+      }, 120);
+    });
+  });
+  if (!isGlobalListenerBound) {
+    $(document).on("click.presetbox-global", function(e) {
+      if (!$(e.target).closest(".st-chatu8-preset-box-wrapper").length) {
+        closeAllPresetBoxes();
+      }
+    });
+    let resizeTimer = null;
+    $(window).on("resize.presetbox", function() {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        const openWrapper = $(".st-chatu8-preset-box-wrapper").filter(function() {
+          return $(this).find(".st-chatu8-preset-box-dropdown.is-open").length > 0;
+        });
+        if (openWrapper.length) {
+          const dropdown = openWrapper.find(".st-chatu8-preset-box-dropdown");
+          adjustPresetBoxPosition(openWrapper, dropdown);
+        }
+      }, 100);
+    });
+    isGlobalListenerBound = true;
+  }
+}
+function openPresetBox(wrapper) {
+  const toggleBtn = wrapper.find(".st-chatu8-preset-box-btn");
+  const dropdown = wrapper.find(".st-chatu8-preset-box-dropdown");
+  toggleBtn.addClass("is-active");
+  if (dropdown[0]) {
+    dropdown[0].style.setProperty("--st-preset-box-shift-x", "0px");
+  }
+  dropdown.addClass("is-open");
+  adjustPresetBoxPosition(wrapper, dropdown);
+}
+function closePresetBox(wrapper) {
+  const toggleBtn = wrapper.find(".st-chatu8-preset-box-btn");
+  const dropdown = wrapper.find(".st-chatu8-preset-box-dropdown");
+  toggleBtn.removeClass("is-active");
+  dropdown.removeClass("is-open");
+  if (dropdown[0]) {
+    dropdown[0].style.removeProperty("--st-preset-box-shift-x");
+    dropdown[0].style.removeProperty("transform-origin");
+  }
+}
+function closeAllPresetBoxes() {
+  $(".st-chatu8-preset-box-btn.is-active").removeClass("is-active");
+  const openDropdowns = $(".st-chatu8-preset-box-dropdown.is-open");
+  openDropdowns.each(function() {
+    this.style.removeProperty("--st-preset-box-shift-x");
+    this.style.removeProperty("transform-origin");
+  });
+  openDropdowns.removeClass("is-open");
+}
+function adjustPresetBoxPosition(wrapper, dropdown) {
+  if (!dropdown.length || !dropdown.hasClass("is-open")) return;
+  requestAnimationFrame(() => {
+    const el = dropdown[0];
+    if (!el) return;
+    el.style.setProperty("--st-preset-box-shift-x", "0px");
+    const rect = el.getBoundingClientRect();
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+    const safeMargin = 10;
+    let minLeft = safeMargin;
+    let maxRight = viewportWidth - safeMargin;
+    const modal = wrapper.closest(".st-chatu8-modal-content");
+    if (modal.length) {
+      const modalRect = modal[0].getBoundingClientRect();
+      minLeft = Math.max(safeMargin, modalRect.left + safeMargin);
+      maxRight = Math.min(viewportWidth - safeMargin, modalRect.right - safeMargin);
+    }
+    let shiftX = 0;
+    if (rect.left < minLeft) {
+      shiftX = minLeft - rect.left;
+    }
+    if (rect.right + shiftX > maxRight) {
+      shiftX = Math.max(minLeft - rect.left, maxRight - rect.right);
+    }
+    const roundedShift = Math.round(shiftX);
+    el.style.setProperty("--st-preset-box-shift-x", `${roundedShift}px`);
+    if (roundedShift > 30) {
+      el.style.transformOrigin = "top left";
+    } else {
+      el.style.removeProperty("transform-origin");
+    }
+  });
+}
+
+// utils/settings/prompt.js
 var generationTabs2 = ["sd", "novelai", "comfyui", "runninghub"];
 function stripChineseAnnotations2(text) {
   if (!text) return "";
@@ -83326,6 +83676,7 @@ function handleResultClick3(inputEl, resultsEl, tag) {
   setTimeout(() => inputEl.setSelectionRange(newCursorPosition, newCursorPosition), 0);
 }
 function initPromptSettings(settingsModal, settings4) {
+  setupPresetBoxes(settingsModal);
   document.addEventListener("click", (event) => {
     if (!event.target.closest(".st-chatu8-field-col")) {
       $(".ch-autocomplete-results").hide();
@@ -83714,6 +84065,62 @@ function st_chatu8_tishici_import(settings4) {
     reader.readAsText(file);
   };
   input.click();
+}
+
+// utils/settings/collapsibleSection.js
+var STORAGE_PREFIX = "st_chatu8_section_collapsed_";
+function isSectionCollapsed(sectionId, defaultCollapsed = true) {
+  if (!sectionId) return defaultCollapsed;
+  try {
+    const saved = localStorage.getItem(STORAGE_PREFIX + sectionId);
+    if (saved !== null) {
+      return saved === "true";
+    }
+  } catch (e) {
+    console.warn("[Chatu8] \u8BFB\u53D6\u6A21\u5757\u6298\u53E0\u72B6\u6001\u5931\u8D25:", e);
+  }
+  return defaultCollapsed;
+}
+function setSectionCollapsed(sectionId, collapsed) {
+  if (!sectionId) return;
+  try {
+    localStorage.setItem(STORAGE_PREFIX + sectionId, collapsed ? "true" : "false");
+  } catch (e) {
+    console.warn("[Chatu8] \u4FDD\u5B58\u6A21\u5757\u6298\u53E0\u72B6\u6001\u5931\u8D25:", e);
+  }
+}
+function initCollapsibleSections(container) {
+  const $root = container ? $(container) : $(document);
+  $root.find(".st-chatu8-collapsible-section").each(function() {
+    const $section = $(this);
+    const sectionId = $section.data("section-id");
+    const initialHasCollapsed = $section.hasClass("is-collapsed");
+    const shouldBeCollapsed = sectionId ? isSectionCollapsed(sectionId, initialHasCollapsed) : initialHasCollapsed;
+    if (shouldBeCollapsed) {
+      $section.addClass("is-collapsed");
+    } else {
+      $section.removeClass("is-collapsed");
+    }
+  });
+  $(document).off("click.chatu8Collapsible", ".st-chatu8-collapsible-section .st-chatu8-section-header").on("click.chatu8Collapsible", ".st-chatu8-collapsible-section .st-chatu8-section-header", function(e) {
+    if ($(e.target).closest("button, select, input, a, .st-chatu8-preset-box-wrapper").length > 0) {
+      return;
+    }
+    const $header = $(this);
+    const $section = $header.closest(".st-chatu8-collapsible-section");
+    if (!$section.length) return;
+    const isCurrentlyCollapsed = $section.hasClass("is-collapsed");
+    const nextCollapsed = !isCurrentlyCollapsed;
+    if (nextCollapsed) {
+      $section.addClass("is-collapsed");
+    } else {
+      $section.removeClass("is-collapsed");
+    }
+    const sectionId = $section.data("section-id");
+    if (sectionId) {
+      setSectionCollapsed(sectionId, nextCollapsed);
+    }
+  });
 }
 
 // utils/settings/image_upload.js
@@ -91699,7 +92106,14 @@ function initRunningHubUI(settingsModal) {
   }
   const instanceTypeEl = document.getElementById("runninghub_instance_type");
   if (instanceTypeEl) {
-    instanceTypeEl.value = settings4.runninghub_instance_type || "default";
+    const validTypes = ["default", "plus"];
+    let curType = settings4.runninghub_instance_type || "default";
+    if (!validTypes.includes(curType)) {
+      curType = "default";
+      settings4.runninghub_instance_type = "default";
+      saveSettingsDebounced52();
+    }
+    instanceTypeEl.value = curType;
     $(instanceTypeEl).off("change.rh_inst").on("change.rh_inst", (e) => {
       settings4.runninghub_instance_type = e.target.value;
       saveSettingsDebounced52();
@@ -91724,13 +92138,14 @@ function initRunningHubUI(settingsModal) {
       return;
     }
     let html = `
-            <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 10px 12px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                    <span style="font-size: 12px; font-weight: 600; color: var(--st-chatu8-text-primary, #fff);">
-                        <i class="fa-solid fa-chart-line" style="color: #ff9800; margin-right: 5px;"></i>\u672C\u5730\u4EFB\u52A1 RH \u5E01\u6D88\u8017\u7EDF\u8BA1
+            <div class="st-chatu8-rh-dashboard">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.06);">
+                    <span style="font-size: 12px; font-weight: 600; color: var(--st-chatu8-text-primary, #fff); display: flex; align-items: center; gap: 6px;">
+                        <i class="fa-solid fa-chart-line" style="color: #ff9800;"></i>
+                        <span>\u672C\u5730\u4EFB\u52A1 RH \u5E01\u6D88\u8017\u7EDF\u8BA1</span>
                     </span>
-                    <span style="font-size: 11px; color: var(--st-chatu8-text-secondary, #aaa);">
-                        \u5B9E\u65F6\u7D2F\u8BA1 \xB7 \u6C38\u4E45\u8BB0\u5F55
+                    <span style="font-size: 11px; color: var(--st-chatu8-text-secondary, #94a3b8); opacity: 0.85;">
+                        <i class="fa-regular fa-clock" style="margin-right: 4px;"></i>\u5B9E\u65F6\u7D2F\u8BA1 \xB7 \u6C38\u4E45\u8BB0\u5F55
                     </span>
                 </div>
                 <div style="display: flex; flex-direction: column; gap: 8px;">
@@ -91740,40 +92155,39 @@ function initRunningHubUI(settingsModal) {
       const stats = getKeyConsumptionStats(key);
       const localLimit = getKeyLocalLimit(key);
       html += `
-                <div style="padding: 8px 10px; background: rgba(0,0,0,0.18); border-radius: 4px; border: 1px solid rgba(255,255,255,0.06); display: flex; justify-content: space-between; align-items: center; gap: 10px;">
-                    <div style="flex: 1; min-width: 0;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; margin-bottom: 4px;">
-                            <span style="font-family: monospace; font-weight: 500; color: var(--st-chatu8-text-primary, #fff);" title="${escapeHtml6(key)}">
-                                <i class="fa-solid fa-key" style="color: #4caf50; margin-right: 4px;"></i>Key #${idx + 1}: ${maskedKey}
+                <div class="st-chatu8-rh-card">
+                    <div style="flex: 1; min-width: 0; width: 100%;">
+                        <div class="st-chatu8-rh-card-header">
+                            <span class="rh-key-title" style="font-family: monospace; font-size: 12px; font-weight: 600; color: var(--st-chatu8-text-primary, #f1f5f9); display: flex; align-items: center; gap: 6px;" title="${escapeHtml6(key)}">
+                                <i class="fa-solid fa-key" style="color: #10b981;"></i>Key #${idx + 1}: ${maskedKey}
                             </span>
-                            <span style="color: var(--st-chatu8-text-secondary, #888);">
-                                \u5168\u90E8\u5386\u53F2: <strong style="color: #e0e0e0;">${stats.total}</strong> RH
-                            </span>
+                            <div class="st-chatu8-rh-limit-group">
+                                <span class="st-chatu8-rh-limit-label">
+                                    <i class="fa-solid fa-gauge-high" style="color: #60a5fa; margin-right: 3px; font-size: 10px;"></i>\u4E3B\u52A8\u5E76\u53D1\u9650\u5236
+                                </span>
+                                <div style="display: flex; align-items: center; gap: 4px;">
+                                    <input type="number" min="0" max="100" class="rh-local-limit-input"
+                                           data-key="${escapeHtml6(key)}"
+                                           value="${localLimit > 0 ? localLimit : ""}"
+                                           placeholder="\u4E0D\u9650"
+                                           title="\u672C\u5730\u4E3B\u52A8\u5E76\u53D1\u9650\u5236 (\u7559\u7A7A\u62160\u4E3A\u4E0D\u9650\uFF0C\u9075\u5FAA\u5B98\u65B9\u5E76\u53D1\u4E0A\u9650)" />
+                                    <span style="font-size: 11px; color: var(--st-chatu8-text-secondary, #94a3b8);">\u8DEF</span>
+                                </div>
+                            </div>
                         </div>
-                        <div style="display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; align-items: center;">
-                            <span style="background: rgba(255, 152, 0, 0.15); color: #ffa726; padding: 1px 6px; border-radius: 3px;">
+                        <div class="st-chatu8-rh-badge-grid">
+                            <span class="st-chatu8-rh-badge badge-today">
                                 \u{1F4C5} \u5F53\u5929: <strong>${stats.today}</strong> RH
                             </span>
-                            <span style="background: rgba(255, 87, 34, 0.15); color: #ff7043; padding: 1px 6px; border-radius: 3px;">
+                            <span class="st-chatu8-rh-badge badge-7d">
                                 \u{1F4C8} 7\u5929: <strong>${stats.sevenDays}</strong> RH
                             </span>
-                            <span style="background: rgba(233, 30, 99, 0.15); color: #ec407a; padding: 1px 6px; border-radius: 3px;">
+                            <span class="st-chatu8-rh-badge badge-30d">
                                 \u{1F4CA} 30\u5929: <strong>${stats.thirtyDays}</strong> RH
                             </span>
-                        </div>
-                    </div>
-                    <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 3px; border-left: 1px dashed rgba(255,255,255,0.1); padding-left: 10px; min-width: 90px;">
-                        <span style="font-size: 11px; font-weight: 500; color: var(--st-chatu8-text-primary, inherit); white-space: nowrap;">
-                            \u4E3B\u52A8\u5E76\u53D1\u9650\u5236
-                        </span>
-                        <div style="display: flex; align-items: center; gap: 3px;">
-                            <input type="number" min="0" max="100" class="st-chatu8-input rh-local-limit-input"
-                                   data-key="${escapeHtml6(key)}"
-                                   value="${localLimit > 0 ? localLimit : ""}"
-                                   placeholder="\u4E0D\u9650"
-                                   title="\u672C\u5730\u4E3B\u52A8\u5E76\u53D1\u9650\u5236 (\u7559\u7A7A\u62160\u4E3A\u4E0D\u9650\uFF0C\u9075\u5FAA\u5B98\u65B9)"
-                                   style="width: 54px; height: 24px; font-size: 13px; font-weight: bold; text-align: center; padding: 1px 4px; border-radius: 4px; color: #111 !important; background: #ffffff !important; border: 1px solid rgba(0,0,0,0.3) !important;" />
-                            <span style="font-size: 11px; font-weight: 500; color: var(--st-chatu8-text-primary, inherit);">\u8DEF</span>
+                            <span class="st-chatu8-rh-badge badge-total" title="\u8BE5 Key \u672C\u5730\u603B\u8BA1\u6D88\u8017 RH \u5E01">
+                                \u{1F4DC} \u5168\u90E8\u5386\u53F2: <strong>${stats.total}</strong> RH
+                            </span>
                         </div>
                     </div>
                 </div>
@@ -91884,61 +92298,61 @@ function initRunningHubUI(settingsModal) {
           const keyStats = getKeyConsumptionStats(res.key);
           const localLimit = getKeyLocalLimit(res.key);
           html += `
-                            <div style="padding: 10px 12px; border-radius: 6px; border: 1px solid rgba(76, 175, 80, 0.35); background: rgba(76, 175, 80, 0.08); display: flex; justify-content: space-between; align-items: stretch; gap: 12px;">
-                                <div style="flex: 1; min-width: 0;">
-                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                                        <span style="font-family: monospace; font-size: 12px; font-weight: bold; color: var(--st-chatu8-text-primary, #fff);" title="\u5B8C\u6574Key: ${res.key}">
-                                            <i class="fa-solid fa-key" style="color: #4caf50; margin-right: 5px;"></i>Key #${res.index}: ${maskedKey}
+                            <div class="st-chatu8-rh-card" style="padding: 12px 14px; border-color: rgba(16, 185, 129, 0.25); background: linear-gradient(135deg, rgba(16, 185, 129, 0.08) 0%, rgba(16, 185, 129, 0.02) 100%); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);">
+                                <div style="flex: 1; min-width: 0; width: 100%;">
+                                    <div class="st-chatu8-rh-card-header">
+                                        <span class="rh-key-title" style="font-family: monospace; font-size: 12px; font-weight: 600; color: var(--st-chatu8-text-primary, #f1f5f9); display: flex; align-items: center; gap: 6px;" title="\u5B8C\u6574Key: ${res.key}">
+                                            <i class="fa-solid fa-key" style="color: #10b981;"></i>Key #${res.index}: ${maskedKey}
                                         </span>
-                                        <span style="font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(76, 175, 80, 0.2); color: #4caf50; font-weight: 500;">
-                                            ${apiType}
-                                        </span>
-                                    </div>
-                                    <div style="display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; align-items: center;">
-                                        <span style="background: rgba(0, 150, 136, 0.15); color: #26a69a; padding: 2px 8px; border-radius: 4px; font-weight: 500;">
-                                            \u{1F680} \u6700\u5927\u5E76\u53D1: <strong style="font-size: 13px;">${limit}</strong>
-                                        </span>
-                                        <span style="background: ${available >= 1 ? "rgba(76, 175, 80, 0.15)" : "rgba(244, 67, 54, 0.15)"}; color: ${available >= 1 ? "#4caf50" : "#f44336"}; padding: 2px 8px; border-radius: 4px; font-weight: 500;">
-                                            \u{1F7E2} \u53EF\u7528\u5E76\u53D1: <strong style="font-size: 13px;">${available}</strong>
-                                        </span>
-                                        <span style="background: rgba(156, 39, 176, 0.15); color: #ba68c8; padding: 2px 8px; border-radius: 4px;">
-                                            \u26A1 \u8FDC\u7AEF\u4EFB\u52A1: <strong>\u8FD0\u884C\u4E2D ${running} / \u6392\u961F ${queued}</strong>
-                                        </span>
-                                        <span style="background: rgba(255, 193, 7, 0.15); color: #ffc107; padding: 2px 8px; border-radius: 4px; font-weight: 500;">
-                                            \u{1FA99} RH\u5E01: <strong style="font-size: 13px;">${remainCoins}</strong>
-                                        </span>
-                                        <span style="background: rgba(33, 150, 243, 0.15); color: #42a5f5; padding: 2px 8px; border-radius: 4px;">
-                                            \u{1F4B5} \u94B1\u5305: <strong>${remainMoney} ${currency}</strong>
-                                        </span>
-                                        <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed rgba(255,255,255,0.1); width: 100%; display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; align-items: center;">
-                                            <span style="color: var(--st-chatu8-text-secondary, #aaa); font-weight: 500;"><i class="fa-solid fa-chart-simple" style="color: #ff9800; margin-right: 4px;"></i>\u672C\u5730\u4EFB\u52A1\u6D88\u8017:</span>
-                                            <span style="background: rgba(255, 152, 0, 0.15); color: #ffa726; padding: 1px 6px; border-radius: 3px;">
-                                                \u5F53\u5929: <strong>${keyStats.today}</strong> RH
+                                        <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                                            <span style="font-size: 11px; padding: 2px 8px; border-radius: 6px; background: rgba(16, 185, 129, 0.2); color: #34d399; font-weight: 600; border: 1px solid rgba(16, 185, 129, 0.3); white-space: nowrap;">
+                                                ${apiType}
                                             </span>
-                                            <span style="background: rgba(255, 87, 34, 0.15); color: #ff7043; padding: 1px 6px; border-radius: 3px;">
-                                                7\u5929: <strong>${keyStats.sevenDays}</strong> RH
-                                            </span>
-                                            <span style="background: rgba(233, 30, 99, 0.15); color: #ec407a; padding: 1px 6px; border-radius: 3px;">
-                                                30\u5929: <strong>${keyStats.thirtyDays}</strong> RH
-                                            </span>
-                                            <span style="background: rgba(158, 158, 158, 0.15); color: #bdbdbd; padding: 1px 6px; border-radius: 3px;">
-                                                \u603B\u7D2F\u8BA1: <strong>${keyStats.total}</strong> RH
-                                            </span>
+                                            <div class="st-chatu8-rh-limit-group">
+                                                <span class="st-chatu8-rh-limit-label">
+                                                    <i class="fa-solid fa-gauge-high" style="color: #60a5fa; margin-right: 3px; font-size: 10px;"></i>\u4E3B\u52A8\u5E76\u53D1\u9650\u5236
+                                                </span>
+                                                <div style="display: flex; align-items: center; gap: 4px;">
+                                                    <input type="number" min="0" max="100" class="rh-local-limit-input" 
+                                                           data-key="${escapeHtml6(res.key)}" 
+                                                           value="${localLimit > 0 ? localLimit : ""}" 
+                                                           placeholder="\u4E0D\u9650" 
+                                                           title="\u9650\u5236\u672C\u5730\u540C\u65F6\u8FD0\u884C\u7684\u4EFB\u52A1\u6570\uFF08\u7559\u7A7A\u62160\u4E3A\u4E0D\u9650\uFF0C\u9075\u5FAA\u5B98\u65B9\u5E76\u53D1\u4E0A\u9650\uFF09" />
+                                                    <span style="font-size: 11px; color: var(--st-chatu8-text-secondary, #94a3b8);">\u8DEF</span>
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
-                                <div style="display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 6px; padding-left: 12px; border-left: 1px dashed rgba(255,255,255,0.12); min-width: 105px;">
-                                    <span style="font-size: 11px; font-weight: 600; color: var(--st-chatu8-text-primary, inherit); white-space: nowrap;">
-                                        <i class="fa-solid fa-gauge" style="color: #667eea; margin-right: 3px;"></i>\u4E3B\u52A8\u5E76\u53D1\u9650\u5236
-                                    </span>
-                                    <div style="display: flex; align-items: center; gap: 4px;">
-                                        <input type="number" min="0" max="100" class="st-chatu8-input rh-local-limit-input" 
-                                               data-key="${escapeHtml6(res.key)}" 
-                                               value="${localLimit > 0 ? localLimit : ""}" 
-                                               placeholder="\u4E0D\u9650" 
-                                               title="\u9650\u5236\u672C\u5730\u540C\u65F6\u8FD0\u884C\u7684\u4EFB\u52A1\u6570\uFF08\u7559\u7A7A\u62160\u4E3A\u4E0D\u9650\uFF0C\u9075\u5FAA\u5B98\u65B9\u5E76\u53D1\u4E0A\u9650\uFF09"
-                                               style="width: 58px; height: 26px; font-size: 14px; font-weight: bold; text-align: center; padding: 2px 4px; border-radius: 4px; color: #111 !important; background: #ffffff !important; border: 1px solid rgba(0,0,0,0.3) !important;" />
-                                        <span style="font-size: 11px; font-weight: 500; color: var(--st-chatu8-text-primary, inherit);">\u8DEF</span>
+                                    <div style="display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; align-items: center; margin-bottom: 8px;">
+                                        <span class="st-chatu8-rh-badge" style="background: rgba(20, 184, 166, 0.15); color: #2dd4bf; border-color: rgba(20, 184, 166, 0.25);">
+                                            \u{1F680} \u6700\u5927\u5E76\u53D1: <strong>${limit}</strong>
+                                        </span>
+                                        <span class="st-chatu8-rh-badge" style="background: ${available >= 1 ? "rgba(16, 185, 129, 0.15)" : "rgba(239, 68, 68, 0.15)"}; color: ${available >= 1 ? "#34d399" : "#f87171"}; border-color: ${available >= 1 ? "rgba(16, 185, 129, 0.25)" : "rgba(239, 68, 68, 0.25)"};">
+                                            \u{1F7E2} \u53EF\u7528\u5E76\u53D1: <strong>${available}</strong>
+                                        </span>
+                                        <span class="st-chatu8-rh-badge" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border-color: rgba(168, 85, 247, 0.25);">
+                                            \u26A1 \u8FDC\u7AEF\u4EFB\u52A1: <strong>\u8FD0\u884C\u4E2D ${running} / \u6392\u961F ${queued}</strong>
+                                        </span>
+                                        <span class="st-chatu8-rh-badge" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24; border-color: rgba(245, 158, 11, 0.25);">
+                                            \u{1FA99} RH\u5E01: <strong>${remainCoins}</strong>
+                                        </span>
+                                        <span class="st-chatu8-rh-badge" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa; border-color: rgba(59, 130, 246, 0.25);">
+                                            \u{1F4B5} \u94B1\u5305: <strong>${remainMoney} ${currency}</strong>
+                                        </span>
+                                    </div>
+                                    <div class="st-chatu8-rh-badge-grid" style="padding-top: 6px; border-top: 1px dashed rgba(255,255,255,0.08);">
+                                        <span class="st-chatu8-rh-badge badge-today">
+                                            \u{1F4C5} \u5F53\u5929: <strong>${keyStats.today}</strong> RH
+                                        </span>
+                                        <span class="st-chatu8-rh-badge badge-7d">
+                                            \u{1F4C8} 7\u5929: <strong>${keyStats.sevenDays}</strong> RH
+                                        </span>
+                                        <span class="st-chatu8-rh-badge badge-30d">
+                                            \u{1F4CA} 30\u5929: <strong>${keyStats.thirtyDays}</strong> RH
+                                        </span>
+                                        <span class="st-chatu8-rh-badge badge-total">
+                                            \u{1F4DC} \u5168\u90E8\u5386\u53F2: <strong>${keyStats.total}</strong> RH
+                                        </span>
                                     </div>
                                 </div>
                             </div>
@@ -99872,6 +100286,7 @@ var gestureMatchThresholdSlider;
 var gestureMatchThresholdValue;
 var imageGenDemandEnabledSwitch;
 var visualPrepDemandEnabledSwitch;
+var demandProfileSelect;
 var defaultCharDemandTextarea;
 var defaultImageDemandTextarea;
 var defaultVisualPrepDemandTextarea;
@@ -101312,16 +101727,180 @@ function onGestureMatchThresholdChange() {
   extension_settings88[extensionName].gestureMatchThreshold = parseInt(value, 10);
   saveSettingsDebounced58();
 }
+function ensureDemandProfiles() {
+  const settings4 = extension_settings88[extensionName];
+  if (!settings4.demand_profiles || typeof settings4.demand_profiles !== "object") {
+    settings4.demand_profiles = {
+      "\u9ED8\u8BA4": {
+        defaultCharDemand: settings4.defaultCharDemand ?? "",
+        defaultImageDemand: settings4.defaultImageDemand ?? "",
+        defaultVisualPrepDemand: settings4.defaultVisualPrepDemand ?? ""
+      }
+    };
+  }
+  if (!settings4.current_demand_profile || !settings4.demand_profiles[settings4.current_demand_profile]) {
+    const profileNames = Object.keys(settings4.demand_profiles);
+    settings4.current_demand_profile = profileNames.length > 0 ? profileNames[0] : "\u9ED8\u8BA4";
+    if (!settings4.demand_profiles[settings4.current_demand_profile]) {
+      settings4.demand_profiles[settings4.current_demand_profile] = {
+        defaultCharDemand: settings4.defaultCharDemand ?? "",
+        defaultImageDemand: settings4.defaultImageDemand ?? "",
+        defaultVisualPrepDemand: settings4.defaultVisualPrepDemand ?? ""
+      };
+    }
+  }
+}
+function applyCurrentDemandProfileToUI() {
+  ensureDemandProfiles();
+  const settings4 = extension_settings88[extensionName];
+  const currentName = settings4.current_demand_profile;
+  const profile = settings4.demand_profiles[currentName] || {
+    defaultCharDemand: "",
+    defaultImageDemand: "",
+    defaultVisualPrepDemand: ""
+  };
+  settings4.defaultCharDemand = profile.defaultCharDemand ?? "";
+  settings4.defaultImageDemand = profile.defaultImageDemand ?? "";
+  settings4.defaultVisualPrepDemand = profile.defaultVisualPrepDemand ?? "";
+  if (defaultCharDemandTextarea) defaultCharDemandTextarea.val(settings4.defaultCharDemand);
+  if (defaultImageDemandTextarea) defaultImageDemandTextarea.val(settings4.defaultImageDemand);
+  if (defaultVisualPrepDemandTextarea) defaultVisualPrepDemandTextarea.val(settings4.defaultVisualPrepDemand);
+}
+function loadDemandProfiles(selectTargetProfile = null) {
+  ensureDemandProfiles();
+  const settings4 = extension_settings88[extensionName];
+  const profiles = settings4.demand_profiles;
+  let currentName = selectTargetProfile || settings4.current_demand_profile;
+  if (!profiles[currentName]) {
+    currentName = Object.keys(profiles)[0] || "\u9ED8\u8BA4";
+  }
+  settings4.current_demand_profile = currentName;
+  if (!demandProfileSelect) return;
+  demandProfileSelect.empty();
+  Object.keys(profiles).forEach((name) => {
+    const option = new Option(name, name, name === currentName, name === currentName);
+    demandProfileSelect.append(option);
+  });
+  demandProfileSelect.val(currentName);
+  applyCurrentDemandProfileToUI();
+}
+function onDemandProfileSelectChange() {
+  const profileName = $(this).val();
+  if (!profileName) return;
+  const settings4 = extension_settings88[extensionName];
+  if (settings4.demand_profiles?.[profileName]) {
+    settings4.current_demand_profile = profileName;
+    applyCurrentDemandProfileToUI();
+    saveSettingsDebounced58();
+  }
+}
+function onNewDemandProfileClick() {
+  stylInput("\u8BF7\u8F93\u5165\u65B0\u7684\u9700\u6C42\u9884\u8BBE\u540D\u79F0").then((newName) => {
+    if (!newName || !newName.trim()) return;
+    const name = newName.trim();
+    ensureDemandProfiles();
+    const settings4 = extension_settings88[extensionName];
+    if (settings4.demand_profiles[name]) {
+      toastr.error(`\u9884\u8BBE "${name}" \u5DF2\u5B58\u5728\u3002`);
+      return;
+    }
+    settings4.demand_profiles[name] = {
+      defaultCharDemand: defaultCharDemandTextarea?.val() ?? "",
+      defaultImageDemand: defaultImageDemandTextarea?.val() ?? "",
+      defaultVisualPrepDemand: defaultVisualPrepDemandTextarea?.val() ?? ""
+    };
+    settings4.current_demand_profile = name;
+    saveSettingsDebounced58();
+    loadDemandProfiles(name);
+    toastr.success(`\u9700\u6C42\u9884\u8BBE "${name}" \u5DF2\u521B\u5EFA\u5E76\u9009\u4E2D\u3002`);
+  });
+}
+function onRenameDemandProfileClick() {
+  ensureDemandProfiles();
+  const settings4 = extension_settings88[extensionName];
+  const currentName = settings4.current_demand_profile;
+  stylInput(`\u8BF7\u8F93\u5165\u65B0\u7684\u9884\u8BBE\u540D\u79F0\uFF08\u539F\u540D\u79F0\uFF1A${currentName}\uFF09`, currentName).then((newName) => {
+    if (!newName || !newName.trim()) return;
+    const name = newName.trim();
+    if (name === currentName) return;
+    if (settings4.demand_profiles[name]) {
+      toastr.error(`\u9884\u8BBE "${name}" \u5DF2\u5B58\u5728\u3002`);
+      return;
+    }
+    settings4.demand_profiles[name] = settings4.demand_profiles[currentName];
+    delete settings4.demand_profiles[currentName];
+    settings4.current_demand_profile = name;
+    saveSettingsDebounced58();
+    loadDemandProfiles(name);
+    toastr.success(`\u9884\u8BBE "${currentName}" \u5DF2\u91CD\u547D\u540D\u4E3A "${name}"\u3002`);
+  });
+}
+function onSaveDemandProfileClick() {
+  ensureDemandProfiles();
+  const settings4 = extension_settings88[extensionName];
+  const currentName = settings4.current_demand_profile;
+  settings4.demand_profiles[currentName] = {
+    defaultCharDemand: defaultCharDemandTextarea?.val() ?? "",
+    defaultImageDemand: defaultImageDemandTextarea?.val() ?? "",
+    defaultVisualPrepDemand: defaultVisualPrepDemandTextarea?.val() ?? ""
+  };
+  settings4.defaultCharDemand = settings4.demand_profiles[currentName].defaultCharDemand;
+  settings4.defaultImageDemand = settings4.demand_profiles[currentName].defaultImageDemand;
+  settings4.defaultVisualPrepDemand = settings4.demand_profiles[currentName].defaultVisualPrepDemand;
+  saveSettingsDebounced58();
+  toastr.success(`\u9700\u6C42\u9884\u8BBE "${currentName}" \u5DF2\u4FDD\u5B58\u3002`);
+}
+function onDeleteDemandProfileClick() {
+  ensureDemandProfiles();
+  const settings4 = extension_settings88[extensionName];
+  const currentName = settings4.current_demand_profile;
+  const profileNames = Object.keys(settings4.demand_profiles);
+  if (profileNames.length <= 1) {
+    toastr.warning("\u81F3\u5C11\u4FDD\u7559\u4E00\u4E2A\u9700\u6C42\u9884\u8BBE\uFF0C\u65E0\u6CD5\u5220\u9664\u3002");
+    return;
+  }
+  if (!confirm(`\u786E\u5B9A\u8981\u5220\u9664\u9700\u6C42\u9884\u8BBE "${currentName}" \u5417\uFF1F`)) {
+    return;
+  }
+  delete settings4.demand_profiles[currentName];
+  const remainingProfiles = Object.keys(settings4.demand_profiles);
+  const nextProfile = remainingProfiles[0];
+  settings4.current_demand_profile = nextProfile;
+  saveSettingsDebounced58();
+  loadDemandProfiles(nextProfile);
+  toastr.success(`\u9700\u6C42\u9884\u8BBE "${currentName}" \u5DF2\u5220\u9664\uFF0C\u5DF2\u5207\u6362\u81F3 "${nextProfile}"\u3002`);
+}
 function onDefaultCharDemandChange() {
-  extension_settings88[extensionName].defaultCharDemand = $(this).val();
+  const val = $(this).val();
+  const settings4 = extension_settings88[extensionName];
+  settings4.defaultCharDemand = val;
+  ensureDemandProfiles();
+  const currentName = settings4.current_demand_profile;
+  if (settings4.demand_profiles?.[currentName]) {
+    settings4.demand_profiles[currentName].defaultCharDemand = val;
+  }
   saveSettingsDebounced58();
 }
 function onDefaultImageDemandChange() {
-  extension_settings88[extensionName].defaultImageDemand = $(this).val();
+  const val = $(this).val();
+  const settings4 = extension_settings88[extensionName];
+  settings4.defaultImageDemand = val;
+  ensureDemandProfiles();
+  const currentName = settings4.current_demand_profile;
+  if (settings4.demand_profiles?.[currentName]) {
+    settings4.demand_profiles[currentName].defaultImageDemand = val;
+  }
   saveSettingsDebounced58();
 }
 function onDefaultVisualPrepDemandChange() {
-  extension_settings88[extensionName].defaultVisualPrepDemand = $(this).val();
+  const val = $(this).val();
+  const settings4 = extension_settings88[extensionName];
+  settings4.defaultVisualPrepDemand = val;
+  ensureDemandProfiles();
+  const currentName = settings4.current_demand_profile;
+  if (settings4.demand_profiles?.[currentName]) {
+    settings4.demand_profiles[currentName].defaultVisualPrepDemand = val;
+  }
   saveSettingsDebounced58();
 }
 function initRegexSettings() {
@@ -101340,6 +101919,7 @@ function initRegexSettings() {
   gestureMatchThresholdValue = $("#ch-gesture-match-threshold-value");
   imageGenDemandEnabledSwitch = $("#ch-image-gen-demand-enabled");
   visualPrepDemandEnabledSwitch = $("#ch-visual-prep-demand-enabled");
+  demandProfileSelect = $("#ch-demand-profile-select");
   defaultCharDemandTextarea = $("#ch-default-char-demand");
   defaultImageDemandTextarea = $("#ch-default-image-demand");
   defaultVisualPrepDemandTextarea = $("#ch-default-visual-prep-demand");
@@ -101378,6 +101958,12 @@ function initRegexSettings() {
   defaultCharDemandTextarea.on("input", onDefaultCharDemandChange);
   defaultImageDemandTextarea.on("input", onDefaultImageDemandChange);
   defaultVisualPrepDemandTextarea.on("input", onDefaultVisualPrepDemandChange);
+  $("#ch-new-demand-profile-button").on("click", onNewDemandProfileClick);
+  $("#ch-rename-demand-profile-button").on("click", onRenameDemandProfileClick);
+  $("#ch-save-demand-profile-button").on("click", onSaveDemandProfileClick);
+  $("#ch-delete-demand-profile-button").on("click", onDeleteDemandProfileClick);
+  demandProfileSelect.on("change", onDemandProfileSelectChange);
+  loadDemandProfiles();
   $("#ch-gesture-1-button").on("click", () => onRecordGestureClick("gesture1"));
   $("#ch-gesture-2-button").on("click", () => onRecordGestureClick("gesture2"));
   eventSource37.on(eventNames.REGEX_TEST_MESSAGE, (data) => {
@@ -103769,6 +104355,7 @@ var SettingsHelpText = {
 
 \u9009\u62E9\u751F\u6210\u89C6\u9891\u65F6\u4F7F\u7528\u7684\u540E\u7AEF\u670D\u52A1\uFF1A
 
+- **\u65E0** \u2014 \u4E0D\u4F7F\u7528\u89C6\u9891\u751F\u6210\uFF0C\u9690\u85CF\u4FA7\u8FB9\u680F\u89C6\u9891\u4E0E\u89C6\u9891\u8D44\u4EA7\u76F8\u5173\u9875\u9762
 - **ComfyUI** \u2014 \u672C\u5730 ComfyUI \u89C6\u9891\u5DE5\u4F5C\u6D41
 - **RunningHub** \u2014 RunningHub \u4E91\u7AEF\u89C6\u9891\u5DE5\u4F5C\u6D41\u5E73\u53F0
 `
@@ -104147,6 +104734,11 @@ image### 1girl, solo, blue hair ###
   "ch-regex-text-editor": "\u7528\u9009\u62E9\u4E0D\u9700\u8981\u7684\uFF0C\u683C\u5F0F\u4E3A  \u524D\u7F6E\u6587\u5B57|\u540E\u7F6E\u6587\u5B57",
   "ch-regex-before-after-editor": "\u524D\u540E\u5904\u7406\u6B63\u5219\uFF0C\u53EF\u4EE5\u7528\u6765\u6846\u5230\u9700\u8981\u7684\uFF0C\u683C\u5F0F\u4E3A  \u524D\u7F6E\u6587\u5B57|\u540E\u7F6E\u6587\u5B57",
   "ch-click-trigger-enabled": "\u542F\u7528**\u70B9\u51FB\u89E6\u53D1**\uFF1A\u5728\u804A\u5929\u4E2D\u70B9\u51FB\u6B63\u6587\u5143\u7D20\u89E6\u53D1\u751F\u56FE\uFF0C\u7535\u8111\u4E24\u4E0B\uFF0C\u624B\u673A\u8981\u70B9\u4E09\u4E0B\uFF08\u4F1A\u6709\u4E00\u4E2A\u6309\u94AE\u5F39\u7A97\uFF09",
+  "ch-demand-profile-select": "\u9ED8\u8BA4\u7528\u6237\u9700\u6C42\u9884\u8BBE\u914D\u7F6E\uFF0C\u53EF\u4FDD\u5B58\u548C\u5FEB\u901F\u5207\u6362\u591A\u5957\u9700\u6C42\u9884\u8BBE",
+  "ch-new-demand-profile-button": "\u65B0\u5EFA\u5F53\u524D\u9700\u6C42\u9884\u8BBE",
+  "ch-rename-demand-profile-button": "\u91CD\u547D\u540D\u5F53\u524D\u9700\u6C42\u9884\u8BBE",
+  "ch-save-demand-profile-button": "\u4FDD\u5B58\u5F53\u524D\u9700\u6C42\u9884\u8BBE",
+  "ch-delete-demand-profile-button": "\u5220\u9664\u5F53\u524D\u9700\u6C42\u9884\u8BBE",
   "ch-default-char-demand": "\u9ED8\u8BA4\u89D2\u8272\u8BBE\u8BA1\u7684\u65F6\u5019\u7684\u9700\u6C42\uFF08\u751F\u56FE\u9700\u6C42\u5173\u95ED\u65F6\u4F7F\u7528\uFF09",
   "ch-default-image-demand": "\u9ED8\u8BA4\u751F\u6210\u56FE\u7247\u7684\u65F6\u5019\u7684\u9700\u6C42\uFF08\u751F\u56FE\u9700\u6C42\u5173\u95ED\u65F6\u4F7F\u7528\uFF09",
   "ch-default-visual-prep-demand": "\u9ED8\u8BA4\u89C6\u6750\u51C6\u5907\u7684\u65F6\u5019\u7684\u9700\u6C42\uFF08\u89C6\u6750\u9700\u6C42\u5173\u95ED\u65F6\u4F7F\u7528\uFF09",
@@ -104679,7 +105271,8 @@ function initAutoLLMClick() {
 var settings3;
 var currentPreviewTheme2 = {};
 var generationTabs3 = ["sd", "novelai", "comfyui", "runninghub"];
-var MODE_NAV_TABS = ["sd", "novelai", "comfyui", "comfyui_video", "runninghub", "runninghub_video", "banana"];
+var MODE_NAV_TABS = ["sd", "novelai", "comfyui", "runninghub", "banana"];
+var VIDEO_NAV_TABS = ["runninghub_video", "comfyui_video", "video_assets", "video_asset_gen"];
 var tabIds = ["main", "sd", "novelai", "comfyui", "comfyui_video", "runninghub", "runninghub_video", "video_assets", "video_asset_gen", "banana", "llm", "vocabulary", "knowledgeBase", "character", "theme", "fab", "image-cache", "regex", "send_data", "about", "log"];
 var FAB_ICON_ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 var FAB_ICON_MAX_FILE_SIZE = 5 * 1024 * 1024;
@@ -104893,6 +105486,11 @@ async function loadAllTabsContent(container) {
     } catch (e) {
       console.warn("[Chatu8] injectHelpTips failed:", e);
     }
+    try {
+      initCollapsibleSections(container);
+    } catch (e) {
+      console.warn("[Chatu8] initCollapsibleSections failed:", e);
+    }
     return true;
   } catch (error) {
     console.error("Chatu8 UI Error: Could not load all tab contents.", error);
@@ -104902,11 +105500,28 @@ async function loadAllTabsContent(container) {
 }
 function updateModeNavVisibility(settingsModal) {
   const currentMode2 = settings3.mode || "comfyui";
+  const videoChannel = settings3.videoChannel || "comfyui";
   let activeTabHidden = false;
   MODE_NAV_TABS.forEach((tab) => {
     const $link = settingsModal.find(`.st-chatu8-nav-link[data-tab="${tab}"]`);
     if (!$link.length) return;
-    const visible = tab === currentMode2 || tab === "runninghub_video" && currentMode2 === "runninghub" || tab === "comfyui_video" && currentMode2 === "comfyui";
+    const visible = tab === currentMode2;
+    $link.toggle(visible);
+    if (!visible && $link.hasClass("active")) {
+      activeTabHidden = true;
+    }
+  });
+  VIDEO_NAV_TABS.forEach((tab) => {
+    const $link = settingsModal.find(`.st-chatu8-nav-link[data-tab="${tab}"]`);
+    if (!$link.length) return;
+    let visible = false;
+    if (videoChannel === "none") {
+      visible = false;
+    } else if (videoChannel === "runninghub") {
+      visible = tab === "runninghub_video" || tab === "video_assets" || tab === "video_asset_gen";
+    } else {
+      visible = tab === "comfyui_video" || tab === "video_assets" || tab === "video_asset_gen";
+    }
     $link.toggle(visible);
     if (!visible && $link.hasClass("active")) {
       activeTabHidden = true;
@@ -105440,6 +106055,8 @@ async function initUI({ check_update: check_update2 }) {
   initLogSettings(settingsModal);
   initThemeSettings(settingsModal, settings3, currentPreviewTheme2);
   initPromptSettings(settingsModal, settings3);
+  setupPresetBoxes(settingsModal);
+  initCollapsibleSections(settingsModal);
   settingsModal.on("click", ".st-chatu8-toggle", function() {
     const checkbox = $(this).find('input[type="checkbox"]');
     if (checkbox.length) {
@@ -106133,6 +106750,9 @@ async function initUI({ check_update: check_update2 }) {
         if (settingKey === "mode") {
           updateGenerationModeHandlers();
           updateKeepAliveStatus();
+          updateModeNavVisibility(settingsModal);
+        }
+        if (settingKey === "videoChannel") {
           updateModeNavVisibility(settingsModal);
         }
         if (settingKey === "imageAlignment" || settingKey === "imageSizeScale") {

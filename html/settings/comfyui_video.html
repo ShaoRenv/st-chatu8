@@ -6,14 +6,40 @@
             <label for="comfyui_img2vid_workerid">图生视频工作流预设</label>
             <div class="st-chatu8-profile-controls">
                 <select id="comfyui_img2vid_workerid" class="st-chatu8-select"></select>
-                <button class="st-chatu8-icon-btn" id="comfyui_img2vid_worker_new" title="新建"><i class="fa-solid fa-plus"></i></button>
-                <button class="st-chatu8-icon-btn" id="comfyui_img2vid_worker_update_style" title="保存"><i class="fa-solid fa-save"></i></button>
-                <button class="st-chatu8-icon-btn" id="comfyui_img2vid_worker_save_style" title="另存为"><i class="fa-solid fa-file-export"></i></button>
-                <button class="st-chatu8-icon-btn" id="comfyui_img2vid_worker_rename" title="重命名"><i class="fa-solid fa-pen"></i></button>
-                <button class="st-chatu8-icon-btn" id="comfyui_img2vid_worker_export_current" title="导出当前"><i class="fa-solid fa-upload"></i></button>
-                <button class="st-chatu8-icon-btn" id="comfyui_img2vid_worker_export_all" title="导出全部"><i class="fa-solid fa-file-export"></i></button>
-                <button class="st-chatu8-icon-btn" id="comfyui_img2vid_worker_import" title="导入"><i class="fa-solid fa-download"></i></button>
-                <button class="st-chatu8-icon-btn danger" id="comfyui_img2vid_worker_delete_style" title="删除"><i class="fa-solid fa-trash"></i></button>
+                <div class="st-chatu8-preset-box-wrapper">
+                    <button type="button" class="st-chatu8-icon-btn st-chatu8-preset-box-btn" title="预设操作收纳盒">
+                        <i class="fa-solid fa-table-cells"></i>
+                    </button>
+                    <div class="st-chatu8-preset-box-dropdown">
+                        <div class="st-chatu8-preset-box-header">
+                            <span class="st-chatu8-preset-box-title"><i class="fa-solid fa-box-archive"></i> 工作流操作</span>
+                            <button type="button" class="st-chatu8-preset-box-close" title="关闭">&times;</button>
+                        </div>
+                        <div class="st-chatu8-preset-box-group">
+                            <span class="st-chatu8-preset-box-group-label">预设管理</span>
+                            <div class="st-chatu8-preset-box-grid">
+                                <button type="button" class="st-chatu8-preset-box-item" id="comfyui_img2vid_worker_new" title="新建预设"><i class="fa-solid fa-plus"></i><span>新建</span></button>
+                                <button type="button" class="st-chatu8-preset-box-item" id="comfyui_img2vid_worker_update_style" title="保存修改"><i class="fa-solid fa-save"></i><span>保存</span></button>
+                                <button type="button" class="st-chatu8-preset-box-item" id="comfyui_img2vid_worker_save_style" title="另存为新预设"><i class="fa-solid fa-file-export"></i><span>另存为</span></button>
+                                <button type="button" class="st-chatu8-preset-box-item" id="comfyui_img2vid_worker_rename" title="重命名预设"><i class="fa-solid fa-pen"></i><span>重命名</span></button>
+                            </div>
+                        </div>
+                        <div class="st-chatu8-preset-box-group">
+                            <span class="st-chatu8-preset-box-group-label">导入与导出</span>
+                            <div class="st-chatu8-preset-box-grid">
+                                <button type="button" class="st-chatu8-preset-box-item" id="comfyui_img2vid_worker_export_current" title="导出当前预设"><i class="fa-solid fa-upload"></i><span>导出当前</span></button>
+                                <button type="button" class="st-chatu8-preset-box-item" id="comfyui_img2vid_worker_export_all" title="导出全部预设"><i class="fa-solid fa-file-export"></i><span>导出全部</span></button>
+                                <button type="button" class="st-chatu8-preset-box-item" id="comfyui_img2vid_worker_import" title="导入预设文件"><i class="fa-solid fa-download"></i><span>导入</span></button>
+                            </div>
+                        </div>
+                        <div class="st-chatu8-preset-box-group">
+                            <span class="st-chatu8-preset-box-group-label">危险操作</span>
+                            <div class="st-chatu8-preset-box-grid">
+                                <button type="button" class="st-chatu8-preset-box-item danger" id="comfyui_img2vid_worker_delete_style" title="删除预设"><i class="fa-solid fa-trash"></i><span>删除预设</span></button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
         <div class="st-chatu8-field-col">
@@ -33,14 +59,40 @@
             <label for="comfyui_ref2vid_workerid">参考生视频工作流预设</label>
             <div class="st-chatu8-profile-controls">
                 <select id="comfyui_ref2vid_workerid" class="st-chatu8-select"></select>
-                <button class="st-chatu8-icon-btn" id="comfyui_ref2vid_worker_new" title="新建"><i class="fa-solid fa-plus"></i></button>
-                <button class="st-chatu8-icon-btn" id="comfyui_ref2vid_worker_update_style" title="保存"><i class="fa-solid fa-save"></i></button>
-                <button class="st-chatu8-icon-btn" id="comfyui_ref2vid_worker_save_style" title="另存为"><i class="fa-solid fa-file-export"></i></button>
-                <button class="st-chatu8-icon-btn" id="comfyui_ref2vid_worker_rename" title="重命名"><i class="fa-solid fa-pen"></i></button>
-                <button class="st-chatu8-icon-btn" id="comfyui_ref2vid_worker_export_current" title="导出当前"><i class="fa-solid fa-upload"></i></button>
-                <button class="st-chatu8-icon-btn" id="comfyui_ref2vid_worker_export_all" title="导出全部"><i class="fa-solid fa-file-export"></i></button>
-                <button class="st-chatu8-icon-btn" id="comfyui_ref2vid_worker_import" title="导入"><i class="fa-solid fa-download"></i></button>
-                <button class="st-chatu8-icon-btn danger" id="comfyui_ref2vid_worker_delete_style" title="删除"><i class="fa-solid fa-trash"></i></button>
+                <div class="st-chatu8-preset-box-wrapper">
+                    <button type="button" class="st-chatu8-icon-btn st-chatu8-preset-box-btn" title="预设操作收纳盒">
+                        <i class="fa-solid fa-table-cells"></i>
+                    </button>
+                    <div class="st-chatu8-preset-box-dropdown">
+                        <div class="st-chatu8-preset-box-header">
+                            <span class="st-chatu8-preset-box-title"><i class="fa-solid fa-box-archive"></i> 工作流操作</span>
+                            <button type="button" class="st-chatu8-preset-box-close" title="关闭">&times;</button>
+                        </div>
+                        <div class="st-chatu8-preset-box-group">
+                            <span class="st-chatu8-preset-box-group-label">预设管理</span>
+                            <div class="st-chatu8-preset-box-grid">
+                                <button type="button" class="st-chatu8-preset-box-item" id="comfyui_ref2vid_worker_new" title="新建预设"><i class="fa-solid fa-plus"></i><span>新建</span></button>
+                                <button type="button" class="st-chatu8-preset-box-item" id="comfyui_ref2vid_worker_update_style" title="保存修改"><i class="fa-solid fa-save"></i><span>保存</span></button>
+                                <button type="button" class="st-chatu8-preset-box-item" id="comfyui_ref2vid_worker_save_style" title="另存为新预设"><i class="fa-solid fa-file-export"></i><span>另存为</span></button>
+                                <button type="button" class="st-chatu8-preset-box-item" id="comfyui_ref2vid_worker_rename" title="重命名预设"><i class="fa-solid fa-pen"></i><span>重命名</span></button>
+                            </div>
+                        </div>
+                        <div class="st-chatu8-preset-box-group">
+                            <span class="st-chatu8-preset-box-group-label">导入与导出</span>
+                            <div class="st-chatu8-preset-box-grid">
+                                <button type="button" class="st-chatu8-preset-box-item" id="comfyui_ref2vid_worker_export_current" title="导出当前预设"><i class="fa-solid fa-upload"></i><span>导出当前</span></button>
+                                <button type="button" class="st-chatu8-preset-box-item" id="comfyui_ref2vid_worker_export_all" title="导出全部预设"><i class="fa-solid fa-file-export"></i><span>导出全部</span></button>
+                                <button type="button" class="st-chatu8-preset-box-item" id="comfyui_ref2vid_worker_import" title="导入预设文件"><i class="fa-solid fa-download"></i><span>导入</span></button>
+                            </div>
+                        </div>
+                        <div class="st-chatu8-preset-box-group">
+                            <span class="st-chatu8-preset-box-group-label">危险操作</span>
+                            <div class="st-chatu8-preset-box-grid">
+                                <button type="button" class="st-chatu8-preset-box-item danger" id="comfyui_ref2vid_worker_delete_style" title="删除预设"><i class="fa-solid fa-trash"></i><span>删除预设</span></button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
         <div class="st-chatu8-field-col">

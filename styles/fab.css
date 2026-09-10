@@ -117,21 +117,21 @@
     z-index: 10;
 }
 
-/* Loading state for FAB during LLM requests */
-#st-chatu8-fab.st-chatu8-fab-loading i {
+/* Loading state for FAB during LLM requests (仅在非视频模式下隐藏内容并显示转圈) */
+#st-chatu8-fab.st-chatu8-fab-loading:not(.st-chatu8-fab-video-mode) i {
     display: none;
 }
 
-#st-chatu8-fab.st-chatu8-fab-loading .st-chatu8-fab-custom-icon {
+#st-chatu8-fab.st-chatu8-fab-loading:not(.st-chatu8-fab-video-mode) .st-chatu8-fab-custom-icon {
     display: none !important;
 }
 
-#st-chatu8-fab.st-chatu8-fab-loading .st-chatu8-fab-video {
+#st-chatu8-fab.st-chatu8-fab-loading:not(.st-chatu8-fab-video-mode) .st-chatu8-fab-video {
     display: none !important;
-    /* 加载动画时隐藏video */
+    /* 传统模式加载动画时隐藏video */
 }
 
-#st-chatu8-fab.st-chatu8-fab-loading::after {
+#st-chatu8-fab.st-chatu8-fab-loading:not(.st-chatu8-fab-video-mode)::after {
     content: '';
     position: absolute;
     top: 50%;
@@ -145,6 +145,15 @@
     animation: st-chatu8-fab-spin 0.8s linear infinite;
     z-index: 3;
     /* 加载动画在最上层 */
+}
+
+/* 视频模式加载状态：保证视频始终显示，绝不显示转圈伪元素 */
+#st-chatu8-fab.st-chatu8-fab-video-mode.st-chatu8-fab-loading .st-chatu8-fab-video {
+    display: block !important;
+}
+
+#st-chatu8-fab.st-chatu8-fab-video-mode.st-chatu8-fab-loading::after {
+    display: none !important;
 }
 
 @keyframes st-chatu8-fab-spin {
@@ -214,20 +223,20 @@
    悬浮球生图/视频：与 LLM 请求同款·逆时针旋转圆环
    ============================================================ */
 
-#st-chatu8-fab.st-chatu8-fab-generating i {
+#st-chatu8-fab.st-chatu8-fab-generating:not(.st-chatu8-fab-video-mode) i {
     display: none !important;
 }
 
-#st-chatu8-fab.st-chatu8-fab-generating .st-chatu8-fab-custom-icon {
+#st-chatu8-fab.st-chatu8-fab-generating:not(.st-chatu8-fab-video-mode) .st-chatu8-fab-custom-icon {
     display: none !important;
 }
 
-#st-chatu8-fab.st-chatu8-fab-generating .st-chatu8-fab-video {
+#st-chatu8-fab.st-chatu8-fab-generating:not(.st-chatu8-fab-video-mode) .st-chatu8-fab-video {
     display: none !important;
 }
 
-/* 旋转圆环：24px 居中圆环，与 LLM 完全一致的规格，方向为逆时针 */
-#st-chatu8-fab.st-chatu8-fab-generating::after {
+/* 旋转圆环：24px 居中圆环，仅在传统模式下生效，方向为逆时针 */
+#st-chatu8-fab.st-chatu8-fab-generating:not(.st-chatu8-fab-video-mode)::after {
     content: '';
     position: absolute;
     top: 50%;
@@ -242,9 +251,18 @@
     z-index: 3;
 }
 
-/* 视频模式专属顶色高光（极光翡翠绿） */
-#st-chatu8-fab.st-chatu8-fab-generating.is-video-generating::after {
+/* 传统模式视频任务专属顶色高光（极光翡翠绿） */
+#st-chatu8-fab.st-chatu8-fab-generating.is-video-generating:not(.st-chatu8-fab-video-mode)::after {
     border-top-color: #10b981;
+}
+
+/* 视频模式生成状态：保证视频始终显示，绝不显示转圈伪元素 */
+#st-chatu8-fab.st-chatu8-fab-video-mode.st-chatu8-fab-generating .st-chatu8-fab-video {
+    display: block !important;
+}
+
+#st-chatu8-fab.st-chatu8-fab-video-mode.st-chatu8-fab-generating::after {
+    display: none !important;
 }
 
 /* 逆时针匀速旋转关键帧 */
