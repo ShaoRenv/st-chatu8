@@ -49547,24 +49547,25 @@ async function findAndReplaceInElement(rootElement, imageAlt = "Generated Image"
           });
           if (eligibleButtons.length > 0) {
             console.log("[iframe] \u81EA\u52A8\u70B9\u51FB\u5BF9\u5143\u7D20\u4E2D\u65B0\u6309\u94AE\u9519\u5CF0\u89E6\u53D1\u751F\u6210\uFF0C\u6570\u91CF:", eligibleButtons.length);
-            (async () => {
-              for (let i = 0; i < eligibleButtons.length; i++) {
-                if (String(extension_settings53[extensionName]?.zidongdianji2) !== "true" && !window.zidongdianji) {
-                  console.log("[iframe] \u81EA\u52A8\u70B9\u51FB\u7A97\u53E3\u5DF2\u5173\u95ED\uFF0C\u505C\u6B62\u7EE7\u7EED\u89E6\u53D1");
-                  break;
-                }
-                const btn = eligibleButtons[i];
-                const reqId = btn.dataset.requestId;
-                if (reqId) {
-                  handledAutoClickRequestIds.add(reqId);
-                }
-                btn.dataset.autoClickHandled = "true";
-                triggerGeneration(btn);
-                if (i < eligibleButtons.length - 1) {
-                  await sleep(600);
-                }
+            for (let i = 0; i < eligibleButtons.length; i++) {
+              if (String(extension_settings53[extensionName]?.zidongdianji2) !== "true" && !window.zidongdianji) {
+                console.log("[iframe] \u81EA\u52A8\u70B9\u51FB\u7A97\u53E3\u5DF2\u5173\u95ED\uFF0C\u505C\u6B62\u7EE7\u7EED\u89E6\u53D1");
+                break;
               }
-            })();
+              const btn = eligibleButtons[i];
+              const reqId = btn.dataset.requestId;
+              if (reqId) {
+                handledAutoClickRequestIds.add(reqId);
+              }
+              btn.dataset.autoClickHandled = "true";
+              triggerGeneration(btn);
+              if (i < eligibleButtons.length - 1) {
+                await sleep(600);
+              }
+            }
+            if (String(extension_settings53[extensionName]?.zidongdianji2) !== "true") {
+              deactivateAutoClickWindow();
+            }
           }
         }
         notifyAutoClick(true);
@@ -75455,7 +75456,7 @@ var init_aiAssistant = __esm({
   }
 });
 
-// index.js
+// index.source.js
 init_config();
 
 
@@ -86258,11 +86259,10 @@ function updateNovelaiModelSchedule() {
   updateNovelaiScheduleVisibility();
 }
 function updateNovelaiOtherSiteVisibility() {
-  const clientSelect = document.getElementById("client");
   const novelaiSiteSelect = document.getElementById("novelaisite");
   const otherSiteField = document.getElementById("novelai-other-site-field");
-  if (!clientSelect || !novelaiSiteSelect || !otherSiteField) return;
-  const shouldShow = clientSelect.value !== "jiuguan" && novelaiSiteSelect.value !== "\u5B98\u7F51";
+  if (!novelaiSiteSelect || !otherSiteField) return;
+  const shouldShow = novelaiSiteSelect.value !== "\u5B98\u7F51";
   otherSiteField.style.display = shouldShow ? "flex" : "none";
 }
 function updateNovelaiScheduleVisibility() {
@@ -86280,23 +86280,36 @@ function updateNovelaiScheduleVisibility() {
   }
 }
 function initNovelaiUI(settingsModal) {
+  const settings3 = extension_settings73[extensionName];
   settingsModal.find("#novelai_sampler").on("change", updateNovelaiScheduleVisibility);
   settingsModal.find("#novelaimode").on("change", updateNovelaiModelSchedule);
-  settingsModal.find("#client").on("change", updateNovelaiOtherSiteVisibility);
-  settingsModal.find("#novelaisite").on("change", function() {
+  settingsModal.find("#client").on("change", function() {
+    const clientVal = $(this).val();
+    const novelaiSiteSelect = document.getElementById("novelaisite");
+    if (novelaiSiteSelect && novelaiSiteSelect.value !== "\u5B98\u7F51" && clientVal === "jiuguan") {
+      if (typeof toastr !== "undefined") {
+        toastr.warning("\u7B2C\u4E09\u65B9 NovelAI \u7AD9\u70B9\u4E0D\u652F\u6301\u9152\u9986\u7AEF\u4EE3\u7406\uFF0C\u5EFA\u8BAE\u5C06\u5BA2\u6237\u7AEF\u5207\u6362\u4E3A\u6D4F\u89C8\u5668", "\u63D0\u793A");
+      }
+    }
     updateNovelaiOtherSiteVisibility();
+  });
+  settingsModal.find("#novelaisite").on("change", function() {
     const novelaiSite = $(this).val();
     if (novelaiSite !== "\u5B98\u7F51") {
       const clientSelect = document.getElementById("client");
       if (clientSelect && clientSelect.value !== "browser") {
         clientSelect.value = "browser";
+        if (settings3) {
+          settings3.client = "browser";
+        }
         $(clientSelect).trigger("change");
         if (typeof toastr !== "undefined") {
-          toastr.info("\u5DF2\u81EA\u52A8\u4E3A\u60A8\u5207\u6362\u5BA2\u6237\u7AEF\u4E3A\uFF1A\u6D4F\u89C8\u5668");
+          toastr.info("\u5DF2\u81EA\u52A8\u4E3A\u60A8\u5207\u6362\u5BA2\u6237\u7AEF\u4E3A\uFF1A\u6D4F\u89C8\u5668\uFF08\u7B2C\u4E09\u65B9 NovelAI \u7AD9\u70B9\u4EC5\u652F\u6301\u6D4F\u89C8\u5668\u7AEF\u8BF7\u6C42\uFF09");
         }
         saveSettingsDebounced46();
       }
     }
+    updateNovelaiOtherSiteVisibility();
   });
   settingsModal.find("#novelaiApiToggle").on("click", function() {
     const input = settingsModal.find("#novelaiApi")[0];
@@ -103667,6 +103680,18 @@ function applyNovelaiProfile(profile) {
     }
   }
   syncSliders();
+  updateNovelaiOtherSiteVisibility();
+  if (settings3.novelaisite && settings3.novelaisite !== "\u5B98\u7F51") {
+    const clientSelect = document.getElementById("client");
+    if (clientSelect && clientSelect.value !== "browser") {
+      clientSelect.value = "browser";
+      settings3.client = "browser";
+      $(clientSelect).trigger("change");
+      if (typeof toastr !== "undefined") {
+        toastr.info("\u5DF2\u81EA\u52A8\u4E3A\u60A8\u5207\u6362\u5BA2\u6237\u7AEF\u4E3A\uFF1A\u6D4F\u89C8\u5668\uFF08\u7B2C\u4E09\u65B9 NovelAI \u7AD9\u70B9\u4EC5\u652F\u6301\u6D4F\u89C8\u5668\u7AEF\u8BF7\u6C42\uFF09");
+      }
+    }
+  }
 }
 function applyComfyuiProfile(profile) {
   const settings3 = getSettings3();
@@ -106230,6 +106255,7 @@ async function initUI({ check_update: check_update2 }) {
         refreshCharacterSettings(characterTab);
       }
     }
+    updateNovelaiOtherSiteVisibility();
   }
   loadSettingsIntoUI();
   updateGenerationModeHandlers();
@@ -107107,7 +107133,7 @@ async function initUI({ check_update: check_update2 }) {
   });
 }
 
-// index.js
+// index.source.js
 init_banana();
 init_runninghub();
 init_utils();
@@ -107254,7 +107280,7 @@ eventSource46.on(event_types7.STREAM_TOKEN_RECEIVED, (text) => {
   }
 });
 
-// index.js
+// index.source.js
 init_errorCollector();
 init_imageGenStats();
 init_tts();
