@@ -23,16 +23,27 @@
     border-radius: var(--st-chatu8-border-radius);
     box-shadow: var(--st-chatu8-box-shadow);
     width: 90vw;
-    max-width: 450px;
+    max-width: 480px;
+    max-height: 85vh;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     gap: 16px;
+    overflow: hidden;
 }
 
 #st-chatu8-settings .st-chatu8-confirm-message,
 .st-chatu8-confirm-message {
     margin: 0;
-    font-size: 1.1rem;
+    font-size: 1.05rem;
+    line-height: 1.5;
+    max-height: 60vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding-right: 4px;
+    box-sizing: border-box;
 }
 
 #st-chatu8-settings .st-chatu8-confirm-buttons,
@@ -41,6 +52,7 @@
     justify-content: flex-end;
     gap: 12px;
     margin-top: 8px;
+    flex-shrink: 0;
 }
 
 /* Ensure the input inside the confirm box is also styled */
