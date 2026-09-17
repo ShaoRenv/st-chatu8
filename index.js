@@ -4222,6 +4222,7 @@ async function getItemImg(tag, index = null) {
           stats.lastWaitMs = waitMs;
           stats.lastRetryAt = Date.now();
           if (c.log) console.warn("[chatu8-retry] HTTP " + res.status + " → " + waitMs + "ms 后第 " + attempt + "/" + c.maxRetries + " 次重发：" + url);
+          updateStatus();
           return sleep(waitMs, init && init.signal).then(once);
         });
       }
@@ -4249,9 +4250,91 @@ async function getItemImg(tag, index = null) {
     console.info("  调整：__chatu8RetrySet({ delayMs: 8000 }) ｜ 临时：window.__chatu8Retry = { delayMs: 1000 } ｜ 统计：__chatu8RetryStats()");
     return true;
   }
+  function uiGet(id) {
+    try {
+      return document.getElementById(id);
+    } catch (e) {
+      return null;
+    }
+  }
+  function updateStatus() {
+    var el = uiGet("ch-429-status");
+    if (!el) return;
+    var s = stats;
+    el.textContent = "已重发 " + s.retries + " 次 / 发起 " + s.attempts + " 次请求" +
+      (s.lastWaitMs ? "（上次等待 " + s.lastWaitMs + "ms）" : "");
+  }
+  function syncUi() {
+    var c = cfg();
+    var en = uiGet("ch-429-enabled");
+    if (en) en.checked = c.enabled !== false;
+    var d = uiGet("ch-429-delay");
+    if (d) d.value = c.delayMs;
+    var m = uiGet("ch-429-max");
+    if (m) m.value = c.maxRetries;
+    var b = uiGet("ch-429-backoff");
+    if (b) b.value = c.backoff === "fixed" ? "fixed" : "exponential";
+    var ra = uiGet("ch-429-retryafter");
+    if (ra) ra.checked = c.respectRetryAfter !== false;
+    var sec = uiGet("ch-429-retry-section");
+    if (sec && !uiGet("ch-429-status")) {
+      var small = document.createElement("small");
+      small.id = "ch-429-status";
+      small.style.opacity = "0.7";
+      sec.appendChild(small);
+    }
+    updateStatus();
+  }
+  function readUi() {
+    var patch = {};
+    var en = uiGet("ch-429-enabled");
+    if (en) patch.enabled = !!en.checked;
+    var d = uiGet("ch-429-delay");
+    if (d) {
+      var dv = parseInt(d.value, 10);
+      if (!isNaN(dv) && dv >= 0) patch.delayMs = dv;
+    }
+    var m = uiGet("ch-429-max");
+    if (m) {
+      var mv = parseInt(m.value, 10);
+      if (!isNaN(mv) && mv >= 0) patch.maxRetries = mv;
+    }
+    var b = uiGet("ch-429-backoff");
+    if (b && b.value) patch.backoff = b.value;
+    var ra = uiGet("ch-429-retryafter");
+    if (ra) patch.respectRetryAfter = !!ra.checked;
+    return patch;
+  }
+  function bindUi() {
+    if (window.__chatu8RetryUiBound) return;
+    window.__chatu8RetryUiBound = true;
+    var handler = function (ev) {
+      var t = ev.target;
+      if (!t || !t.id || String(t.id).indexOf("ch-429-") !== 0) return;
+      var patch = readUi();
+      window.__chatu8RetrySet(patch);
+      updateStatus();
+    };
+    document.addEventListener("change", handler, true);
+    document.addEventListener("input", handler, true);
+    try {
+      var mo = new MutationObserver(function () {
+        if (uiGet("ch-429-delay")) syncUi();
+      });
+      mo.observe(document.body || document.documentElement, { childList: true, subtree: true });
+    } catch (e) {
+    }
+    syncUi();
+  }
   install();
+  try {
+    if (typeof document !== "undefined") {
+      if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bindUi);
+      else bindUi();
+    }
+  } catch (e) {
+  }
 })();
-
 // ===== __chatu8perf T01: 把生图收尾重活移出“图片显示”路径 =====
 // 回退开关: window.__chatu8perf = { tailOffMainThread: false }（只读取一次）
 // 行为: 图片先显示；图片上传 / 缩略图 / 索引写入 / 保存设置 / 隐写索引重编码
