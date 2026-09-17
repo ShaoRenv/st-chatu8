@@ -4107,6 +4107,151 @@ async function getItemImg(tag, index = null) {
   }
   return [false, false, false, false, "", "", ""];
 }
+// ===== chatu8 personal: HTTP 429 自动重发（自用，不进上游补丁集）=====
+// 配置（随时可改、立即生效；也可持久化到 localStorage['chatu8_retry429']）：
+//   window.__chatu8Retry = { enabled:true, delayMs:4000, maxRetries:5,
+//                            backoff:"exponential", factor:2, maxDelayMs:60000,
+//                            jitter:0.2, respectRetryAfter:true, retryStatuses:[429] }
+//   持久化调整：__chatu8RetrySet({ delayMs: 8000 })
+//   查看统计：  __chatu8RetryStats()      查看当前配置：__chatu8RetryGet()
+(function () {
+  var STORE_KEY = "chatu8_retry429";
+  var DEFAULTS = {
+    enabled: true,
+    delayMs: 4000,
+    maxRetries: 5,
+    backoff: "exponential",
+    factor: 2,
+    maxDelayMs: 60000,
+    jitter: 0.2,
+    respectRetryAfter: true,
+    retryStatuses: [429],
+    log: true
+  };
+  var stats = { attempts: 0, retries: 0, exhausted: 0, lastStatus: 0, lastUrl: "", lastWaitMs: 0, lastRetryAt: 0 };
+  function readStored() {
+    try {
+      var raw = window.localStorage.getItem(STORE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      return {};
+    }
+  }
+  function cfg() {
+    var out = {};
+    var k;
+    for (k in DEFAULTS) out[k] = DEFAULTS[k];
+    var src = readStored();
+    for (k in src) if (src[k] !== undefined) out[k] = src[k];
+    try {
+      var w = window.__chatu8Retry;
+      if (w) for (k in w) if (w[k] !== undefined) out[k] = w[k];
+    } catch (e) {
+    }
+    return out;
+  }
+  function sleep(ms, signal) {
+    return new Promise(function (resolve, reject) {
+      var t = setTimeout(resolve, ms);
+      if (signal && signal.addEventListener) {
+        signal.addEventListener("abort", function () {
+          clearTimeout(t);
+          reject(new Error("chatu8-retry: aborted"));
+        }, { once: true });
+      }
+    });
+  }
+  function targetMatch(url) {
+    try {
+      return /image\.novelai\.net\/ai\/(generate-image|encode-vibe)/.test(url) ||
+        /\/api\/novelai\/generate-image/.test(url);
+    } catch (e) {
+      return false;
+    }
+  }
+  function delayFor(c, attempt, res) {
+    var base = Number(c.delayMs) || 4000;
+    var d = c.backoff === "exponential" ? base * Math.pow(Number(c.factor) || 2, attempt) : base;
+    var cap = Number(c.maxDelayMs) || 0;
+    if (cap > 0) d = Math.min(d, cap);
+    if (c.respectRetryAfter && res && res.headers && res.headers.get) {
+      var ra = parseInt(res.headers.get("retry-after") || "", 10);
+      if (!isNaN(ra) && ra > 0) {
+        var raMs = ra * 1000;
+        d = cap > 0 ? Math.max(d, Math.min(raMs, cap)) : Math.max(d, raMs);
+      }
+    }
+    var j = Number(c.jitter) || 0;
+    if (j > 0) d = Math.round(d * (1 + (Math.random() * 2 - 1) * j));
+    return Math.max(0, d);
+  }
+  function install() {
+    if (window.__chatu8RetryInstalled) return false;
+    var orig = window.fetch;
+    if (typeof orig !== "function") return false;
+    window.__chatu8RetryInstalled = true;
+    window.fetch = function (input, init) {
+      var url = "";
+      try {
+        url = typeof input === "string" ? input : (input && input.url) || "";
+      } catch (e) {
+      }
+      var c = cfg();
+      if (!c.enabled || !targetMatch(url)) return orig.apply(this, arguments);
+      if (init && init.body && typeof ReadableStream !== "undefined" && init.body instanceof ReadableStream) {
+        return orig.apply(this, arguments);
+      }
+      var attempt = 0;
+      var ctx = this;
+      var args = arguments;
+      function once() {
+        stats.attempts++;
+        stats.lastUrl = url;
+        return orig.apply(ctx, args).then(function (res) {
+          stats.lastStatus = res.status;
+          var list = c.retryStatuses || [429];
+          if (list.indexOf(res.status) === -1) return res;
+          if (attempt >= (Number(c.maxRetries) || 0)) {
+            stats.exhausted++;
+            if (c.log) console.warn("[chatu8-retry] HTTP " + res.status + " 已重试 " + attempt + " 次，放弃：" + url);
+            return res;
+          }
+          var waitMs = delayFor(c, attempt, res);
+          attempt++;
+          stats.retries++;
+          stats.lastWaitMs = waitMs;
+          stats.lastRetryAt = Date.now();
+          if (c.log) console.warn("[chatu8-retry] HTTP " + res.status + " → " + waitMs + "ms 后第 " + attempt + "/" + c.maxRetries + " 次重发：" + url);
+          return sleep(waitMs, init && init.signal).then(once);
+        });
+      }
+      return once();
+    };
+    window.__chatu8RetryStats = function () {
+      return JSON.parse(JSON.stringify(stats));
+    };
+    window.__chatu8RetryGet = function () {
+      return cfg();
+    };
+    window.__chatu8RetrySet = function (patch) {
+      var cur = readStored();
+      var k;
+      for (k in patch || {}) cur[k] = patch[k];
+      try {
+        window.localStorage.setItem(STORE_KEY, JSON.stringify(cur));
+      } catch (e) {
+      }
+      var next = cfg();
+      console.info("[chatu8-retry] 配置已更新:", next);
+      return next;
+    };
+    console.info("[chatu8-retry] HTTP 429 自动重发已启用：基础延迟 " + cfg().delayMs + "ms、" + cfg().backoff + "、最多 " + cfg().maxRetries + " 次。");
+    console.info("  调整：__chatu8RetrySet({ delayMs: 8000 }) ｜ 临时：window.__chatu8Retry = { delayMs: 1000 } ｜ 统计：__chatu8RetryStats()");
+    return true;
+  }
+  install();
+})();
+
 // ===== __chatu8perf T01: 把生图收尾重活移出“图片显示”路径 =====
 // 回退开关: window.__chatu8perf = { tailOffMainThread: false }（只读取一次）
 // 行为: 图片先显示；图片上传 / 缩略图 / 索引写入 / 保存设置 / 隐写索引重编码
