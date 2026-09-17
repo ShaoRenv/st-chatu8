@@ -4261,8 +4261,11 @@ async function getItemImg(tag, index = null) {
     var el = uiGet("ch-429-status");
     if (!el) return;
     var s = stats;
-    el.textContent = "已重发 " + s.retries + " 次 / 发起 " + s.attempts + " 次请求" +
+    var next = "已重发 " + s.retries + " 次 / 发起 " + s.attempts + " 次请求" +
       (s.lastWaitMs ? "（上次等待 " + s.lastWaitMs + "ms）" : "");
+    // 只在文本真的变化时才写：写同样的 textContent 也会产生 childList 变更，
+    // 而我们的 MutationObserver 正盯着这个子树，会被自己的写入反复唤醒（死循环）。
+    if (el.textContent !== next) el.textContent = next;
   }
   function syncUi() {
     var c = cfg();
@@ -4318,8 +4321,18 @@ async function getItemImg(tag, index = null) {
     document.addEventListener("change", handler, true);
     document.addEventListener("input", handler, true);
     try {
-      var mo = new MutationObserver(function () {
+      var scheduled = false;
+      var syncSoon = function () {
+        scheduled = false;
         if (uiGet("ch-429-delay")) syncUi();
+      };
+      // 设置面板是这个插件点开标签页时才抓取注入的，所以必须监听 DOM 变化。
+      // 但回调里同步调用 syncUi() 会与 updateStatus() 的写入形成同步微任务死循环，
+      // 因此这里把同步合并成一次异步任务（每轮变更最多执行一次），双保险。
+      var mo = new MutationObserver(function () {
+        if (scheduled) return;
+        scheduled = true;
+        setTimeout(syncSoon, 0);
       });
       mo.observe(document.body || document.documentElement, { childList: true, subtree: true });
     } catch (e) {
