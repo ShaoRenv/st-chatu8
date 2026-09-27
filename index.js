@@ -112037,6 +112037,12 @@ async function initUI({ check_update: check_update2 }) {
       toastr.info("已关闭：新生成的图片按原样存储", "压缩加强已关闭");
     }
   });
+  settingsModal.find("#compressBoostLevel").val(resolveCompressLevel());
+  settingsModal.find("#compressBoostLevel").on("change", function() {
+    settings2.compressBoostLevel = String($(this).val() || "balanced");
+    saveSettingsDebounced71();
+    toastr.info("压缩强度已设为：" + (COMPRESS_LEVEL_LABELS[resolveCompressLevel()] || resolveCompressLevel()) + "（下次压缩生效）", "压缩加强");
+  });
   settingsModal.find("#autoLLMImageGen").on("change", async function() {
     const isEnabled = $(this).prop("checked");
     settings2.autoLLMImageGen = isEnabled.toString();
