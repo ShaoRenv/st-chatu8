@@ -217,6 +217,14 @@
             </div>
         </div>
         <div class="st-chatu8-field">
+            <label for="compressBoostLevel">压缩加强强度</label>
+            <select id="compressBoostLevel" class="st-chatu8-select">
+                <option value="lossless">无损优先（只做无损重压缩，画质最高、体积最大）</option>
+                <option value="balanced">均衡（默认，推荐）</option>
+                <option value="max">极限（最省空间，画质损失更明显）</option>
+            </select>
+        </div>
+        <div class="st-chatu8-field">
             <label>压缩加强</label>
             <div>
                 <button id="image-cache-compress-main" class="st-chatu8-btn"><i class="fa-solid fa-compress"></i> 立即压缩已有缓存</button>

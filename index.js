@@ -3060,6 +3060,7 @@ var init_config = __esm({
       vibeJiuguanchucun: "true",
       convertToJpegStorage: "false",
       compressBoostStorage: "false",
+      compressBoostLevel: "balanced",
       jiuguanStorage: {},
       banana: {
         apiKey: "123456",
@@ -90594,7 +90595,12 @@ async function recalcImageSizes(options = {}) {
   }
 }
 // ===== 压缩加强：任务状态与界面同步 =====
-var COMPRESS_LEVEL = "balanced";
+var COMPRESS_LEVELS = ["lossless", "balanced", "max"];
+var COMPRESS_LEVEL_LABELS = { lossless: "无损优先", balanced: "均衡", max: "极限" };
+function resolveCompressLevel() {
+  const raw = String((extension_settings[extensionName] || {}).compressBoostLevel || "balanced");
+  return COMPRESS_LEVELS.indexOf(raw) >= 0 ? raw : "balanced";
+}
 var compressProgressToast = null;
 function getCompressTask() {
   if (!compressTask) return null;
@@ -90673,7 +90679,7 @@ function buildCompressSummaryText(task, skipReasons) {
   const elapsed = recalcStartedAt ? ((Date.now() - recalcStartedAt) / 1e3).toFixed(1) : "?";
   const ratio = task.attemptedBytes > 0 ? Math.round(task.savedBytes / task.attemptedBytes * 100) : 0;
   const lines = [
-    "压缩 " + task.done + " 张，节省 " + formatMB(task.savedBytes) + "（" + ratio + "%）",
+    "压缩 " + task.done + " 张（强度 " + (COMPRESS_LEVEL_LABELS[task.level] || task.level || "均衡") + "），节省 " + formatMB(task.savedBytes) + "（" + ratio + "%）",
     "跳过 " + task.skipped + " 张（视频 " + (task.videoSkipped || 0) + " · 酒馆存储 " + (task.serverSkipped || 0) + "）｜失败 " + task.failed + " 张",
     "用时 " + elapsed + "s"
   ];
@@ -90759,6 +90765,7 @@ async function compressCachedImages(options = {}) {
     alert("「计算大小」正在进行中，请等待完成或先取消。");
     return;
   }
+  const level = resolveCompressLevel();
   const wantSelected = options.scope === "selected" || options.scope === void 0 && selectedImages.size > 0;
   const snapshot = wantSelected ? allCachedImages.filter(function(img) { return selectedImages.has(img.uuid); }).slice() : await collectCacheTargets();
   if (snapshot.length === 0) {
@@ -90787,6 +90794,7 @@ async function compressCachedImages(options = {}) {
     running: true,
     cancelled: false,
     started: false,
+    level,
     total: targets.length,
     done: 0,
     failed: 0,
@@ -90855,7 +90863,7 @@ async function compressCachedImages(options = {}) {
       try {
         const entry = indexByUuid[img.uuid];
         const mark = entry && entry.compress;
-        if (mark && mark.v === 1 && mark.level === COMPRESS_LEVEL) {
+        if (mark && mark.v === 1 && mark.level === level) {
           noteSkip("已压缩");
           continue;
         }
@@ -90885,7 +90893,7 @@ async function compressCachedImages(options = {}) {
         }
         const mime = format === "jpeg" ? "image/jpeg" : format === "webp" ? "image/webp" : "image/png";
         compressTask.attemptedBytes += before;
-        const result = await compressApi.compress(new Blob([view], { type: mime }), { level: COMPRESS_LEVEL, allowFormatChange: true });
+        const result = await compressApi.compress(new Blob([view], { type: mime }), { level, allowFormatChange: true });
         if (!result || !result.ok) {
           noteSkip(result && result.reason ? result.reason : "无收益");
           continue;
@@ -90904,7 +90912,7 @@ async function compressCachedImages(options = {}) {
           entry.size = after.byteLength;
           entry.compress = {
             v: 1,
-            level: COMPRESS_LEVEL,
+            level,
             at: Date.now(),
             codec: result.codec || "",
             from: mime,
@@ -90969,7 +90977,7 @@ async function compressGeneratedImage(input) {
     if (typeof api.load === "function") await api.load();
     const blob = await imageInputToBlob(input);
     if (!blob || !blob.size) return input;
-    const result = await api.compress(blob, { level: COMPRESS_LEVEL, allowFormatChange: true });
+    const result = await api.compress(blob, { level: resolveCompressLevel(), allowFormatChange: true });
     if (!result || !result.ok || !result.blob) return input;
     if (result.blob.size >= blob.size * COMPRESS_MIN_GAIN) return input;
     if (!await canDecodeCachedImage(result.blob)) return input;
