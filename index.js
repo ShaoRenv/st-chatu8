@@ -25711,7 +25711,7 @@ function getCurrentOutfitPreset() {
 }
 function buildOutfitText(preset) {
   const data = preset.data;
-  const fixedPromptText = (data.promptMode || "split") === "fixed" ? (data.fixedPrompt || "").trim() : "";
+  const fixedPromptText = resolveOutfitPromptMode(data) === "fixed" ? (data.fixedPrompt || "").trim() : "";
   if (fixedPromptText) {
     let fixedOutfitText = "<\u670D\u88C5>\n";
     fixedOutfitText += "\u4E2D\u6587\u540D\u79F0: " + (data.nameCN || "") + "\n";
@@ -26086,6 +26086,7 @@ async function handleOutfitImagePromptGenerate(userRequirement, userImages = [])
     const userRequirementMessageIndex = findMessageIndexWithPlaceholder(prompt2, "{{\u7528\u6237\u9700\u6C42}}");
     console.log("[outfitImagePromptGen] User requirement message index:", userRequirementMessageIndex);
     prompt2 = replacePlaceholder2(prompt2, "{{\u5F53\u524D\u670D\u88C5}}", currentOutfitText, replacedVariables);
+    prompt2 = appendFixedPromptModeInstruction(prompt2, currentPreset.data, "outfit");
     prompt2 = replacePlaceholder2(prompt2, "{{\u670D\u88C5\u5217\u8868}}", currentOutfitText, replacedVariables);
     prompt2 = replacePlaceholder2(prompt2, "{{\u7528\u6237\u9700\u6C42}}", userRequirement || "", replacedVariables);
     prompt2 = replacePlaceholder2(prompt2, "{{\u5F53\u524D\u89D2\u8272}}", "", replacedVariables);
@@ -26342,7 +26343,7 @@ function getCurrentOutfitPreset2() {
 }
 function buildOutfitText2(preset) {
   const data = preset.data;
-  const fixedPromptText = (data.promptMode || "split") === "fixed" ? (data.fixedPrompt || "").trim() : "";
+  const fixedPromptText = resolveOutfitPromptMode(data) === "fixed" ? (data.fixedPrompt || "").trim() : "";
   if (fixedPromptText) {
     let fixedOutfitText = "<\u670D\u88C5>\n";
     fixedOutfitText += "\u4E2D\u6587\u540D\u79F0: " + (data.nameCN || "") + "\n";
@@ -26388,6 +26389,7 @@ async function handleOutfitPromptModify(userRequirement, userImages = []) {
     const userRequirementMessageIndex = findMessageIndexWithPlaceholder2(prompt2, "{{\u7528\u6237\u9700\u6C42}}");
     console.log("[outfitPromptModify] User requirement message index:", userRequirementMessageIndex);
     prompt2 = replacePlaceholder3(prompt2, "{{\u5F53\u524D\u670D\u88C5}}", currentOutfitText, replacedVariables);
+    prompt2 = appendFixedPromptModeInstruction(prompt2, currentPreset.data, "outfit");
     prompt2 = replacePlaceholder3(prompt2, "{{\u670D\u88C5\u5217\u8868}}", currentOutfitText, replacedVariables);
     prompt2 = replacePlaceholder3(prompt2, "{{\u7528\u6237\u9700\u6C42}}", userRequirement || "", replacedVariables);
     prompt2 = replacePlaceholder3(prompt2, "{{\u5F53\u524D\u89D2\u8272}}", "", replacedVariables);
@@ -28331,13 +28333,13 @@ function loadOutfitPresetData(presetId) {
   }
   const promptModeElement = document.getElementById("outfit_promptMode");
   if (promptModeElement) {
-    promptModeElement.value = preset.promptMode || "split";
+    promptModeElement.value = resolveOutfitPromptMode(preset);
   }
   const fixedPromptElement = document.getElementById("outfit_fixedPrompt");
   if (fixedPromptElement) {
     fixedPromptElement.value = preset.fixedPrompt || "";
   }
-  applyOutfitPromptModeUI(preset.promptMode || "split");
+  applyOutfitPromptModeUI(preset);
   loadOutfitPhoto(preset);
   debouncedUpdateOutfitTokenCounts();
 }
@@ -28453,7 +28455,7 @@ function saveCurrentOutfitData(presetId) {
   const existingPreset = settings3.outfitPresets[presetId] || {};
   const promptModeElement = document.getElementById("outfit_promptMode");
   const fixedPromptElement = document.getElementById("outfit_fixedPrompt");
-  preset.promptMode = promptModeElement && promptModeElement.value ? promptModeElement.value : existingPreset.promptMode || "split";
+  preset.promptMode = promptModeElement && promptModeElement.value ? promptModeElement.value : resolveOutfitPromptMode(existingPreset);
   preset.fixedPrompt = fixedPromptElement ? fixedPromptElement.value || "" : existingPreset.fixedPrompt || "";
   preset.photoImageIds = existingPreset.photoImageIds || [];
   settings3.outfitPresets[presetId] = preset;
@@ -28725,7 +28727,8 @@ function bindOutfitFieldListeners() {
     });
   }
 }
-function applyOutfitPromptModeUI(promptMode) {
+function applyOutfitPromptModeUI(presetOrMode) {
+  const promptMode = typeof presetOrMode === "string" ? presetOrMode : resolveOutfitPromptMode(presetOrMode);
   const isFixedMode = (promptMode || "split") === "fixed";
   const tab = document.getElementById("st-chatu8-tab-character");
   const scope = tab || document;
@@ -29537,7 +29540,7 @@ var init_outfitPreset = __esm({
 
 function getCharacterPromptData(character, outfitsText = "", mediaInfo = {}) {
   if (!character) return {};
-  const fixedVisual = (character.promptMode || "split") === "fixed" ? (character.fixedPrompt || "").trim() : "";
+  const fixedVisual = resolveCharacterPromptMode(character) === "fixed" ? (character.fixedPrompt || "").trim() : "";
   const data = {
     nameCN: character.nameCN || "",
     nameEN: character.nameEN ? character.nameEN.split("|")[0].trim() : "",
@@ -29574,7 +29577,7 @@ function getCharacterPromptData(character, outfitsText = "", mediaInfo = {}) {
 }
 function getOutfitPromptData(outfit) {
   if (!outfit) return {};
-  const fixedVisual = (outfit.promptMode || "split") === "fixed" ? (outfit.fixedPrompt || "").trim() : "";
+  const fixedVisual = resolveOutfitPromptMode(outfit) === "fixed" ? (outfit.fixedPrompt || "").trim() : "";
   const data = {
     nameCN: outfit.nameCN || "",
     nameEN: outfit.nameEN ? outfit.nameEN.split("|")[0].trim() : "",
@@ -30893,7 +30896,7 @@ function getCurrentCharacterPreset() {
 }
 function buildCharacterText(preset) {
   const data = preset.data;
-  const fixedPromptText = (data.promptMode || "split") === "fixed" ? (data.fixedPrompt || "").trim() : "";
+  const fixedPromptText = resolveCharacterPromptMode(data) === "fixed" ? (data.fixedPrompt || "").trim() : "";
   if (fixedPromptText) {
     let fixedCharacterText = "<\u4EBA\u7269>\n";
     fixedCharacterText += "\u4E2D\u6587\u540D\u79F0: " + (data.nameCN || "") + "\n";
@@ -30989,6 +30992,7 @@ async function handleCharacterPromptModify(userRequirement, userImages = []) {
     const { messages: processedMessages, replacedVariables } = await replaceAllPlaceholders(prompt2, contextData);
     prompt2 = processedMessages;
     prompt2 = replacePlaceholder(prompt2, "{{\u5F53\u524D\u89D2\u8272}}", currentCharacterText, replacedVariables);
+    prompt2 = appendFixedPromptModeInstruction(prompt2, currentPreset.data, "character");
     console.log("[characterPromptModify] Final prompt:", prompt2);
     let diagnosticText = "";
     if (replacedVariables.size > 0) {
@@ -31039,6 +31043,12 @@ async function updateCharacterPresetFromLLM(presetId, newData) {
   if (!preset) {
     toastr.error("\u627E\u4E0D\u5230\u6307\u5B9A\u7684\u89D2\u8272\u9884\u8BBE");
     return;
+  }
+  if (resolveCharacterPromptMode(preset) === "fixed" && !String(newData.fixedPrompt || "").trim()) {
+    const mergedFixedPrompt = mergeFixedPromptFromParts(newData, ["characterTraits", "facialFeatures", "facialFeaturesBack"]);
+    if (mergedFixedPrompt) {
+      newData = { ...newData, fixedPrompt: mergedFixedPrompt };
+    }
   }
   const fieldLabels = {
     "nameCN": "\u4E2D\u6587\u540D\u79F0",
@@ -31105,6 +31115,12 @@ async function updateOutfitPresetsFromLLM(outfitsData) {
     const outfitName = cardPrefix ? `${cardPrefix}${rawOutfitName}` : rawOutfitName;
     const existingOutfit = settings3.outfitPresets?.[outfitName];
     if (existingOutfit) {
+      if (resolveOutfitPromptMode(existingOutfit) === "fixed" && !String(outfitData.fixedPrompt || "").trim()) {
+        const mergedFixedPrompt = mergeFixedPromptFromParts(outfitData, ["upperBody", "fullBody", "upperBodyBack", "fullBodyBack"]);
+        if (mergedFixedPrompt) {
+          outfitData.fixedPrompt = mergedFixedPrompt;
+        }
+      }
       let changesCount = 0;
       for (const field in outfitFieldLabels) {
         if (outfitData[field] && outfitData[field] !== existingOutfit[field]) {
@@ -31138,7 +31154,7 @@ async function updateOutfitPresetsFromLLM(outfitsData) {
       settings3.outfitPresets[outfitName] = {
         nameCN: outfitData.nameCN,
         nameEN: outfitData.nameEN || "",
-        promptMode: "split",
+        promptMode: resolveOutfitPromptMode({ ...outfitData }),
         fixedPrompt: outfitData.fixedPrompt || "",
         owner: outfitData.owner || "",
         upperBody: outfitData.upperBody || "",
@@ -31259,7 +31275,7 @@ function getCurrentCharacterPreset2() {
 }
 function buildCharacterText2(preset) {
   const data = preset.data;
-  const fixedPromptText = (data.promptMode || "split") === "fixed" ? (data.fixedPrompt || "").trim() : "";
+  const fixedPromptText = resolveCharacterPromptMode(data) === "fixed" ? (data.fixedPrompt || "").trim() : "";
   if (fixedPromptText) {
     let fixedCharacterText = "<\u4EBA\u7269>\n";
     fixedCharacterText += "\u4E2D\u6587\u540D\u79F0: " + (data.nameCN || "") + "\n";
@@ -31316,7 +31332,7 @@ function buildOutfitsText(preset) {
 `;
       text += `\u82F1\u6587\u540D\u79F0: ${outfitPreset.nameEN || ""}
 `;
-      const outfitFixedPromptText = (outfitPreset.promptMode || "split") === "fixed" ? (outfitPreset.fixedPrompt || "").trim() : "";
+      const outfitFixedPromptText = resolveOutfitPromptMode(outfitPreset) === "fixed" ? (outfitPreset.fixedPrompt || "").trim() : "";
       if (outfitFixedPromptText) {
         text += "\u670D\u88C5\u5F62\u8C61: " + outfitFixedPromptText + "\n";
       } else {
@@ -31688,6 +31704,7 @@ async function handleImagePromptGenerate(userRequirement, userImages = []) {
     const userRequirementMessageIndex = findMessageIndexWithPlaceholder4(prompt2, "{{\u7528\u6237\u9700\u6C42}}");
     console.log("[imagePromptGen] User requirement message index:", userRequirementMessageIndex);
     prompt2 = replacePlaceholder(prompt2, "{{\u5F53\u524D\u89D2\u8272}}", currentCharacterText, replacedVariables);
+    prompt2 = appendFixedPromptModeInstruction(prompt2, currentPreset.data, "character");
     prompt2 = replacePlaceholder(prompt2, "{{\u670D\u88C5\u5217\u8868}}", currentOutfitsText, replacedVariables);
     prompt2 = replacePlaceholder(prompt2, "{{\u7528\u6237\u9700\u6C42}}", userRequirement || "", replacedVariables);
     prompt2 = replacePlaceholder(prompt2, "{{\u5F53\u524D\u670D\u88C5}}", "", replacedVariables);
@@ -31914,24 +31931,24 @@ function loadCharacterPresetData(presetId) {
   });
   const promptModeElement = document.getElementById("char_promptMode");
   if (promptModeElement) {
-    promptModeElement.value = preset.promptMode || "split";
+    promptModeElement.value = resolveCharacterPromptMode(preset);
   }
   const fixedPromptElement = document.getElementById("char_fixedPrompt");
   if (fixedPromptElement) {
     fixedPromptElement.value = preset.fixedPrompt || "";
   }
-  applyCharacterPromptModeUI(preset.promptMode || "split");
+  applyCharacterPromptModeUI(preset);
   const currentOutfitPreset = settings3.outfitPresetId ? settings3.outfitPresets?.[settings3.outfitPresetId] : null;
   if (currentOutfitPreset) {
     const outfitPromptModeElement = document.getElementById("outfit_promptMode");
     if (outfitPromptModeElement) {
-      outfitPromptModeElement.value = currentOutfitPreset.promptMode || "split";
+      outfitPromptModeElement.value = resolveOutfitPromptMode(currentOutfitPreset);
     }
     const outfitFixedPromptElement = document.getElementById("outfit_fixedPrompt");
     if (outfitFixedPromptElement) {
       outfitFixedPromptElement.value = currentOutfitPreset.fixedPrompt || "";
     }
-    applyOutfitPromptModeUI(currentOutfitPreset.promptMode || "split");
+    applyOutfitPromptModeUI(currentOutfitPreset);
   }
   const outfitListElement = document.getElementById("char_outfit_list");
   if (outfitListElement) {
@@ -32094,7 +32111,7 @@ function saveCurrentCharacterData(presetId) {
   normalizeCharacterPreset(existingPreset);
   const promptModeElement = document.getElementById("char_promptMode");
   const fixedPromptElement = document.getElementById("char_fixedPrompt");
-  preset.promptMode = promptModeElement && promptModeElement.value ? promptModeElement.value : existingPreset.promptMode || "split";
+  preset.promptMode = promptModeElement && promptModeElement.value ? promptModeElement.value : resolveCharacterPromptMode(existingPreset);
   preset.fixedPrompt = fixedPromptElement ? fixedPromptElement.value || "" : existingPreset.fixedPrompt || "";
   preset.photoMedia = existingPreset.photoMedia || [];
   preset.audioMedia = existingPreset.audioMedia || [];
@@ -32576,7 +32593,8 @@ function bindCharacterFieldListeners() {
     });
   }
 }
-function applyCharacterPromptModeUI(promptMode) {
+function applyCharacterPromptModeUI(presetOrMode) {
+  const promptMode = typeof presetOrMode === "string" ? presetOrMode : resolveCharacterPromptMode(presetOrMode);
   const isFixedMode = (promptMode || "split") === "fixed";
   const tab = document.getElementById("st-chatu8-tab-character");
   const scope = tab || document;
@@ -33958,6 +33976,52 @@ function findBestOutfitMatch(inputName, outfitPresets, enabledOutfits, allOutfit
   }
   return null;
 }
+function resolveCharacterPromptMode(preset) {
+  if (!preset) return "split";
+  if (preset.promptMode === "fixed") return "fixed";
+  if (preset.promptMode === "split") return "split";
+  if (preset.promptMode === void 0 || preset.promptMode === null || preset.promptMode === "") {
+    const fixedPrompt = typeof preset.fixedPrompt === "string" ? preset.fixedPrompt.trim() : "";
+    if (!fixedPrompt) return "split";
+    const partFields = ["characterTraits", "facialFeatures", "facialFeaturesBack", "upperBodySFW", "upperBodySFWBack", "fullBodySFW", "fullBodySFWBack", "upperBodyNSFW", "upperBodyNSFWBack", "fullBodyNSFW", "fullBodyNSFWBack"];
+    const hasPartContent = partFields.some((field) => {
+      const value = preset[field];
+      return typeof value === "string" ? value.trim() !== "" : value !== void 0 && value !== null && String(value).trim() !== "";
+    });
+    return hasPartContent ? "split" : "fixed";
+  }
+  return "split";
+}
+function resolveOutfitPromptMode(outfit) {
+  if (!outfit) return "split";
+  if (outfit.promptMode === "fixed") return "fixed";
+  if (outfit.promptMode === "split") return "split";
+  if (outfit.promptMode === void 0 || outfit.promptMode === null || outfit.promptMode === "") {
+    const fixedPrompt = typeof outfit.fixedPrompt === "string" ? outfit.fixedPrompt.trim() : "";
+    if (!fixedPrompt) return "split";
+    const partFields = ["upperBody", "upperBodyBack", "fullBody", "fullBodyBack"];
+    const hasPartContent = partFields.some((field) => {
+      const value = outfit[field];
+      return typeof value === "string" ? value.trim() !== "" : value !== void 0 && value !== null && String(value).trim() !== "";
+    });
+    return hasPartContent ? "split" : "fixed";
+  }
+  return "split";
+}
+function mergeFixedPromptFromParts(data, fields) {
+  if (!data) return "";
+  const parts = fields.map((field) => typeof data[field] === "string" ? data[field].trim() : "").filter((value) => value);
+  return parts.length ? parts.join(", ") : "";
+}
+function appendFixedPromptModeInstruction(promptText, preset, kind) {
+  if (!promptText || typeof promptText !== "string" || !preset) return promptText;
+  const isOutfit = kind === "outfit";
+  const mode = isOutfit ? resolveOutfitPromptMode(preset) : resolveCharacterPromptMode(preset);
+  const fixedPrompt = typeof preset.fixedPrompt === "string" ? preset.fixedPrompt.trim() : "";
+  if (mode !== "fixed" || !fixedPrompt) return promptText;
+  const instruction = isOutfit ? "\n\n\u3010\u8F93\u51FA\u683C\u5F0F\u3011\u5F53\u524D\u670D\u88C5\u4F7F\u7528\u300C\u56FA\u5B9A\u63D0\u793A\u8BCD\u300D\u5B58\u50A8\u5F62\u5F0F\uFF1A\u8BF7\u53EA\u8F93\u51FA <\u670D\u88C5> \u5757\uFF0C\u5916\u89C2\u53EA\u5199\u4E00\u884C\u300C\u670D\u88C5\u5F62\u8C61: \u2026\u300D\uFF0C\u4E0D\u8981\u518D\u8F93\u51FA \u4E0A\u534A\u8EAB/\u4E0B\u534A\u8EAB/\u80CC\u9762 \u7B49\u5206\u90E8\u4F4D\u5B57\u6BB5\u3002" : "\n\n\u3010\u8F93\u51FA\u683C\u5F0F\u3011\u5F53\u524D\u89D2\u8272\u4F7F\u7528\u300C\u56FA\u5B9A\u63D0\u793A\u8BCD\u300D\u5B58\u50A8\u5F62\u5F0F\uFF1A\u8BF7\u53EA\u8F93\u51FA <\u4EBA\u7269> \u5757\uFF0C\u5916\u89C2\u53EA\u5199\u4E00\u884C\u300C\u4EBA\u7269\u5F62\u8C61: \u2026\u300D\uFF0C\u4E0D\u8981\u518D\u8F93\u51FA \u4E94\u5B98\u5916\u8C8C/\u4E0A\u534A\u8EABSFW/\u4E0B\u534A\u8EABNSFW \u7B49\u5206\u90E8\u4F4D\u5B57\u6BB5\u3002";
+  return promptText + instruction;
+}
 function processCharacterPrompt(prompt2) {
   if (!prompt2 || typeof prompt2 !== "string") {
     return prompt2;
@@ -34049,7 +34113,7 @@ function processCharacterPrompt(prompt2) {
         );
         if (character) {
           let replacement = "";
-          const fixedPromptText = (character.promptMode || "split") === "fixed" ? (character.fixedPrompt || "").trim() : "";
+          const fixedPromptText = resolveCharacterPromptMode(character) === "fixed" ? (character.fixedPrompt || "").trim() : "";
           if (fixedPromptText) {
             replacement = fixedPromptText;
           } else {
@@ -34095,7 +34159,7 @@ function processCharacterPrompt(prompt2) {
         );
         if (outfit) {
           let replacement = "";
-          const fixedPromptText = (outfit.promptMode || "split") === "fixed" ? (outfit.fixedPrompt || "").trim() : "";
+          const fixedPromptText = resolveOutfitPromptMode(outfit) === "fixed" ? (outfit.fixedPrompt || "").trim() : "";
           if (fixedPromptText) {
             if (upperState === "visible" || lowerState === "visible") {
               replacement = fixedPromptText;
@@ -34146,7 +34210,7 @@ function processCharacterPrompt(prompt2) {
         );
         if (character) {
           let replacement = "";
-          const fixedPromptText = (character.promptMode || "split") === "fixed" ? (character.fixedPrompt || "").trim() : "";
+          const fixedPromptText = resolveCharacterPromptMode(character) === "fixed" ? (character.fixedPrompt || "").trim() : "";
           if (fixedPromptText) {
             replacement = fixedPromptText;
           } else {
@@ -34199,7 +34263,7 @@ function processCharacterPrompt(prompt2) {
         );
         if (outfit) {
           let replacement = "";
-          const fixedPromptText = (outfit.promptMode || "split") === "fixed" ? (outfit.fixedPrompt || "").trim() : "";
+          const fixedPromptText = resolveOutfitPromptMode(outfit) === "fixed" ? (outfit.fixedPrompt || "").trim() : "";
           if (fixedPromptText) {
             if (format.hasUpper || format.hasLower) {
               replacement = fixedPromptText;
@@ -34300,7 +34364,7 @@ function processMultiCharacterPrompt(prompt2) {
                 console.log(`[CharacterPrompt] \u6536\u96C6\u8D1F\u9762\u63D0\u793A\u8BCD:`, character.negative.trim());
               }
               let replacement = "";
-              const fixedPromptText = (character.promptMode || "split") === "fixed" ? (character.fixedPrompt || "").trim() : "";
+              const fixedPromptText = resolveCharacterPromptMode(character) === "fixed" ? (character.fixedPrompt || "").trim() : "";
               const upperState = jsonData.upperBody.toLowerCase();
               const lowerState = jsonData.lowerBody.toLowerCase();
               if (fixedPromptText) {
@@ -34345,7 +34409,7 @@ function processMultiCharacterPrompt(prompt2) {
               let replacement = "";
               const upperState = jsonData.upperBody.toLowerCase();
               const lowerState = jsonData.lowerBody.toLowerCase();
-              const fixedPromptText = (outfit.promptMode || "split") === "fixed" ? (outfit.fixedPrompt || "").trim() : "";
+              const fixedPromptText = resolveOutfitPromptMode(outfit) === "fixed" ? (outfit.fixedPrompt || "").trim() : "";
               if (fixedPromptText) {
                 if (upperState === "visible" || lowerState === "visible") {
                   replacement = fixedPromptText;
@@ -34397,7 +34461,7 @@ function processMultiCharacterPrompt(prompt2) {
                     console.log(`[CharacterPrompt] \u6536\u96C6\u8D1F\u9762\u63D0\u793A\u8BCD:`, character.negative.trim());
                   }
                   let replacement = "";
-                  const fixedPromptText = (character.promptMode || "split") === "fixed" ? (character.fixedPrompt || "").trim() : "";
+                  const fixedPromptText = resolveCharacterPromptMode(character) === "fixed" ? (character.fixedPrompt || "").trim() : "";
                   if (fixedPromptText) {
                     replacement = fixedPromptText;
                   } else {
@@ -34446,7 +34510,7 @@ function processMultiCharacterPrompt(prompt2) {
                 );
                 if (outfit) {
                   let replacement = "";
-                  const fixedPromptText = (outfit.promptMode || "split") === "fixed" ? (outfit.fixedPrompt || "").trim() : "";
+                  const fixedPromptText = resolveOutfitPromptMode(outfit) === "fixed" ? (outfit.fixedPrompt || "").trim() : "";
                   if (fixedPromptText) {
                     if (format.hasUpper || format.hasLower) {
                       replacement = fixedPromptText;
@@ -37295,12 +37359,18 @@ async function handleExtractedData(extracted, metadata = {}) {
       const overwrite = await stylishConfirm(`\u670D\u88C5 "${presetName}" \u5DF2\u5B58\u5728,\u662F\u5426\u8986\u76D6?`);
       if (!overwrite) continue;
     }
-        settings3.outfitPresets[outfitName] = {
-          nameCN: outfitData.nameCN,
-          nameEN: outfitData.nameEN,
-          promptMode: settings3.outfitPresets[outfitName]?.promptMode || "split",
-          fixedPrompt: outfitData.fixedPrompt || settings3.outfitPresets[outfitName]?.fixedPrompt || "",
-          owner: outfitData.owner || "",
+    if (resolveOutfitPromptMode(settings3.outfitPresets[presetName] || {}) === "fixed" && !String(outfitData.fixedPrompt || "").trim()) {
+      const mergedFixedPrompt = mergeFixedPromptFromParts(outfitData, ["upperBody", "fullBody", "upperBodyBack", "fullBodyBack"]);
+      if (mergedFixedPrompt) {
+        outfitData.fixedPrompt = mergedFixedPrompt;
+      }
+    }
+    settings3.outfitPresets[presetName] = {
+      nameCN: outfitData.nameCN,
+      nameEN: outfitData.nameEN,
+      promptMode: resolveOutfitPromptMode({ ...(settings3.outfitPresets[presetName] || {}), ...outfitData }),
+      fixedPrompt: outfitData.fixedPrompt || settings3.outfitPresets[presetName]?.fixedPrompt || "",
+      owner: outfitData.owner || "",
       upperBody: outfitData.upperBody,
       upperBodyBack: outfitData.upperBodyBack,
       fullBody: outfitData.fullBody,
@@ -37326,12 +37396,18 @@ async function handleExtractedData(extracted, metadata = {}) {
           const overwrite = await stylishConfirm(`\u670D\u88C5 "${outfitName}" \u5DF2\u5B58\u5728,\u662F\u5426\u8986\u76D6?`);
           if (!overwrite) continue;
         }
-    settings3.outfitPresets[presetName] = {
-      nameCN: outfitData.nameCN,
-      nameEN: outfitData.nameEN,
-      promptMode: settings3.outfitPresets[presetName]?.promptMode || "split",
-      fixedPrompt: outfitData.fixedPrompt || settings3.outfitPresets[presetName]?.fixedPrompt || "",
-      owner: outfitData.owner || "",
+        if (resolveOutfitPromptMode(settings3.outfitPresets[outfitName] || {}) === "fixed" && !String(outfitData.fixedPrompt || "").trim()) {
+          const mergedFixedPrompt = mergeFixedPromptFromParts(outfitData, ["upperBody", "fullBody", "upperBodyBack", "fullBodyBack"]);
+          if (mergedFixedPrompt) {
+            outfitData.fixedPrompt = mergedFixedPrompt;
+          }
+        }
+        settings3.outfitPresets[outfitName] = {
+          nameCN: outfitData.nameCN,
+          nameEN: outfitData.nameEN,
+          promptMode: resolveOutfitPromptMode({ ...(settings3.outfitPresets[outfitName] || {}), ...outfitData }),
+          fixedPrompt: outfitData.fixedPrompt || settings3.outfitPresets[outfitName]?.fixedPrompt || "",
+          owner: outfitData.owner || "",
           upperBody: outfitData.upperBody,
           upperBodyBack: outfitData.upperBodyBack,
           fullBody: outfitData.fullBody,
@@ -37346,10 +37422,16 @@ async function handleExtractedData(extracted, metadata = {}) {
         }
       }
     }
+    if (resolveCharacterPromptMode(settings3.characterPresets[presetName] || {}) === "fixed" && !String(charData.fixedPrompt || "").trim()) {
+      const mergedFixedPrompt = mergeFixedPromptFromParts(charData, ["characterTraits", "facialFeatures", "facialFeaturesBack"]);
+      if (mergedFixedPrompt) {
+        charData.fixedPrompt = mergedFixedPrompt;
+      }
+    }
     settings3.characterPresets[presetName] = {
       nameCN: charData.nameCN,
       nameEN: charData.nameEN,
-      promptMode: settings3.characterPresets[presetName]?.promptMode || "split",
+      promptMode: resolveCharacterPromptMode({ ...(settings3.characterPresets[presetName] || {}), ...charData }),
       fixedPrompt: charData.fixedPrompt || settings3.characterPresets[presetName]?.fixedPrompt || "",
       characterTraits: charData.characterTraits,
       // 角色特征
