@@ -263,7 +263,8 @@
         outputFormat: outFormat,
         hasAlpha: res && res.hasAlpha !== void 0 ? res.hasAlpha : null,
         pngBytes: res && res.pngBytes !== void 0 ? res.pngBytes : null,
-        jpegBytes: res && res.jpegBytes !== void 0 ? res.jpegBytes : null
+        jpegBytes: res && res.jpegBytes !== void 0 ? res.jpegBytes : null,
+        skippedPngOptimise: !!(res && res.skippedPngOptimise)
       };
       if (!res || res.ok !== true) {
         const reason = res && res.reason || "worker-error";

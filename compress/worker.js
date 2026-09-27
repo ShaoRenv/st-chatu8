@@ -4793,8 +4793,9 @@
   }
 
   // src/worker.js
-  var VERSION = "1.0.0";
+  var VERSION = "1.1.0";
   var MSG_TAG = 1;
+  var PNG_SKIP_OPTIMISE_RATIO = 0.4;
   var wasmBase = "";
   var initDone = null;
   function log(...args) {
@@ -4864,36 +4865,61 @@
     let hasAlpha = null;
     let pngBytes = null;
     let jpegBytes = null;
+    let skippedPngOptimise = false;
     if (format === "png") {
-      const pngOut = await optimisePngBytes(bytes, level);
-      out = pngOut;
-      pngBytes = pngOut.byteLength;
       const wantConversion = allowFormatChange && level !== "lossless";
       const info = pngHeaderInfo(bytes);
       const headerNoAlpha = !!(info && !info.hasAlphaChannel);
-      const needPixelCheck = wantConversion || !headerNoAlpha && level !== "lossless";
       let imageData = null;
-      if (needPixelCheck) {
+      if (wantConversion) {
         try {
           imageData = await decodeToImageData(bytes, "png");
           width = imageData.width;
           height = imageData.height;
-          hasAlpha = hasTransparentPixels(imageData);
+          hasAlpha = headerNoAlpha ? false : hasTransparentPixels(imageData);
         } catch (_) {
           imageData = null;
           hasAlpha = headerNoAlpha ? false : null;
         }
-      } else if (headerNoAlpha) {
-        hasAlpha = false;
+        if (imageData && hasAlpha === false) {
+          const jpegOut = await encodeJpegForConversion(imageData, level);
+          jpegBytes = jpegOut.byteLength;
+          if (jpegOut.byteLength <= before * PNG_SKIP_OPTIMISE_RATIO) {
+            out = jpegOut;
+            outputFormat = "jpeg";
+            skippedPngOptimise = true;
+          } else {
+            const pngOut = await optimisePngBytes(bytes, level);
+            pngBytes = pngOut.byteLength;
+            if (jpegOut.byteLength < pngOut.byteLength) {
+              out = jpegOut;
+              outputFormat = "jpeg";
+            } else {
+              out = pngOut;
+            }
+          }
+        } else {
+          const pngOut = await optimisePngBytes(bytes, level);
+          pngBytes = pngOut.byteLength;
+          out = pngOut;
+        }
       } else {
-        hasAlpha = null;
-      }
-      if (wantConversion && imageData && hasAlpha === false) {
-        const jpegOut = await encodeJpegForConversion(imageData, level);
-        jpegBytes = jpegOut.byteLength;
-        if (jpegOut.byteLength < pngOut.byteLength) {
-          out = jpegOut;
-          outputFormat = "jpeg";
+        const pngOut = await optimisePngBytes(bytes, level);
+        pngBytes = pngOut.byteLength;
+        out = pngOut;
+        if (headerNoAlpha) {
+          hasAlpha = false;
+        } else if (level !== "lossless") {
+          try {
+            imageData = await decodeToImageData(bytes, "png");
+            width = imageData.width;
+            height = imageData.height;
+            hasAlpha = hasTransparentPixels(imageData);
+          } catch (_) {
+            hasAlpha = null;
+          }
+        } else {
+          hasAlpha = null;
         }
       }
     } else {
@@ -4917,7 +4943,8 @@
       level,
       width,
       height,
-      format
+      format,
+      skippedPngOptimise
     };
     if (after >= before) {
       return Object.assign({ ok: false, reason: "not-smaller" }, meta);
