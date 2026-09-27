@@ -90626,7 +90626,7 @@ function syncCompressButtons() {
   const mainButton = document.getElementById("image-cache-compress-main");
   if (mainButton) {
     mainButton.disabled = busy;
-    mainButton.innerHTML = label;
+    mainButton.innerHTML = compressRunning ? '<i class="fa-solid fa-spinner fa-spin"></i> 压缩中...' : '<i class="fa-solid fa-compress"></i> 立即压缩已有缓存';
   }
   const recalcSizeBtn = document.getElementById("image-cache-recalc-size");
   if (recalcSizeBtn) recalcSizeBtn.disabled = busy;
@@ -91076,14 +91076,22 @@ function initImageCache(settingsModal) {
   $("#image-cache-compress").on("click", function() {
     compressCachedImages({ scope: selectedImages.size > 0 ? "selected" : "all" });
   });
-  // 主要设置页「转JPEG储存」下方的入口：先切到「图片缓存」页（进度面板在那里），再开始压缩
+  // 主要设置页「转JPEG储存」下方的入口：先切到「图片缓存」页（进度面板在那里），再开始压缩。
+  // 注意：设置弹窗会一次性加载所有分页 HTML，因此不能用「面板元素是否存在」当判据，要看分页是否真的可见/激活。
+  function isImageCacheTabActive() {
+    const tab = document.getElementById("st-chatu8-tab-image-cache");
+    if (!tab) return false;
+    if (tab.classList && tab.classList.contains("active")) return true;
+    const rect = tab.getBoundingClientRect ? tab.getBoundingClientRect() : null;
+    return !!(rect && rect.width > 0 && rect.height > 0);
+  }
   $(document).on("click", "#image-cache-compress-main", async function() {
     if (compressTask && compressTask.running) return;
-    if (!document.getElementById("image-cache-recalc-progress")) {
+    if (!isImageCacheTabActive()) {
       const navLink = document.querySelector('.st-chatu8-nav-link[data-tab="image-cache"]');
       if (navLink) {
         navLink.click();
-        for (let i = 0; i < 30 && !document.getElementById("image-cache-recalc-progress"); i++) {
+        for (let i = 0; i < 30 && !isImageCacheTabActive(); i++) {
           await new Promise(function(resolve) { setTimeout(resolve, 100); });
         }
       }
