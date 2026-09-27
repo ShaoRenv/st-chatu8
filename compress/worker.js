@@ -4796,6 +4796,7 @@
   var VERSION = "1.1.0";
   var MSG_TAG = 1;
   var PNG_SKIP_OPTIMISE_RATIO = 0.4;
+  var PNG_SKIP_MIN_BYTES_PER_PIXEL = 0.5;
   var wasmBase = "";
   var initDone = null;
   function log(...args) {
@@ -4884,7 +4885,9 @@
         if (imageData && hasAlpha === false) {
           const jpegOut = await encodeJpegForConversion(imageData, level);
           jpegBytes = jpegOut.byteLength;
-          if (jpegOut.byteLength <= before * PNG_SKIP_OPTIMISE_RATIO) {
+          const pixels = width * height;
+          const densePng = pixels > 0 && before / pixels >= PNG_SKIP_MIN_BYTES_PER_PIXEL;
+          if (densePng && jpegOut.byteLength <= before * PNG_SKIP_OPTIMISE_RATIO) {
             out = jpegOut;
             outputFormat = "jpeg";
             skippedPngOptimise = true;

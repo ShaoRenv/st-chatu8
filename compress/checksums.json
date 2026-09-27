@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "builtAt": "2026-09-27T18:39:19.956Z",
+  "builtAt": "2026-09-27T19:07:22.276Z",
   "files": [
     {
       "path": "st-chatu8-compress.js",
@@ -9,8 +9,8 @@
     },
     {
       "path": "worker.js",
-      "bytes": 205983,
-      "sha256": "239593709f5504f39d54608634b2e193789bf771903cacc30fdeeb3fd8819f72"
+      "bytes": 206168,
+      "sha256": "9897b0b8a18868b1efd613c73c48ab1e6bf495186a4466a4d8b365e97fb30d3f"
     },
     {
       "path": "wasm/mozjpeg_enc.wasm",

@@ -7,8 +7,13 @@ import { initCodecs, status, errors, optimisePngBytes, encodeImageData, encodeJp
 const VERSION = '1.1.0';
 const MSG_TAG = 1;
 
-// PNG→JPEG 提速阈值：JPEG 已 ≤ 原图该比例时直接采用，跳过一次 oxipng（无损重压缩不可能反超）
+// PNG→JPEG 提速阈值（两个条件都满足才跳过 oxipng，保守）：
+//   1) JPEG 已压到原图 PNG_SKIP_OPTIMISE_RATIO 以下（要赢它，无损重压缩得再省掉一大半）；
+//   2) 原 PNG 本身"稠密"（≥ PNG_SKIP_MIN_BYTES_PER_PIXEL 字节/像素）——这类图 PNG 熵编码本就没优势、oxipng 通常只再省 10~30%。
+//   反例（实测）：1024² 平滑渐变 PNG 100,671 B（0.096 B/px），JPEG 28,987 B 却输给 oxipng 的 19,608 B，
+//   所以"低密度 PNG"（渐变/纯色/大片平坦区）一律照旧跑 oxipng 再比较。
 const PNG_SKIP_OPTIMISE_RATIO = 0.4;
+const PNG_SKIP_MIN_BYTES_PER_PIXEL = 0.5;
 
 let wasmBase = '';
 let initDone = null;
@@ -106,7 +111,9 @@ async function runCompress(msg) {
         // 先跑便宜的那条：MozJPEG（1024² 约 0.2s，2048² 约 1.2s）
         const jpegOut = await encodeJpegForConversion(imageData, level);
         jpegBytes = jpegOut.byteLength;
-        if (jpegOut.byteLength <= before * PNG_SKIP_OPTIMISE_RATIO) {
+        const pixels = width * height;
+        const densePng = pixels > 0 && before / pixels >= PNG_SKIP_MIN_BYTES_PER_PIXEL;
+        if (densePng && jpegOut.byteLength <= before * PNG_SKIP_OPTIMISE_RATIO) {
           // JPEG 已经把体积压到原图 40% 以下：无损重压缩（oxipng）不可能反超，
           // 直接采用 JPEG 并跳过 oxipng（1024² 省约 1.1s、2048² 省约 4.6s）
           out = jpegOut;
