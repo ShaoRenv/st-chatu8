@@ -24902,8 +24902,9 @@ var init_character_config = __esm({
         "\u9ED8\u8BA4\u89D2\u8272": {
           nameCN: "",
           nameEN: "",
+          promptMode: "split",
+          fixedPrompt: "",
           characterTraits: "",
-          // 角色特征
           facialFeatures: "",
           facialFeaturesBack: "",
           upperBodySFW: "",
@@ -24941,8 +24942,9 @@ var init_character_config = __esm({
         "\u9ED8\u8BA4\u670D\u88C5": {
           nameCN: "",
           nameEN: "",
+          promptMode: "split",
+          fixedPrompt: "",
           owner: "",
-          // 归属人（英文名称）
           upperBody: "",
           upperBodyBack: "",
           fullBody: "",
@@ -25037,6 +25039,7 @@ function encryptCharacterPreset(preset) {
   const fields = [
     "nameCN",
     "nameEN",
+    "fixedPrompt",
     "facialFeatures",
     "facialFeaturesBack",
     "upperBodySFW",
@@ -25058,6 +25061,7 @@ function decryptCharacterPreset(preset) {
   const fields = [
     "nameCN",
     "nameEN",
+    "fixedPrompt",
     "facialFeatures",
     "facialFeaturesBack",
     "upperBodySFW",
@@ -25076,11 +25080,11 @@ function decryptCharacterPreset(preset) {
   return decrypted;
 }
 function encryptOutfitPreset(preset) {
-  const fields = ["nameCN", "nameEN", "upperBody", "upperBodyBack", "fullBody", "fullBodyBack"];
+  const fields = ["nameCN", "nameEN", "fixedPrompt", "upperBody", "upperBodyBack", "fullBody", "fullBodyBack"];
   return encryptObjectFields(preset, fields);
 }
 function decryptOutfitPreset(preset) {
-  const fields = ["nameCN", "nameEN", "upperBody", "upperBodyBack", "fullBody", "fullBodyBack"];
+  const fields = ["nameCN", "nameEN", "fixedPrompt", "upperBody", "upperBodyBack", "fullBody", "fullBodyBack"];
   return decryptObjectFields(preset, fields);
 }
 function encryptListPreset(preset, listKey) {
@@ -25707,6 +25711,15 @@ function getCurrentOutfitPreset() {
 }
 function buildOutfitText(preset) {
   const data = preset.data;
+  const fixedPromptText = (data.promptMode || "split") === "fixed" ? (data.fixedPrompt || "").trim() : "";
+  if (fixedPromptText) {
+    let fixedOutfitText = "<\u670D\u88C5>\n";
+    fixedOutfitText += "\u4E2D\u6587\u540D\u79F0: " + (data.nameCN || "") + "\n";
+    fixedOutfitText += "\u82F1\u6587\u540D\u79F0: " + (data.nameEN || "") + "\n";
+    fixedOutfitText += "\u670D\u88C5\u5F62\u8C61: " + fixedPromptText + "\n";
+    fixedOutfitText += "</\u670D\u88C5>";
+    return fixedOutfitText;
+  }
   let text = "<\u670D\u88C5>\n";
   text += `\u4E2D\u6587\u540D\u79F0: ${data.nameCN || ""}
 `;
@@ -26266,6 +26279,7 @@ function parseOutfitData(content) {
   const data = {
     nameCN: "",
     nameEN: "",
+    fixedPrompt: "",
     upperBody: "",
     upperBodyBack: "",
     fullBody: "",
@@ -26274,6 +26288,8 @@ function parseOutfitData(content) {
   const fieldMap = {
     "\u4E2D\u6587\u540D\u79F0": "nameCN",
     "\u82F1\u6587\u540D\u79F0": "nameEN",
+    "\u670D\u88C5\u5F62\u8C61": "fixedPrompt",
+    "\u56FA\u5B9A\u63D0\u793A\u8BCD": "fixedPrompt",
     "\u4E0A\u534A\u8EAB": "upperBody",
     "\u4E0A\u534A\u8EAB\u80CC\u9762": "upperBodyBack",
     "\u4E0B\u534A\u8EAB": "fullBody",
@@ -26326,6 +26342,15 @@ function getCurrentOutfitPreset2() {
 }
 function buildOutfitText2(preset) {
   const data = preset.data;
+  const fixedPromptText = (data.promptMode || "split") === "fixed" ? (data.fixedPrompt || "").trim() : "";
+  if (fixedPromptText) {
+    let fixedOutfitText = "<\u670D\u88C5>\n";
+    fixedOutfitText += "\u4E2D\u6587\u540D\u79F0: " + (data.nameCN || "") + "\n";
+    fixedOutfitText += "\u82F1\u6587\u540D\u79F0: " + (data.nameEN || "") + "\n";
+    fixedOutfitText += "\u670D\u88C5\u5F62\u8C61: " + fixedPromptText + "\n";
+    fixedOutfitText += "</\u670D\u88C5>";
+    return fixedOutfitText;
+  }
   let text = "<\u670D\u88C5>\n";
   text += `\u4E2D\u6587\u540D\u79F0: ${data.nameCN || ""}
 `;
@@ -26419,7 +26444,8 @@ async function updateOutfitPresetFromLLM(presetId, newData) {
     "upperBody": "\u4E0A\u534A\u8EAB",
     "upperBodyBack": "\u4E0A\u534A\u8EAB\u80CC\u9762",
     "fullBody": "\u4E0B\u534A\u8EAB",
-    "fullBodyBack": "\u4E0B\u534A\u8EAB\u80CC\u9762"
+    "fullBodyBack": "\u4E0B\u534A\u8EAB\u80CC\u9762",
+    "fixedPrompt": "\u670D\u88C5\u5F62\u8C61"
   };
   let changesCount = 0;
   for (const field in fieldLabels) {
@@ -26460,7 +26486,7 @@ async function updateOutfitPresetFromLLM(presetId, newData) {
   console.log(`[outfitPromptModify] \u5DF2\u66F4\u65B0\u670D\u88C5\u9884\u8BBE "${presetId}"`);
 }
 function updateOutfitFormFields(data) {
-  const fields = ["nameCN", "nameEN", "upperBody", "upperBodyBack", "fullBody", "fullBodyBack"];
+  const fields = ["nameCN", "nameEN", "upperBody", "upperBodyBack", "fullBody", "fullBodyBack", "fixedPrompt"];
   fields.forEach((field) => {
     if (data[field]) {
       const element = document.getElementById(`outfit_${field}`);
@@ -27356,6 +27382,7 @@ var init_presetSearchMatcher = __esm({
       characterPresets: [
         "nameCN",
         "nameEN",
+        "fixedPrompt",
         "characterTraits",
         "facialFeatures",
         "facialFeaturesBack",
@@ -27376,6 +27403,7 @@ var init_presetSearchMatcher = __esm({
       outfitPresets: [
         "nameCN",
         "nameEN",
+        "fixedPrompt",
         "owner",
         "upperBody",
         "upperBodyBack",
@@ -28301,6 +28329,15 @@ function loadOutfitPresetData(presetId) {
   if (sendPhotoElement) {
     sendPhotoElement.checked = preset.sendPhoto === true;
   }
+  const promptModeElement = document.getElementById("outfit_promptMode");
+  if (promptModeElement) {
+    promptModeElement.value = preset.promptMode || "split";
+  }
+  const fixedPromptElement = document.getElementById("outfit_fixedPrompt");
+  if (fixedPromptElement) {
+    fixedPromptElement.value = preset.fixedPrompt || "";
+  }
+  applyOutfitPromptModeUI(preset.promptMode || "split");
   loadOutfitPhoto(preset);
   debouncedUpdateOutfitTokenCounts();
 }
@@ -28342,6 +28379,8 @@ function createNewOutfitPreset() {
       const emptyPreset = {
         nameCN: "",
         nameEN: "",
+        promptMode: "split",
+        fixedPrompt: "",
         owner: "",
         upperBody: "",
         upperBodyBack: "",
@@ -28412,6 +28451,10 @@ function saveCurrentOutfitData(presetId) {
     preset.sendPhoto = sendPhotoElement.checked;
   }
   const existingPreset = settings3.outfitPresets[presetId] || {};
+  const promptModeElement = document.getElementById("outfit_promptMode");
+  const fixedPromptElement = document.getElementById("outfit_fixedPrompt");
+  preset.promptMode = promptModeElement && promptModeElement.value ? promptModeElement.value : existingPreset.promptMode || "split";
+  preset.fixedPrompt = fixedPromptElement ? fixedPromptElement.value || "" : existingPreset.fixedPrompt || "";
   preset.photoImageIds = existingPreset.photoImageIds || [];
   settings3.outfitPresets[presetId] = preset;
   saveSettingsDebounced15();
@@ -28647,6 +28690,62 @@ function bindOutfitFieldListeners() {
       $(element).on("input", debouncedUpdateOutfitTokenCounts);
     }
   });
+  const promptModeElement = document.getElementById("outfit_promptMode");
+  if (promptModeElement) {
+    $(promptModeElement).on("change", function() {
+      const settings3 = extension_settings23[extensionName];
+      const presetName = settings3.outfitPresetId;
+      if (presetName && settings3.outfitPresets[presetName]) {
+        saveCurrentOutfitData(presetName);
+      }
+      applyOutfitPromptModeUI(this.value || "split");
+      debouncedUpdateOutfitTokenCounts();
+    });
+    applyOutfitPromptModeUI(promptModeElement.value || "split");
+  }
+  const fixedPromptElement = document.getElementById("outfit_fixedPrompt");
+  if (fixedPromptElement) {
+    $(fixedPromptElement).on("input", function() {
+      const settings3 = extension_settings23[extensionName];
+      const presetName = settings3.outfitPresetId;
+      if (presetName && settings3.outfitPresets[presetName]) {
+        saveCurrentOutfitData(presetName);
+      }
+    });
+    $(fixedPromptElement).on("input", debouncedUpdateOutfitTokenCounts);
+  }
+  const mergeToFixedButton = document.getElementById("outfit_mergeToFixed");
+  if (mergeToFixedButton) {
+    $(mergeToFixedButton).on("click", function() {
+      const target = document.getElementById("outfit_fixedPrompt");
+      if (!target) return;
+      const mergedParts = ["outfit_upperBody", "outfit_fullBody", "outfit_upperBodyBack", "outfit_fullBodyBack"].map((id) => (document.getElementById(id)?.value || "").trim()).filter((value) => value);
+      target.value = mergedParts.join(", ");
+      $(target).trigger("input");
+    });
+  }
+}
+function applyOutfitPromptModeUI(promptMode) {
+  const isFixedMode = (promptMode || "split") === "fixed";
+  const tab = document.getElementById("st-chatu8-tab-character");
+  const scope = tab || document;
+  if (scope.querySelectorAll) {
+    scope.querySelectorAll("[data-outfit-part-field]").forEach((element) => {
+      element.style.display = isFixedMode ? "none" : "";
+    });
+  }
+  const fixedPromptElement = document.getElementById("outfit_fixedPrompt");
+  if (fixedPromptElement) {
+    fixedPromptElement.style.display = isFixedMode ? "" : "none";
+  }
+  const mergeButtonElement = document.getElementById("outfit_mergeToFixed");
+  if (mergeButtonElement) {
+    mergeButtonElement.style.display = isFixedMode ? "" : "none";
+  }
+  const hint = document.getElementById("outfit_promptMode_hint");
+  if (hint) {
+    hint.textContent = isFixedMode ? "\u5F53\u524D\uFF1A\u56FA\u5B9A\u63D0\u793A\u8BCD\uFF08\u4E0D\u5206\u89D2\u5EA6/\u90E8\u4F4D\uFF0C\u4E0B\u65B9\u90E8\u4F4D\u5B57\u6BB5\u4E0D\u53C2\u4E0E\u751F\u6210\uFF09" : "\u5F53\u524D\uFF1A\u5206\u90E8\u4F4D\u63D0\u793A\u8BCD\uFF08\u6309\u89D2\u5EA6/\u90E8\u4F4D\u53D6\u503C\uFF09";
+  }
 }
 async function updateOutfitTokenCounts() {
   let totalTokens = 0;
@@ -28668,12 +28767,16 @@ async function updateOutfitTokenCounts() {
       display.textContent = `\u5F53\u524D\u5360\u7528: ${tokenCounts[field] || 0} | \u603B\u5360\u7528: ${totalTokens}`;
     }
   }
-  const frontTotal = (tokenCounts.upperBody || 0) + (tokenCounts.fullBody || 0);
-  const backTotal = (tokenCounts.upperBodyBack || 0) + (tokenCounts.fullBodyBack || 0);
+  const outfitPromptModeElement = document.getElementById("outfit_promptMode");
+  const outfitFixedPromptElement = document.getElementById("outfit_fixedPrompt");
+  const isOutfitFixedPromptMode = outfitPromptModeElement ? (outfitPromptModeElement.value || "split") === "fixed" : false;
+  const outfitFixedPromptTokens = isOutfitFixedPromptMode && outfitFixedPromptElement && (outfitFixedPromptElement.value || "").trim() ? await calculateNovelAITokens(outfitFixedPromptElement.value) : 0;
+  const frontTotal = isOutfitFixedPromptMode ? outfitFixedPromptTokens : (tokenCounts.upperBody || 0) + (tokenCounts.fullBody || 0);
+  const backTotal = isOutfitFixedPromptMode ? outfitFixedPromptTokens : (tokenCounts.upperBodyBack || 0) + (tokenCounts.fullBodyBack || 0);
   const elFront = document.getElementById("token_combo_outfit_front");
   const elBack = document.getElementById("token_combo_outfit_back");
-  if (elFront) elFront.textContent = `\u6B63\u9762\u5168\u8EAB: ${frontTotal}`;
-  if (elBack) elBack.textContent = `\u80CC\u9762\u5168\u8EAB: ${backTotal}`;
+  if (elFront) elFront.textContent = isOutfitFixedPromptMode ? "\u56FA\u5B9A\u63D0\u793A\u8BCD: " + frontTotal : "\u6B63\u9762\u5168\u8EAB: " + frontTotal;
+  if (elBack) elBack.textContent = isOutfitFixedPromptMode ? "\u56FA\u5B9A\u63D0\u793A\u8BCD: " + backTotal : "\u80CC\u9762\u5168\u8EAB: " + backTotal;
 }
 function debouncedUpdateOutfitTokenCounts() {
   clearTimeout(outfitTokenCalcTimeout);
@@ -29434,7 +29537,8 @@ var init_outfitPreset = __esm({
 
 function getCharacterPromptData(character, outfitsText = "", mediaInfo = {}) {
   if (!character) return {};
-  return {
+  const fixedVisual = (character.promptMode || "split") === "fixed" ? (character.fixedPrompt || "").trim() : "";
+  const data = {
     nameCN: character.nameCN || "",
     nameEN: character.nameEN ? character.nameEN.split("|")[0].trim() : "",
     traits: character.characterTraits || "",
@@ -29458,12 +29562,20 @@ function getCharacterPromptData(character, outfitsText = "", mediaInfo = {}) {
     imageId: mediaInfo.imageId || "",
     imageDesc: mediaInfo.imageDesc || "",
     audioId: mediaInfo.audioId || "",
-    audioDesc: mediaInfo.audioDesc || ""
+    audioDesc: mediaInfo.audioDesc || "",
+    fixed: fixedVisual
   };
+  if (fixedVisual) {
+    for (const key of ["traits", "facial", "facialBack", "upperSFW", "upperSFWBack", "fullSFW", "fullSFWBack", "lowerSFW", "lowerSFWBack", "upperNSFW", "upperNSFWBack", "fullNSFW", "fullNSFWBack", "lowerNSFW", "lowerNSFWBack"]) {
+      data[key] = "";
+    }
+  }
+  return data;
 }
 function getOutfitPromptData(outfit) {
   if (!outfit) return {};
-  return {
+  const fixedVisual = (outfit.promptMode || "split") === "fixed" ? (outfit.fixedPrompt || "").trim() : "";
+  const data = {
     nameCN: outfit.nameCN || "",
     nameEN: outfit.nameEN ? outfit.nameEN.split("|")[0].trim() : "",
     upperBody: outfit.upperBody || "",
@@ -29472,15 +29584,32 @@ function getOutfitPromptData(outfit) {
     fullBody: outfit.fullBody || "",
     fullBodyBack: outfit.fullBodyBack || "",
     lowerBody: outfit.fullBody || "",
-    lowerBodyBack: outfit.fullBodyBack || ""
+    lowerBodyBack: outfit.fullBodyBack || "",
+    fixed: fixedVisual
   };
+  if (fixedVisual) {
+    for (const key of ["upperBody", "upperBodyBack", "fullBody", "fullBodyBack", "lowerBody", "lowerBodyBack"]) {
+      data[key] = "";
+    }
+  }
+  return data;
 }
 function getSystemDefaultInjectionTemplates() {
   return { ...SYSTEM_INJECTION_TEMPLATES["\u9ED8\u8BA4\u65B9\u6848"] };
 }
 function applyInjectionTemplate(templateStr, dataMap) {
   if (!templateStr || typeof templateStr !== "string") return "";
-  const data = dataMap || {};
+  const data = { ...dataMap || {} };
+  const fixedVisualText = typeof data.fixed === "string" ? data.fixed.trim() : "";
+  if (fixedVisualText && !templateStr.includes("{fixed}")) {
+    const fixedFallbackPriority = ["facial", "facialBack", "upperSFW", "upperSFWBack", "upperNSFW", "upperNSFWBack", "fullSFW", "fullSFWBack", "fullNSFW", "fullNSFWBack", "lowerSFW", "lowerSFWBack", "lowerNSFW", "lowerNSFWBack", "traits", "upperBody", "upperBodyBack", "fullBody", "fullBodyBack", "lowerBody", "lowerBodyBack"];
+    for (const key of fixedFallbackPriority) {
+      if (Object.prototype.hasOwnProperty.call(data, key) && !String(data[key] || "").trim() && templateStr.includes("{" + key + "}")) {
+        data[key] = fixedVisualText;
+        break;
+      }
+    }
+  }
   const resultLines = [];
   let placeholderLineCount = 0;
   let keptPlaceholderLineCount = 0;
@@ -29917,6 +30046,7 @@ var init_injectionTemplates = __esm({
           "\u4E2D\u6587\u540D\u79F0\uFF1A{nameCN}",
           "\u82F1\u6587\u540D\u79F0\uFF1A{nameEN}",
           "\u89D2\u8272\u7279\u5F81\uFF1A{traits}",
+          "\u4EBA\u7269\u5F62\u8C61\uFF1A{fixed}",
           "\u4E94\u5B98\u5916\u8C8C\uFF08\u6B63\u9762\uFF09\uFF1A{facial}",
           "\u4E94\u5B98\u5916\u8C8C\uFF08\u80CC\u9762\uFF09\uFF1A{facialBack}",
           "\u4E0A\u534A\u8EABSFW\uFF08\u6B63\u9762\uFF09\uFF1A{upperSFW}",
@@ -29934,6 +30064,7 @@ var init_injectionTemplates = __esm({
         innerOutfitTemplate: [
           "  \u4E2D\u6587\u540D\u79F0\uFF1A{nameCN}",
           "  \u82F1\u6587\u540D\u79F0\uFF1A{nameEN}",
+          "  \u670D\u88C5\u5F62\u8C61\uFF1A{fixed}",
           "  \u4E0A\u534A\u8EAB\uFF08\u6B63\u9762\uFF09\uFF1A{upperBody}",
           "  \u4E0A\u534A\u8EAB\uFF08\u80CC\u9762\uFF09\uFF1A{upperBodyBack}",
           "  \u4E0B\u534A\u8EAB\uFF08\u6B63\u9762\uFF09\uFF1A{lowerBody}",
@@ -29943,6 +30074,7 @@ var init_injectionTemplates = __esm({
         enableOutfitListTemplate: [
           "\u4E2D\u6587\u540D\u79F0\uFF1A{nameCN}",
           "\u82F1\u6587\u540D\u79F0\uFF1A{nameEN}",
+          "\u670D\u88C5\u5F62\u8C61\uFF1A{fixed}",
           "\u4E0A\u534A\u8EAB\uFF08\u6B63\u9762\uFF09\uFF1A{upperBody}",
           "\u4E0A\u534A\u8EAB\uFF08\u80CC\u9762\uFF09\uFF1A{upperBodyBack}",
           "\u4E0B\u534A\u8EAB\uFF08\u6B63\u9762\uFF09\uFF1A{lowerBody}",
@@ -29953,6 +30085,7 @@ var init_injectionTemplates = __esm({
         characterListTemplate: [
           '<character id="{nameEN}" cn="{nameCN}">',
           "  [Traits] {traits}",
+          "\u4EBA\u7269\u5F62\u8C61\uFF1A{fixed}",
           "  [Face] Front: {facial}",
           "  [Face] Back: {facialBack}",
           "  [SFW] Upper: {upperSFW}",
@@ -29966,6 +30099,7 @@ var init_injectionTemplates = __esm({
         ].join("\n"),
         innerOutfitTemplate: [
           '  <outfit id="{nameEN}" cn="{nameCN}">',
+          "\u670D\u88C5\u5F62\u8C61\uFF1A{fixed}",
           "    [Upper] {upperBody}",
           "    [Lower] {lowerBody}",
           "  </outfit>"
@@ -29973,6 +30107,7 @@ var init_injectionTemplates = __esm({
         commonCharacterListTemplate: '<common_character id="{nameEN}" cn="{nameCN}" />',
         enableOutfitListTemplate: [
           '<common_outfit id="{nameEN}" cn="{nameCN}">',
+          "\u670D\u88C5\u5F62\u8C61\uFF1A{fixed}",
           "  [Upper] {upperBody}",
           "  [Lower] {lowerBody}",
           "</common_outfit>"
@@ -29982,6 +30117,7 @@ var init_injectionTemplates = __esm({
         characterListTemplate: [
           "### {nameCN}\uFF08{nameEN}\uFF09",
           "- \u7279\u5F81\uFF1A{traits}",
+          "\u4EBA\u7269\u5F62\u8C61\uFF1A{fixed}",
           "- \u4E94\u5B98\uFF1A{facial}",
           "- \u4E0A\u534A\u8EAB\uFF1A{upperSFW}",
           "- \u4E0B\u534A\u8EAB\uFF1A{lowerSFW}",
@@ -29993,12 +30129,14 @@ var init_injectionTemplates = __esm({
         ].join("\n"),
         innerOutfitTemplate: [
           "  - **{nameCN}**\uFF08{nameEN}\uFF09",
+          "\u670D\u88C5\u5F62\u8C61\uFF1A{fixed}",
           "    - \u4E0A\u534A\u8EAB\uFF1A{upperBody}",
           "    - \u4E0B\u534A\u8EAB\uFF1A{lowerBody}"
         ].join("\n"),
         commonCharacterListTemplate: "- {nameCN}\uFF08{nameEN}\uFF09",
         enableOutfitListTemplate: [
           "### {nameCN}\uFF08{nameEN}\uFF09",
+          "\u670D\u88C5\u5F62\u8C61\uFF1A{fixed}",
           "- \u4E0A\u534A\u8EAB\uFF1A{upperBody}",
           "- \u4E0B\u534A\u8EAB\uFF1A{lowerBody}"
         ].join("\n")
@@ -30007,6 +30145,7 @@ var init_injectionTemplates = __esm({
         characterListTemplate: [
           '<character id="{nameEN}" cn="{nameCN}">',
           "  [Traits] {traits}",
+          "\u4EBA\u7269\u5F62\u8C61\uFF1A{fixed}",
           "  [image_id]:{imageId} \u8BF4\u660E:{imageDesc}",
           "  [audio_id]:{audioId} \u8BF4\u660E:{audioDesc}",
           "  [Face] Front: {facial}",
@@ -30020,6 +30159,7 @@ var init_injectionTemplates = __esm({
         ].join("\n"),
         innerOutfitTemplate: [
           '  <outfit id="{nameEN}" cn="{nameCN}">',
+          "\u670D\u88C5\u5F62\u8C61\uFF1A{fixed}",
           "    [Upper] {upperBody}",
           "    [Lower] {lowerBody}",
           "  </outfit>"
@@ -30027,6 +30167,7 @@ var init_injectionTemplates = __esm({
         commonCharacterListTemplate: '<common_character id="{nameEN}" cn="{nameCN}" />',
         enableOutfitListTemplate: [
           '<common_outfit id="{nameEN}" cn="{nameCN}">',
+          "\u670D\u88C5\u5F62\u8C61\uFF1A{fixed}",
           "  [Upper] {upperBody}",
           "  [Lower] {lowerBody}",
           "</common_outfit>"
@@ -30044,6 +30185,8 @@ var init_injectionTemplates = __esm({
     PREVIEW_SAMPLE_CHARACTER = {
       nameCN: "\u7231\u4E3D\u4E1D",
       nameEN: "Alice",
+      promptMode: "fixed",
+      fixedPrompt: "1girl, solo, blonde hair, blue eyes, cute smile, pale skin, slender body",
       characterTraits: "1girl, solo, masterpiece, blonde hair, blue eyes",
       facialFeatures: "cute smile, delicate face",
       facialFeaturesBack: "long flowing blonde hair",
@@ -30061,6 +30204,8 @@ var init_injectionTemplates = __esm({
     PREVIEW_SAMPLE_CHARACTER_PARTIAL = {
       nameCN: "\u8D1D\u8482",
       nameEN: "Betty",
+      promptMode: "split",
+      fixedPrompt: "",
       characterTraits: "1girl, solo, silver hair, red eyes",
       facialFeatures: "cool expression, twin braids",
       facialFeaturesBack: "twin braids back",
@@ -30079,6 +30224,8 @@ var init_injectionTemplates = __esm({
       __preview_outfit__: {
         nameCN: "JK\u5236\u670D",
         nameEN: "JK Uniform",
+        promptMode: "fixed",
+        fixedPrompt: "white collared shirt, red ribbon, pleated navy skirt",
         upperBody: "white collared shirt, red ribbon",
         upperBodyBack: "sailor collar back",
         fullBody: "pleated navy skirt",
@@ -30087,6 +30234,8 @@ var init_injectionTemplates = __esm({
       __preview_common_outfit__: {
         nameCN: "\u8FD0\u52A8\u670D",
         nameEN: "Tracksuit",
+        promptMode: "split",
+        fixedPrompt: "",
         upperBody: "zipper jacket, athletic wear",
         upperBodyBack: "sports logo on back",
         fullBody: "track pants, sneakers",
@@ -30601,6 +30750,7 @@ function parseCharacterData(content) {
   const data = {
     nameCN: "",
     nameEN: "",
+    fixedPrompt: "",
     characterTraits: "",
     facialFeatures: "",
     facialFeaturesBack: "",
@@ -30616,6 +30766,8 @@ function parseCharacterData(content) {
   const fieldMap = {
     "\u4E2D\u6587\u540D\u79F0": "nameCN",
     "\u82F1\u6587\u540D\u79F0": "nameEN",
+    "\u4EBA\u7269\u5F62\u8C61": "fixedPrompt",
+    "\u56FA\u5B9A\u63D0\u793A\u8BCD": "fixedPrompt",
     "\u89D2\u8272\u7279\u5F81": "characterTraits",
     "\u4E94\u5B98\u5916\u8C8C": "facialFeatures",
     "\u4E94\u5B98\u5916\u8C8C\u80CC\u9762": "facialFeaturesBack",
@@ -30650,6 +30802,7 @@ function parseOutfitData2(content) {
   const data = {
     nameCN: "",
     nameEN: "",
+    fixedPrompt: "",
     owner: "",
     // 归属人（英文名称）
     upperBody: "",
@@ -30661,6 +30814,8 @@ function parseOutfitData2(content) {
     "\u5F52\u5C5E\u4EBA": "owner",
     "\u4E2D\u6587\u540D\u79F0": "nameCN",
     "\u82F1\u6587\u540D\u79F0": "nameEN",
+    "\u670D\u88C5\u5F62\u8C61": "fixedPrompt",
+    "\u56FA\u5B9A\u63D0\u793A\u8BCD": "fixedPrompt",
     "\u4E0A\u534A\u8EAB": "upperBody",
     "\u4E0A\u534A\u8EAB\u80CC\u9762": "upperBodyBack",
     "\u4E0B\u534A\u8EAB": "fullBody",
@@ -30738,6 +30893,15 @@ function getCurrentCharacterPreset() {
 }
 function buildCharacterText(preset) {
   const data = preset.data;
+  const fixedPromptText = (data.promptMode || "split") === "fixed" ? (data.fixedPrompt || "").trim() : "";
+  if (fixedPromptText) {
+    let fixedCharacterText = "<\u4EBA\u7269>\n";
+    fixedCharacterText += "\u4E2D\u6587\u540D\u79F0: " + (data.nameCN || "") + "\n";
+    fixedCharacterText += "\u82F1\u6587\u540D\u79F0: " + (data.nameEN || "") + "\n";
+    fixedCharacterText += "\u4EBA\u7269\u5F62\u8C61: " + fixedPromptText + "\n";
+    fixedCharacterText += "</\u4EBA\u7269>";
+    return fixedCharacterText;
+  }
   let text = "<\u4EBA\u7269>\n";
   text += `\u4E2D\u6587\u540D\u79F0: ${data.nameCN || ""}
 `;
@@ -30889,7 +31053,8 @@ async function updateCharacterPresetFromLLM(presetId, newData) {
     "upperBodyNSFW": "\u4E0A\u534A\u8EABNSFW",
     "upperBodyNSFWBack": "\u4E0A\u534A\u8EABNSFW\u80CC\u9762",
     "fullBodyNSFW": "\u4E0B\u534A\u8EABNSFW",
-    "fullBodyNSFWBack": "\u4E0B\u534A\u8EABNSFW\u80CC\u9762"
+    "fullBodyNSFWBack": "\u4E0B\u534A\u8EABNSFW\u80CC\u9762",
+    "fixedPrompt": "\u4EBA\u7269\u5F62\u8C61"
   };
   let changesCount = 0;
   for (const field in fieldLabels) {
@@ -30931,7 +31096,8 @@ async function updateOutfitPresetsFromLLM(outfitsData) {
     "upperBody": "\u4E0A\u534A\u8EAB",
     "upperBodyBack": "\u4E0A\u534A\u8EAB\u80CC\u9762",
     "fullBody": "\u4E0B\u534A\u8EAB",
-    "fullBodyBack": "\u4E0B\u534A\u8EAB\u80CC\u9762"
+    "fullBodyBack": "\u4E0B\u534A\u8EAB\u80CC\u9762",
+    "fixedPrompt": "\u670D\u88C5\u5F62\u8C61"
   };
   for (const outfitData of outfitsData) {
     const rawOutfitName = outfitData.nameCN;
@@ -30972,6 +31138,8 @@ async function updateOutfitPresetsFromLLM(outfitsData) {
       settings3.outfitPresets[outfitName] = {
         nameCN: outfitData.nameCN,
         nameEN: outfitData.nameEN || "",
+        promptMode: "split",
+        fixedPrompt: outfitData.fixedPrompt || "",
         owner: outfitData.owner || "",
         upperBody: outfitData.upperBody || "",
         upperBodyBack: outfitData.upperBodyBack || "",
@@ -31009,7 +31177,7 @@ async function updateOutfitPresetsFromLLM(outfitsData) {
   }
 }
 function updateFormFields(data) {
-  const fields = ["nameCN", "nameEN", "characterTraits", "facialFeatures", "facialFeaturesBack", "upperBodySFW", "upperBodySFWBack", "fullBodySFW", "fullBodySFWBack", "upperBodyNSFW", "upperBodyNSFWBack", "fullBodyNSFW", "fullBodyNSFWBack"];
+  const fields = ["nameCN", "nameEN", "characterTraits", "facialFeatures", "facialFeaturesBack", "upperBodySFW", "upperBodySFWBack", "fullBodySFW", "fullBodySFWBack", "upperBodyNSFW", "upperBodyNSFWBack", "fullBodyNSFW", "fullBodyNSFWBack", "fixedPrompt"];
   fields.forEach((field) => {
     if (data[field]) {
       const element = document.getElementById(`char_${field}`);
@@ -31091,6 +31259,15 @@ function getCurrentCharacterPreset2() {
 }
 function buildCharacterText2(preset) {
   const data = preset.data;
+  const fixedPromptText = (data.promptMode || "split") === "fixed" ? (data.fixedPrompt || "").trim() : "";
+  if (fixedPromptText) {
+    let fixedCharacterText = "<\u4EBA\u7269>\n";
+    fixedCharacterText += "\u4E2D\u6587\u540D\u79F0: " + (data.nameCN || "") + "\n";
+    fixedCharacterText += "\u82F1\u6587\u540D\u79F0: " + (data.nameEN || "") + "\n";
+    fixedCharacterText += "\u4EBA\u7269\u5F62\u8C61: " + fixedPromptText + "\n";
+    fixedCharacterText += "</\u4EBA\u7269>";
+    return fixedCharacterText;
+  }
   let text = "<\u4EBA\u7269>\n";
   text += `\u4E2D\u6587\u540D\u79F0: ${data.nameCN || ""}
 `;
@@ -31139,14 +31316,15 @@ function buildOutfitsText(preset) {
 `;
       text += `\u82F1\u6587\u540D\u79F0: ${outfitPreset.nameEN || ""}
 `;
-      text += `\u4E0A\u534A\u8EAB: ${outfitPreset.upperBody || ""}
-`;
-      text += `\u4E0A\u534A\u8EAB\u80CC\u9762: ${outfitPreset.upperBodyBack || ""}
-`;
-      text += `\u4E0B\u534A\u8EAB: ${outfitPreset.fullBody || ""}
-`;
-      text += `\u4E0B\u534A\u8EAB\u80CC\u9762: ${outfitPreset.fullBodyBack || ""}
-`;
+      const outfitFixedPromptText = (outfitPreset.promptMode || "split") === "fixed" ? (outfitPreset.fixedPrompt || "").trim() : "";
+      if (outfitFixedPromptText) {
+        text += "\u670D\u88C5\u5F62\u8C61: " + outfitFixedPromptText + "\n";
+      } else {
+        text += "\u4E0A\u534A\u8EAB: " + (outfitPreset.upperBody || "") + "\n";
+        text += "\u4E0A\u534A\u8EAB\u80CC\u9762: " + (outfitPreset.upperBodyBack || "") + "\n";
+        text += "\u4E0B\u534A\u8EAB: " + (outfitPreset.fullBody || "") + "\n";
+        text += "\u4E0B\u534A\u8EAB\u80CC\u9762: " + (outfitPreset.fullBodyBack || "") + "\n";
+      }
       text += `</\u670D\u88C5>
 `;
     } else {
@@ -31734,6 +31912,27 @@ function loadCharacterPresetData(presetId) {
       if (warning) $(warning).hide();
     }
   });
+  const promptModeElement = document.getElementById("char_promptMode");
+  if (promptModeElement) {
+    promptModeElement.value = preset.promptMode || "split";
+  }
+  const fixedPromptElement = document.getElementById("char_fixedPrompt");
+  if (fixedPromptElement) {
+    fixedPromptElement.value = preset.fixedPrompt || "";
+  }
+  applyCharacterPromptModeUI(preset.promptMode || "split");
+  const currentOutfitPreset = settings3.outfitPresetId ? settings3.outfitPresets?.[settings3.outfitPresetId] : null;
+  if (currentOutfitPreset) {
+    const outfitPromptModeElement = document.getElementById("outfit_promptMode");
+    if (outfitPromptModeElement) {
+      outfitPromptModeElement.value = currentOutfitPreset.promptMode || "split";
+    }
+    const outfitFixedPromptElement = document.getElementById("outfit_fixedPrompt");
+    if (outfitFixedPromptElement) {
+      outfitFixedPromptElement.value = currentOutfitPreset.fixedPrompt || "";
+    }
+    applyOutfitPromptModeUI(currentOutfitPreset.promptMode || "split");
+  }
   const outfitListElement = document.getElementById("char_outfit_list");
   if (outfitListElement) {
     outfitListElement.value = (preset.outfits || []).join("\n");
@@ -31793,6 +31992,8 @@ function createNewCharacterPreset() {
       CHARACTER_FIELDS.forEach((field) => {
         emptyPreset[field] = "";
       });
+      emptyPreset.promptMode = "split";
+      emptyPreset.fixedPrompt = "";
       emptyPreset.outfits = [];
       emptyPreset.photoMedia = [];
       emptyPreset.audioMedia = [];
@@ -31891,6 +32092,10 @@ function saveCurrentCharacterData(presetId) {
   }
   const existingPreset = settings3.characterPresets[presetId] || {};
   normalizeCharacterPreset(existingPreset);
+  const promptModeElement = document.getElementById("char_promptMode");
+  const fixedPromptElement = document.getElementById("char_fixedPrompt");
+  preset.promptMode = promptModeElement && promptModeElement.value ? promptModeElement.value : existingPreset.promptMode || "split";
+  preset.fixedPrompt = fixedPromptElement ? fixedPromptElement.value || "" : existingPreset.fixedPrompt || "";
   preset.photoMedia = existingPreset.photoMedia || [];
   preset.audioMedia = existingPreset.audioMedia || [];
   preset.selectedPhotoId = existingPreset.selectedPhotoId || null;
@@ -32279,7 +32484,7 @@ function handleCharacterVisualSelect() {
 async function updateTokenCounts() {
   let totalTokens = 0;
   const tokenCounts = {};
-  const tokenFields = CHARACTER_FIELDS.filter((f) => !["nameCN", "nameEN"].includes(f));
+  const tokenFields = CHARACTER_FIELDS.filter((f) => !["nameCN", "nameEN", "promptMode"].includes(f));
   for (const field of tokenFields) {
     const element = document.getElementById(`char_${field}`);
     if (element) {
@@ -32296,19 +32501,23 @@ async function updateTokenCounts() {
       display.textContent = `\u5F53\u524D\u5360\u7528: ${tokenCounts[field] || 0} | \u603B\u5360\u7528: ${totalTokens}`;
     }
   }
-  const baseTokens = tokenCounts.characterTraits || 0;
-  const frontSfw = baseTokens + (tokenCounts.facialFeatures || 0) + (tokenCounts.upperBodySFW || 0) + (tokenCounts.fullBodySFW || 0);
-  const frontNsfw = baseTokens + (tokenCounts.facialFeatures || 0) + (tokenCounts.upperBodyNSFW || 0) + (tokenCounts.fullBodyNSFW || 0);
-  const backSfw = baseTokens + (tokenCounts.facialFeaturesBack || 0) + (tokenCounts.upperBodySFWBack || 0) + (tokenCounts.fullBodySFWBack || 0);
-  const backNsfw = baseTokens + (tokenCounts.facialFeaturesBack || 0) + (tokenCounts.upperBodyNSFWBack || 0) + (tokenCounts.fullBodyNSFWBack || 0);
+  const promptModeElement = document.getElementById("char_promptMode");
+  const fixedPromptElement = document.getElementById("char_fixedPrompt");
+  const isFixedPromptMode = promptModeElement ? (promptModeElement.value || "split") === "fixed" : false;
+  const fixedPromptTokens = isFixedPromptMode && fixedPromptElement && (fixedPromptElement.value || "").trim() ? await calculateNovelAITokens(fixedPromptElement.value) : 0;
+  const baseTokens = isFixedPromptMode ? fixedPromptTokens : tokenCounts.characterTraits || 0;
+  const frontSfw = isFixedPromptMode ? fixedPromptTokens : baseTokens + (tokenCounts.facialFeatures || 0) + (tokenCounts.upperBodySFW || 0) + (tokenCounts.fullBodySFW || 0);
+  const frontNsfw = isFixedPromptMode ? fixedPromptTokens : baseTokens + (tokenCounts.facialFeatures || 0) + (tokenCounts.upperBodyNSFW || 0) + (tokenCounts.fullBodyNSFW || 0);
+  const backSfw = isFixedPromptMode ? fixedPromptTokens : baseTokens + (tokenCounts.facialFeaturesBack || 0) + (tokenCounts.upperBodySFWBack || 0) + (tokenCounts.fullBodySFWBack || 0);
+  const backNsfw = isFixedPromptMode ? fixedPromptTokens : baseTokens + (tokenCounts.facialFeaturesBack || 0) + (tokenCounts.upperBodyNSFWBack || 0) + (tokenCounts.fullBodyNSFWBack || 0);
   const elFrontSfw = document.getElementById("token_combo_front_sfw");
   const elFrontNsfw = document.getElementById("token_combo_front_nsfw");
   const elBackSfw = document.getElementById("token_combo_back_sfw");
   const elBackNsfw = document.getElementById("token_combo_back_nsfw");
-  if (elFrontSfw) elFrontSfw.textContent = `\u6B63\u9762 SFW \u5168\u8EAB: ${frontSfw}`;
-  if (elFrontNsfw) elFrontNsfw.textContent = `\u6B63\u9762 NSFW \u5168\u8EAB: ${frontNsfw}`;
-  if (elBackSfw) elBackSfw.textContent = `\u80CC\u9762 SFW \u5168\u8EAB: ${backSfw}`;
-  if (elBackNsfw) elBackNsfw.textContent = `\u80CC\u9762 NSFW \u5168\u8EAB: ${backNsfw}`;
+  if (elFrontSfw) elFrontSfw.textContent = isFixedPromptMode ? "\u56FA\u5B9A\u63D0\u793A\u8BCD: " + frontSfw : "\u6B63\u9762 SFW \u5168\u8EAB: " + frontSfw;
+  if (elFrontNsfw) elFrontNsfw.textContent = isFixedPromptMode ? "\u56FA\u5B9A\u63D0\u793A\u8BCD: " + frontNsfw : "\u6B63\u9762 NSFW \u5168\u8EAB: " + frontNsfw;
+  if (elBackSfw) elBackSfw.textContent = isFixedPromptMode ? "\u56FA\u5B9A\u63D0\u793A\u8BCD: " + backSfw : "\u80CC\u9762 SFW \u5168\u8EAB: " + backSfw;
+  if (elBackNsfw) elBackNsfw.textContent = isFixedPromptMode ? "\u56FA\u5B9A\u63D0\u793A\u8BCD: " + backNsfw : "\u80CC\u9762 NSFW \u5168\u8EAB: " + backNsfw;
 }
 function debouncedUpdateTokenCounts() {
   clearTimeout(tokenCalcTimeout);
@@ -32332,6 +32541,62 @@ function bindCharacterFieldListeners() {
       }
     }
   });
+  const promptModeElement = document.getElementById("char_promptMode");
+  if (promptModeElement) {
+    $(promptModeElement).on("change", function() {
+      const settings3 = extension_settings28[extensionName];
+      const presetName = settings3.characterPresetId;
+      if (presetName && settings3.characterPresets[presetName]) {
+        saveCurrentCharacterData(presetName);
+      }
+      applyCharacterPromptModeUI(this.value || "split");
+      debouncedUpdateTokenCounts();
+    });
+    applyCharacterPromptModeUI(promptModeElement.value || "split");
+  }
+  const fixedPromptElement = document.getElementById("char_fixedPrompt");
+  if (fixedPromptElement) {
+    $(fixedPromptElement).on("input", function() {
+      const settings3 = extension_settings28[extensionName];
+      const presetName = settings3.characterPresetId;
+      if (presetName && settings3.characterPresets[presetName]) {
+        saveCurrentCharacterData(presetName);
+      }
+    });
+    $(fixedPromptElement).on("input", debouncedUpdateTokenCounts);
+  }
+  const mergeToFixedButton = document.getElementById("char_mergeToFixed");
+  if (mergeToFixedButton) {
+    $(mergeToFixedButton).on("click", function() {
+      const target = document.getElementById("char_fixedPrompt");
+      if (!target) return;
+      const mergedParts = ["char_characterTraits", "char_facialFeatures", "char_facialFeaturesBack"].map((id) => (document.getElementById(id)?.value || "").trim()).filter((value) => value);
+      target.value = mergedParts.join(", ");
+      $(target).trigger("input");
+    });
+  }
+}
+function applyCharacterPromptModeUI(promptMode) {
+  const isFixedMode = (promptMode || "split") === "fixed";
+  const tab = document.getElementById("st-chatu8-tab-character");
+  const scope = tab || document;
+  if (scope.querySelectorAll) {
+    scope.querySelectorAll("[data-char-part-field]").forEach((element) => {
+      element.style.display = isFixedMode ? "none" : "";
+    });
+  }
+  const fixedPromptElement = document.getElementById("char_fixedPrompt");
+  if (fixedPromptElement) {
+    fixedPromptElement.style.display = isFixedMode ? "" : "none";
+  }
+  const mergeButtonElement = document.getElementById("char_mergeToFixed");
+  if (mergeButtonElement) {
+    mergeButtonElement.style.display = isFixedMode ? "" : "none";
+  }
+  const hint = document.getElementById("char_promptMode_hint");
+  if (hint) {
+    hint.textContent = isFixedMode ? "\u5F53\u524D\uFF1A\u56FA\u5B9A\u63D0\u793A\u8BCD\uFF08\u4E0D\u5206\u89D2\u5EA6/\u90E8\u4F4D\uFF0C\u4E0B\u65B9\u90E8\u4F4D\u5B57\u6BB5\u4E0D\u53C2\u4E0E\u751F\u6210\uFF09" : "\u5F53\u524D\uFF1A\u5206\u90E8\u4F4D\u63D0\u793A\u8BCD\uFF08\u6309\u89D2\u5EA6/\u90E8\u4F4D\u53D6\u503C\uFF09";
+  }
 }
 function loadCharacterOutfitSelector() {
   const settings3 = extension_settings28[extensionName];
@@ -32446,7 +32711,7 @@ async function clearCharacterDetailParameters() {
   toastr.success("\u8BE6\u7EC6\u53C2\u6570\u5DF2\u6E05\u7A7A\uFF0C\u8BF7\u8BB0\u5F97\u4FDD\u5B58\u66F4\u6539\u3002");
 }
 async function translateCharacterFields() {
-  const fields = CHARACTER_FIELDS.filter((field) => field !== "nameCN" && field !== "nameEN");
+  const fields = CHARACTER_FIELDS.filter((field) => field !== "nameCN" && field !== "nameEN" && field !== "promptMode");
   const fieldsToTranslate = [];
   const allTags = [];
   const removeChineseParenRegex = /（[^）]*）/g;
@@ -33784,27 +34049,32 @@ function processCharacterPrompt(prompt2) {
         );
         if (character) {
           let replacement = "";
-          if (character.characterTraits) {
-            replacement = character.characterTraits;
-          }
-          if (upperState !== "hidden") {
-            const facialField = isFromBehind ? character.facialFeaturesBack || "" : character.facialFeatures || "";
-            if (facialField) replacement += (replacement ? ", " : "") + facialField;
-            if (upperState === "sfw") {
-              const field = isFromBehind ? character.upperBodySFWBack : character.upperBodySFW;
-              if (field) replacement += (replacement ? ", " : "") + field;
-            } else if (upperState === "nsfw") {
-              const field = isFromBehind ? character.upperBodyNSFWBack : character.upperBodyNSFW;
-              if (field) replacement += (replacement ? ", " : "") + field;
+          const fixedPromptText = (character.promptMode || "split") === "fixed" ? (character.fixedPrompt || "").trim() : "";
+          if (fixedPromptText) {
+            replacement = fixedPromptText;
+          } else {
+            if (character.characterTraits) {
+              replacement = character.characterTraits;
             }
-          }
-          if (lowerState !== "hidden") {
-            if (lowerState === "sfw") {
-              const field = isFromBehind ? character.fullBodySFWBack : character.fullBodySFW;
-              if (field) replacement += (replacement ? ", " : "") + field;
-            } else if (lowerState === "nsfw") {
-              const field = isFromBehind ? character.fullBodyNSFWBack : character.fullBodyNSFW;
-              if (field) replacement += (replacement ? ", " : "") + field;
+            if (upperState !== "hidden") {
+              const facialField = isFromBehind ? character.facialFeaturesBack || "" : character.facialFeatures || "";
+              if (facialField) replacement += (replacement ? ", " : "") + facialField;
+              if (upperState === "sfw") {
+                const field = isFromBehind ? character.upperBodySFWBack : character.upperBodySFW;
+                if (field) replacement += (replacement ? ", " : "") + field;
+              } else if (upperState === "nsfw") {
+                const field = isFromBehind ? character.upperBodyNSFWBack : character.upperBodyNSFW;
+                if (field) replacement += (replacement ? ", " : "") + field;
+              }
+            }
+            if (lowerState !== "hidden") {
+              if (lowerState === "sfw") {
+                const field = isFromBehind ? character.fullBodySFWBack : character.fullBodySFW;
+                if (field) replacement += (replacement ? ", " : "") + field;
+              } else if (lowerState === "nsfw") {
+                const field = isFromBehind ? character.fullBodyNSFWBack : character.fullBodyNSFW;
+                if (field) replacement += (replacement ? ", " : "") + field;
+              }
             }
           }
           if (character.negative) {
@@ -33825,13 +34095,20 @@ function processCharacterPrompt(prompt2) {
         );
         if (outfit) {
           let replacement = "";
-          if (upperState === "visible") {
-            const field = sharedIsFromBehind ? outfit.upperBodyBack : outfit.upperBody;
-            if (field) replacement = field;
-          }
-          if (lowerState === "visible") {
-            const field = sharedIsFromBehind ? outfit.fullBodyBack : outfit.fullBody;
-            if (field) replacement += (replacement ? ", " : "") + field;
+          const fixedPromptText = (outfit.promptMode || "split") === "fixed" ? (outfit.fixedPrompt || "").trim() : "";
+          if (fixedPromptText) {
+            if (upperState === "visible" || lowerState === "visible") {
+              replacement = fixedPromptText;
+            }
+          } else {
+            if (upperState === "visible") {
+              const field = sharedIsFromBehind ? outfit.upperBodyBack : outfit.upperBody;
+              if (field) replacement = field;
+            }
+            if (lowerState === "visible") {
+              const field = sharedIsFromBehind ? outfit.fullBodyBack : outfit.fullBody;
+              if (field) replacement += (replacement ? ", " : "") + field;
+            }
           }
           console.log("[CharacterPrompt] JSON Outfit replacement result:", replacement);
           return replacement;
@@ -33869,26 +34146,31 @@ function processCharacterPrompt(prompt2) {
         );
         if (character) {
           let replacement = "";
-          if (character.characterTraits) {
-            replacement = character.characterTraits;
-          }
-          if (format.upper) {
-            const facialField = isFromBehind ? character.facialFeaturesBack || "" : character.facialFeatures || "";
-            if (facialField) replacement += (replacement ? ", " : "") + facialField;
-          }
-          if (format.upper === "sfw") {
-            const field = isFromBehind ? character.upperBodySFWBack : character.upperBodySFW;
-            if (field) replacement += (replacement ? ", " : "") + field;
-          } else if (format.upper === "nsfw") {
-            const field = isFromBehind ? character.upperBodyNSFWBack : character.upperBodyNSFW;
-            if (field) replacement += (replacement ? ", " : "") + field;
-          }
-          if (format.lower === "sfw") {
-            const field = isFromBehind ? character.fullBodySFWBack : character.fullBodySFW;
-            if (field) replacement += (replacement ? ", " : "") + field;
-          } else if (format.lower === "nsfw") {
-            const field = isFromBehind ? character.fullBodyNSFWBack : character.fullBodyNSFW;
-            if (field) replacement += (replacement ? ", " : "") + field;
+          const fixedPromptText = (character.promptMode || "split") === "fixed" ? (character.fixedPrompt || "").trim() : "";
+          if (fixedPromptText) {
+            replacement = fixedPromptText;
+          } else {
+            if (character.characterTraits) {
+              replacement = character.characterTraits;
+            }
+            if (format.upper) {
+              const facialField = isFromBehind ? character.facialFeaturesBack || "" : character.facialFeatures || "";
+              if (facialField) replacement += (replacement ? ", " : "") + facialField;
+            }
+            if (format.upper === "sfw") {
+              const field = isFromBehind ? character.upperBodySFWBack : character.upperBodySFW;
+              if (field) replacement += (replacement ? ", " : "") + field;
+            } else if (format.upper === "nsfw") {
+              const field = isFromBehind ? character.upperBodyNSFWBack : character.upperBodyNSFW;
+              if (field) replacement += (replacement ? ", " : "") + field;
+            }
+            if (format.lower === "sfw") {
+              const field = isFromBehind ? character.fullBodySFWBack : character.fullBodySFW;
+              if (field) replacement += (replacement ? ", " : "") + field;
+            } else if (format.lower === "nsfw") {
+              const field = isFromBehind ? character.fullBodyNSFWBack : character.fullBodyNSFW;
+              if (field) replacement += (replacement ? ", " : "") + field;
+            }
           }
           if (character.negative) {
             collectNegativeToGlobal(character.negative);
@@ -33917,13 +34199,20 @@ function processCharacterPrompt(prompt2) {
         );
         if (outfit) {
           let replacement = "";
-          if (format.hasUpper) {
-            const field = sharedIsFromBehind ? outfit.upperBodyBack : outfit.upperBody;
-            if (field) replacement = field;
-          }
-          if (format.hasLower) {
-            const field = sharedIsFromBehind ? outfit.fullBodyBack : outfit.fullBody;
-            if (field) replacement += (replacement ? ", " : "") + field;
+          const fixedPromptText = (outfit.promptMode || "split") === "fixed" ? (outfit.fixedPrompt || "").trim() : "";
+          if (fixedPromptText) {
+            if (format.hasUpper || format.hasLower) {
+              replacement = fixedPromptText;
+            }
+          } else {
+            if (format.hasUpper) {
+              const field = sharedIsFromBehind ? outfit.upperBodyBack : outfit.upperBody;
+              if (field) replacement = field;
+            }
+            if (format.hasLower) {
+              const field = sharedIsFromBehind ? outfit.fullBodyBack : outfit.fullBody;
+              if (field) replacement += (replacement ? ", " : "") + field;
+            }
           }
           console.log("[CharacterPrompt] Outfit replacement result:", replacement);
           return replacement;
@@ -34011,29 +34300,34 @@ function processMultiCharacterPrompt(prompt2) {
                 console.log(`[CharacterPrompt] \u6536\u96C6\u8D1F\u9762\u63D0\u793A\u8BCD:`, character.negative.trim());
               }
               let replacement = "";
-              if (character.characterTraits) {
-                replacement = character.characterTraits;
-              }
+              const fixedPromptText = (character.promptMode || "split") === "fixed" ? (character.fixedPrompt || "").trim() : "";
               const upperState = jsonData.upperBody.toLowerCase();
               const lowerState = jsonData.lowerBody.toLowerCase();
-              if (upperState !== "hidden") {
-                const facialField = isFromBehind ? character.facialFeaturesBack || "" : character.facialFeatures || "";
-                if (facialField) replacement += (replacement ? ", " : "") + facialField;
-                if (upperState === "sfw") {
-                  const field = isFromBehind ? character.upperBodySFWBack : character.upperBodySFW;
-                  if (field) replacement += (replacement ? ", " : "") + field;
-                } else if (upperState === "nsfw") {
-                  const field = isFromBehind ? character.upperBodyNSFWBack : character.upperBodyNSFW;
-                  if (field) replacement += (replacement ? ", " : "") + field;
+              if (fixedPromptText) {
+                replacement = fixedPromptText;
+              } else {
+                if (character.characterTraits) {
+                  replacement = character.characterTraits;
                 }
-              }
-              if (lowerState !== "hidden") {
-                if (lowerState === "sfw") {
-                  const field = isFromBehind ? character.fullBodySFWBack : character.fullBodySFW;
-                  if (field) replacement += (replacement ? ", " : "") + field;
-                } else if (lowerState === "nsfw") {
-                  const field = isFromBehind ? character.fullBodyNSFWBack : character.fullBodyNSFW;
-                  if (field) replacement += (replacement ? ", " : "") + field;
+                if (upperState !== "hidden") {
+                  const facialField = isFromBehind ? character.facialFeaturesBack || "" : character.facialFeatures || "";
+                  if (facialField) replacement += (replacement ? ", " : "") + facialField;
+                  if (upperState === "sfw") {
+                    const field = isFromBehind ? character.upperBodySFWBack : character.upperBodySFW;
+                    if (field) replacement += (replacement ? ", " : "") + field;
+                  } else if (upperState === "nsfw") {
+                    const field = isFromBehind ? character.upperBodyNSFWBack : character.upperBodyNSFW;
+                    if (field) replacement += (replacement ? ", " : "") + field;
+                  }
+                }
+                if (lowerState !== "hidden") {
+                  if (lowerState === "sfw") {
+                    const field = isFromBehind ? character.fullBodySFWBack : character.fullBodySFW;
+                    if (field) replacement += (replacement ? ", " : "") + field;
+                  } else if (lowerState === "nsfw") {
+                    const field = isFromBehind ? character.fullBodyNSFWBack : character.fullBodyNSFW;
+                    if (field) replacement += (replacement ? ", " : "") + field;
+                  }
                 }
               }
               return replacement;
@@ -34051,13 +34345,20 @@ function processMultiCharacterPrompt(prompt2) {
               let replacement = "";
               const upperState = jsonData.upperBody.toLowerCase();
               const lowerState = jsonData.lowerBody.toLowerCase();
-              if (upperState === "visible") {
-                const field = sharedIsFromBehind ? outfit.upperBodyBack : outfit.upperBody;
-                if (field) replacement = field;
-              }
-              if (lowerState === "visible") {
-                const field = sharedIsFromBehind ? outfit.fullBodyBack : outfit.fullBody;
-                if (field) replacement += (replacement ? ", " : "") + field;
+              const fixedPromptText = (outfit.promptMode || "split") === "fixed" ? (outfit.fixedPrompt || "").trim() : "";
+              if (fixedPromptText) {
+                if (upperState === "visible" || lowerState === "visible") {
+                  replacement = fixedPromptText;
+                }
+              } else {
+                if (upperState === "visible") {
+                  const field = sharedIsFromBehind ? outfit.upperBodyBack : outfit.upperBody;
+                  if (field) replacement = field;
+                }
+                if (lowerState === "visible") {
+                  const field = sharedIsFromBehind ? outfit.fullBodyBack : outfit.fullBody;
+                  if (field) replacement += (replacement ? ", " : "") + field;
+                }
               }
               console.log("[CharacterPrompt] JSON Outfit replacement result (multi-char mode):", replacement);
               return replacement;
@@ -34096,26 +34397,31 @@ function processMultiCharacterPrompt(prompt2) {
                     console.log(`[CharacterPrompt] \u6536\u96C6\u8D1F\u9762\u63D0\u793A\u8BCD:`, character.negative.trim());
                   }
                   let replacement = "";
-                  if (character.characterTraits) {
-                    replacement = character.characterTraits;
-                  }
-                  if (format.upper) {
-                    const facialField = isFromBehind ? character.facialFeaturesBack || "" : character.facialFeatures || "";
-                    if (facialField) replacement += (replacement ? ", " : "") + facialField;
-                  }
-                  if (format.upper === "sfw") {
-                    const field = isFromBehind ? character.upperBodySFWBack : character.upperBodySFW;
-                    if (field) replacement += (replacement ? ", " : "") + field;
-                  } else if (format.upper === "nsfw") {
-                    const field = isFromBehind ? character.upperBodyNSFWBack : character.upperBodyNSFW;
-                    if (field) replacement += (replacement ? ", " : "") + field;
-                  }
-                  if (format.lower === "sfw") {
-                    const field = isFromBehind ? character.fullBodySFWBack : character.fullBodySFW;
-                    if (field) replacement += (replacement ? ", " : "") + field;
-                  } else if (format.lower === "nsfw") {
-                    const field = isFromBehind ? character.fullBodyNSFWBack : character.fullBodyNSFW;
-                    if (field) replacement += (replacement ? ", " : "") + field;
+                  const fixedPromptText = (character.promptMode || "split") === "fixed" ? (character.fixedPrompt || "").trim() : "";
+                  if (fixedPromptText) {
+                    replacement = fixedPromptText;
+                  } else {
+                    if (character.characterTraits) {
+                      replacement = character.characterTraits;
+                    }
+                    if (format.upper) {
+                      const facialField = isFromBehind ? character.facialFeaturesBack || "" : character.facialFeatures || "";
+                      if (facialField) replacement += (replacement ? ", " : "") + facialField;
+                    }
+                    if (format.upper === "sfw") {
+                      const field = isFromBehind ? character.upperBodySFWBack : character.upperBodySFW;
+                      if (field) replacement += (replacement ? ", " : "") + field;
+                    } else if (format.upper === "nsfw") {
+                      const field = isFromBehind ? character.upperBodyNSFWBack : character.upperBodyNSFW;
+                      if (field) replacement += (replacement ? ", " : "") + field;
+                    }
+                    if (format.lower === "sfw") {
+                      const field = isFromBehind ? character.fullBodySFWBack : character.fullBodySFW;
+                      if (field) replacement += (replacement ? ", " : "") + field;
+                    } else if (format.lower === "nsfw") {
+                      const field = isFromBehind ? character.fullBodyNSFWBack : character.fullBodyNSFW;
+                      if (field) replacement += (replacement ? ", " : "") + field;
+                    }
                   }
                   return replacement;
                 }
@@ -34140,13 +34446,20 @@ function processMultiCharacterPrompt(prompt2) {
                 );
                 if (outfit) {
                   let replacement = "";
-                  if (format.hasUpper) {
-                    const field = sharedIsFromBehind ? outfit.upperBodyBack : outfit.upperBody;
-                    if (field) replacement = field;
-                  }
-                  if (format.hasLower) {
-                    const field = sharedIsFromBehind ? outfit.fullBodyBack : outfit.fullBody;
-                    if (field) replacement += (replacement ? ", " : "") + field;
+                  const fixedPromptText = (outfit.promptMode || "split") === "fixed" ? (outfit.fixedPrompt || "").trim() : "";
+                  if (fixedPromptText) {
+                    if (format.hasUpper || format.hasLower) {
+                      replacement = fixedPromptText;
+                    }
+                  } else {
+                    if (format.hasUpper) {
+                      const field = sharedIsFromBehind ? outfit.upperBodyBack : outfit.upperBody;
+                      if (field) replacement = field;
+                    }
+                    if (format.hasLower) {
+                      const field = sharedIsFromBehind ? outfit.fullBodyBack : outfit.fullBody;
+                      if (field) replacement += (replacement ? ", " : "") + field;
+                    }
                   }
                   return replacement;
                 }
@@ -36314,7 +36627,8 @@ function initTagAutocomplete() {
     "char_upperBodyNSFW",
     "char_upperBodyNSFWBack",
     "char_fullBodyNSFW",
-    "char_fullBodyNSFWBack"
+    "char_fullBodyNSFWBack",
+    "char_fixedPrompt"
   ];
   characterFields.forEach((fieldId) => {
     const textarea = document.getElementById(fieldId);
@@ -36340,7 +36654,8 @@ function initTagAutocomplete() {
     "outfit_upperBody",
     "outfit_upperBodyBack",
     "outfit_fullBody",
-    "outfit_fullBodyBack"
+    "outfit_fullBodyBack",
+    "outfit_fixedPrompt"
   ];
   outfitFields.forEach((fieldId) => {
     const textarea = document.getElementById(fieldId);
@@ -36852,6 +37167,7 @@ function parseCharacterData2(content) {
   const data = {
     nameCN: "",
     nameEN: "",
+    fixedPrompt: "",
     characterTraits: "",
     // 角色特征
     facialFeatures: "",
@@ -36868,6 +37184,8 @@ function parseCharacterData2(content) {
   const fieldMap = {
     "\u4E2D\u6587\u540D\u79F0": "nameCN",
     "\u82F1\u6587\u540D\u79F0": "nameEN",
+    "\u4EBA\u7269\u5F62\u8C61": "fixedPrompt",
+    "\u56FA\u5B9A\u63D0\u793A\u8BCD": "fixedPrompt",
     "\u89D2\u8272\u7279\u5F81": "characterTraits",
     "\u4E94\u5B98\u5916\u8C8C": "facialFeatures",
     "\u4E94\u5B98\u5916\u8C8C\u80CC\u9762": "facialFeaturesBack",
@@ -36902,6 +37220,7 @@ function parseOutfitData3(content) {
   const data = {
     nameCN: "",
     nameEN: "",
+    fixedPrompt: "",
     owner: "",
     // 归属人（英文名称）
     upperBody: "",
@@ -36913,6 +37232,8 @@ function parseOutfitData3(content) {
     "\u5F52\u5C5E\u4EBA": "owner",
     "\u4E2D\u6587\u540D\u79F0": "nameCN",
     "\u82F1\u6587\u540D\u79F0": "nameEN",
+    "\u670D\u88C5\u5F62\u8C61": "fixedPrompt",
+    "\u56FA\u5B9A\u63D0\u793A\u8BCD": "fixedPrompt",
     "\u4E0A\u534A\u8EAB": "upperBody",
     "\u4E0A\u534A\u8EAB\u80CC\u9762": "upperBodyBack",
     "\u4E0B\u534A\u8EAB": "fullBody",
@@ -36974,10 +37295,12 @@ async function handleExtractedData(extracted, metadata = {}) {
       const overwrite = await stylishConfirm(`\u670D\u88C5 "${presetName}" \u5DF2\u5B58\u5728,\u662F\u5426\u8986\u76D6?`);
       if (!overwrite) continue;
     }
-    settings3.outfitPresets[presetName] = {
-      nameCN: outfitData.nameCN,
-      nameEN: outfitData.nameEN,
-      owner: outfitData.owner || "",
+        settings3.outfitPresets[outfitName] = {
+          nameCN: outfitData.nameCN,
+          nameEN: outfitData.nameEN,
+          promptMode: settings3.outfitPresets[outfitName]?.promptMode || "split",
+          fixedPrompt: outfitData.fixedPrompt || settings3.outfitPresets[outfitName]?.fixedPrompt || "",
+          owner: outfitData.owner || "",
       upperBody: outfitData.upperBody,
       upperBodyBack: outfitData.upperBodyBack,
       fullBody: outfitData.fullBody,
@@ -37003,10 +37326,12 @@ async function handleExtractedData(extracted, metadata = {}) {
           const overwrite = await stylishConfirm(`\u670D\u88C5 "${outfitName}" \u5DF2\u5B58\u5728,\u662F\u5426\u8986\u76D6?`);
           if (!overwrite) continue;
         }
-        settings3.outfitPresets[outfitName] = {
-          nameCN: outfitData.nameCN,
-          nameEN: outfitData.nameEN,
-          owner: outfitData.owner || "",
+    settings3.outfitPresets[presetName] = {
+      nameCN: outfitData.nameCN,
+      nameEN: outfitData.nameEN,
+      promptMode: settings3.outfitPresets[presetName]?.promptMode || "split",
+      fixedPrompt: outfitData.fixedPrompt || settings3.outfitPresets[presetName]?.fixedPrompt || "",
+      owner: outfitData.owner || "",
           upperBody: outfitData.upperBody,
           upperBodyBack: outfitData.upperBodyBack,
           fullBody: outfitData.fullBody,
@@ -37024,6 +37349,8 @@ async function handleExtractedData(extracted, metadata = {}) {
     settings3.characterPresets[presetName] = {
       nameCN: charData.nameCN,
       nameEN: charData.nameEN,
+      promptMode: settings3.characterPresets[presetName]?.promptMode || "split",
+      fixedPrompt: charData.fixedPrompt || settings3.characterPresets[presetName]?.fixedPrompt || "",
       characterTraits: charData.characterTraits,
       // 角色特征
       facialFeatures: charData.facialFeatures,
