@@ -240,7 +240,6 @@ function createStorage(opts) {
   const cfg = opts || {};
   const win = cfg.win || (typeof window !== "undefined" ? window : {});
   const ns = cfg.namespace || "st-chatu8";
-  const version = cfg.version || 1;
   const backend = cfg.backend || "message";
 
   function ctx() {
@@ -293,7 +292,7 @@ function createStorage(opts) {
     const c = ctx();
     const vars = chatVars(c);
     if (!vars) return false;
-    vars[ns] = Object.assign({ _v: version }, tags || {});
+    vars[ns] = Object.assign({}, tags || {});
     try { if (c && typeof c.saveMetadata === "function") c.saveMetadata(); } catch (e) { }
     return true;
   }
@@ -334,7 +333,7 @@ function createStorage(opts) {
     if (backend === "chat") return writeChat(tags);
     const table = readTable(messageId);
     const next = Object.assign({}, isPlainObject(table) ? table : {});
-    next[ns] = Object.assign({ _v: version }, tags || {});
+    next[ns] = Object.assign({}, tags || {});
     return writeTable(messageId, next);
   }
 
@@ -354,7 +353,6 @@ function createStorage(opts) {
 
   return {
     ns: ns,
-    version: version,
     backend: backend,
     usingHelper: function () { return !!helper(); },
     lastMessageId: lastMessageId,
@@ -372,7 +370,6 @@ function createStorage(opts) {
     }
   };
 }
-
 /* ---- patch.js ---- */
 // st-chatu8 更新块：从生图 LLM 的输出里摘出变量更新，并把这段从提示词里去掉
 // 更新 = 一棵部分树（不用 op/path）：写值=设置/新增，空串=删除，对象=往库里加条目
@@ -392,6 +389,29 @@ function looseJsonParse(s) {
   return JSON.parse(t);
 }
 
+// 模型常把 ${"name":"x",...}$ 直接塞进 JSON 字符串里而忘记转义引号 —— 只修 $...$ 内部，不动别处
+function repairQuotesInCalls(text) {
+  return String(text).replace(/\$[^$]*\$/g, function (m) {
+    return m.replace(/\\"/g, "\"").replace(/"/g, "\\\"");
+  });
+}
+
+// 只把 $...$ 片段逐个交给扩展的展开器，绝不把整段 JSON 喂进去（那会搅烂换行与括号）
+function expandSpans(text, expand) {
+  if (typeof expand !== "function") return String(text);
+  return String(text).replace(/\$[^$]*\$/g, function (m) {
+    try { var r = expand(m); return (typeof r === "string" && r) ? r : m; } catch (e) { return m; }
+  });
+}
+
+// 解析一段更新文本（已展开过预设调用的版本）
+function parsePatchText(text) {
+  const fixed = repairQuotesInCalls(text);
+  const obj = looseJsonParse(fixed);
+  if (obj === null || typeof obj !== "object" || Array.isArray(obj)) throw new Error("not-object");
+  return obj;
+}
+
 function extractUpdateBlock(text) {
   const s = String(text == null ? "" : text);
   const re = new RegExp("<" + UPDATE_TAG + ">([\\s\\S]*?)</" + UPDATE_TAG + ">", "i");
@@ -403,18 +423,17 @@ function extractUpdateBlock(text) {
 
 function parseUpdate(text) {
   const got = extractUpdateBlock(text);
-  if (!got.raw.trim()) return { clean: got.clean, patch: null, ok: false, error: "no-block" };
+  if (!got.raw.trim()) return { clean: got.clean, raw: "", patch: null, ok: false, error: "no-block" };
   try {
     const patch = looseJsonParse(got.raw);
     if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
-      return { clean: got.clean, patch: null, ok: false, error: "not-object" };
+      return { clean: got.clean, raw: got.raw, patch: null, ok: false, error: "not-object" };
     }
-    return { clean: got.clean, patch: patch, ok: true, error: "" };
+    return { clean: got.clean, raw: got.raw, patch: patch, ok: true, error: "" };
   } catch (e) {
-    return { clean: got.clean, patch: null, ok: false, error: String(e && e.message || e) };
+    return { clean: got.clean, raw: got.raw, patch: null, ok: false, error: String(e && e.message || e) };
   }
 }
-
 /* ---- glue.js ---- */
 // st-chatu8 变量系统粘合层：生图 LLM 输出 -> 摘块 -> 写楼层变量 -> 生图前求值
 // 纯逻辑；注入 index.js 时删掉 import/export
@@ -474,23 +493,21 @@ window.stChatu8Vars = {
   // 生图 LLM 输出：摘掉 <变量更新> 块并写入该楼层，返回摘干净后的提示词
   ingestMessage: function (mes, id, expand) {
     var r = parseUpdate(mes);
-    var out = { changed: r.clean !== mes, clean: r.clean, ok: false, wrote: false, error: r.error };
-    if (!r.ok) return out;
-    var patch = r.patch;
-    // 写入前把 ${...}$ 预设调用展开成 tag（$路径$ 指针由展开器原样放行，保持不变）
-    if (typeof expand === "function") {
-      try {
-        var text = JSON.stringify(patch);
-        if (text.indexOf("$") >= 0) {
-          var uc = window.collectedCharacterNegatives;
-          var expanded;
-          try { expanded = expand(text); } finally { window.collectedCharacterNegatives = uc; }
-          if (expanded && expanded !== text) {
-            var parsed = looseJsonParse(expanded);
-            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) patch = parsed;
-          }
-        }
-      } catch (e) { console.warn("[ChatU8 vars] expand patch failed", e); }
+    var out = { changed: r.clean !== mes, clean: r.clean, ok: false, wrote: false, error: r.error, raw: "" };
+    if (!r.raw) return out; // 没有 <变量更新> 块；解析失败也要继续，下面会修引号重解析
+    var raw = r.raw;
+    // ① 先展开预设调用（此时还是模型原样写的文本，$...$ 里的引号没转义也能认）
+    if (typeof expand === "function" && raw.indexOf("$") >= 0) {
+      var uc = window.collectedCharacterNegatives;
+      try { raw = expandSpans(raw, expand); } catch (e) { console.warn("[ChatU8 vars] expand patch failed", e); } finally { window.collectedCharacterNegatives = uc; }
+    }
+    // ② 再把 $...$ 里漏转义的引号补上，然后解析
+    var patch;
+    try { patch = parsePatchText(raw); }
+    catch (e) {
+      out.error = "parse: " + String(e && e.message || e);
+      out.raw = String(raw).slice(0, 300);
+      return out;
     }
     var s = __stSys();
     var merged = mergeTags(s.tags(id), patch);
@@ -565,6 +582,9 @@ window.stChatu8Vars = {
   _internal: {
     createVarSystem: createVarSystem,
     parseUpdate: parseUpdate,
+    parsePatchText: parsePatchText,
+    expandSpans: expandSpans,
+    repairQuotesInCalls: repairQuotesInCalls,
     mergeTags: mergeTags,
     evaluate: evaluate,
     createStorage: createStorage
