@@ -36834,7 +36834,7 @@ function initializeNewlineFixer() {
         var last = (chat2 && chat2.length) ? chat2.length - 1 : -1;
         if (last < 0) return;
         var w = window.stChatu8Vars.ensureStore(last);
-        __stVarsLog("进入聊天，变量表检查完成（楼层 " + last + " 新建=" + w + "）");
+        __stVarsLog("进入聊天（楼层 " + last + "）变量表: " + w + " | 模块 v" + window.stChatu8Vars.version);
       } catch (e) { try { __stVarsLog("初始化变量表失败: " + e, true); } catch (e2) { } }
     });
     try { __stVarsLog("钩子已注册（等待 LLM 回复）"); } catch (e) { }

@@ -488,7 +488,7 @@ function __stSys() {
 function __stLastId() { return __stSys().storage.lastMessageId(); }
 
 window.stChatu8Vars = {
-  version: "1.0.0",
+  version: "1.0.3",
 
   // 生图 LLM 输出：摘掉 <变量更新> 块并写入该楼层，返回摘干净后的提示词
   ingestMessage: function (mes, id, expand) {
@@ -537,8 +537,16 @@ window.stChatu8Vars = {
     try {
       var s = __stSys();
       var at = s.storage.readAt(id);
-      if (at) return false;
-      return s.storage.writeAt(id, { "角色列表": {} });
+      if (at) {
+        // 已有变量表：只做一次旧版清理（把历史遗留的 _v 去掉），不重建
+        if (Object.prototype.hasOwnProperty.call(at, "_v")) {
+          var clean = Object.assign({}, at);
+          delete clean._v;
+          return s.storage.writeAt(id, clean) ? "migrated" : "exists";
+        }
+        return "exists";
+      }
+      return s.storage.writeAt(id, { "角色列表": {} }) ? "created" : false;
     } catch (e) { return false; }
   },
   char: function (name, id) { return __stSys().char(name, id); },
