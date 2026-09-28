@@ -36793,16 +36793,16 @@ function initializeNewlineFixer() {
       const varsEl = document.createElement("script");
       varsEl.src = new URL(extensionFolderPath + "/vars/st-chatu8-vars.js", window.location.href).href;
       varsEl.async = true;
-      varsEl.onload = function () { window.__stChatu8VarsLoading = false; try { window.__stVarsLog("模块已加载 v" + (window.stChatu8Vars && window.stChatu8Vars.version)); } catch (e) { } };
-      varsEl.onerror = function () { window.__stChatu8VarsLoading = false; try { window.__stVarsLog("模块加载失败: " + varsEl.src, true); } catch (e) { } };
-      try { window.__stVarsLog("正在加载: " + varsEl.src); } catch (e) { }
+      varsEl.onload = function () { window.__stChatu8VarsLoading = false; try { __stVarsLog("模块已加载 v" + (window.stChatu8Vars && window.stChatu8Vars.version)); } catch (e) { } };
+      varsEl.onerror = function () { window.__stChatu8VarsLoading = false; try { __stVarsLog("模块加载失败: " + varsEl.src, true); } catch (e) { } };
+      try { __stVarsLog("正在加载: " + varsEl.src); } catch (e) { }
       document.head.appendChild(varsEl);
     }
     window.__stChatu8VarsIngest = async function (id, tries) {
       try {
         const mod = window.stChatu8Vars;
         if (!mod) {
-          if ((tries || 0) === 0) try { window.__stVarsLog("模块尚未加载，稍后重试 id=" + id, true); } catch (e) { }
+          if ((tries || 0) === 0) try { __stVarsLog("模块尚未加载，稍后重试 id=" + id, true); } catch (e) { }
           if ((tries || 0) < 10) setTimeout(function () { window.__stChatu8VarsIngest(id, (tries || 0) + 1); }, 300);
           return;
         }
@@ -36811,18 +36811,28 @@ function initializeNewlineFixer() {
         const vm = chat2[id];
         if (!vm || typeof vm.mes !== "string") return;
         const vr = mod.ingestMessage(vm.mes, id, window.__stChatu8ExpandPrompt);
-        if (vr && !vr.ok) try { window.__stVarsLog("有更新块但解析失败: " + vr.error, true); } catch (e) { }
+        try { __stVarsLog("ingest 结果 changed=" + (vr && vr.changed) + " ok=" + (vr && vr.ok) + " wrote=" + (vr && vr.wrote) + " 后端=" + (window.TavernHelper ? "TavernHelper" : "chat.variables")); } catch (e) { }
+        if (vr && !vr.ok) try { __stVarsLog("有更新块但解析失败: " + vr.error, true); } catch (e) { }
         if (vr && vr.changed) {
           chat2[id].mes = vr.clean;
           await saveChatConditional3();
           render(id);
-          try { window.__stVarsLog("已解析并写回楼层 " + id); } catch (e) { }
+          try { __stVarsLog("已解析并写回楼层 " + id); } catch (e) { }
         }
       } catch (e) { console.warn("[ChatU8 vars] ingest", e); }
     };
     eventSource16.on(event_types3.MESSAGE_RECEIVED, async function (id) { await window.__stChatu8VarsIngest(id); });
     eventSource16.on(event_types3.MESSAGE_EDITED, async function (id) { await window.__stChatu8VarsIngest(id); });
-    try { window.__stVarsLog("钩子已注册（等待 LLM 回复）"); } catch (e) { }
+    eventSource16.on(event_types3.CHAT_CHANGED, function () {
+      try {
+        if (!window.stChatu8Vars) return;
+        var last = (chat2 && chat2.length) ? chat2.length - 1 : -1;
+        if (last < 0) return;
+        var w = window.stChatu8Vars.ensureStore(last);
+        __stVarsLog("进入聊天，变量表检查完成（楼层 " + last + " 新建=" + w + "）");
+      } catch (e) { try { __stVarsLog("初始化变量表失败: " + e, true); } catch (e2) { } }
+    });
+    try { __stVarsLog("钩子已注册（等待 LLM 回复）"); } catch (e) { }
   /*== stChatu8Vars v1: inject ==*/
   window.__stChatu8VarsInjectHookRan = true;
   try {

@@ -485,6 +485,16 @@ window.stChatu8Vars = {
   },
 
   tags: function (id) { return __stSys().tags(id); },
+
+  // 进入聊天时初始化变量表（让结构与命名空间先存在）
+  ensureStore: function (id) {
+    try {
+      var s = __stSys();
+      var at = s.storage.readAt(id);
+      if (at) return false;
+      return s.storage.writeAt(id, { "角色列表": {} });
+    } catch (e) { return false; }
+  },
   char: function (name, id) { return __stSys().char(name, id); },
 
   // 注入给模型的当前变量块
