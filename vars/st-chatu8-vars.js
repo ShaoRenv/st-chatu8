@@ -73,11 +73,11 @@ function splitSegments(text) {
 }
 
 function makeCtx(triggerText) {
-  return { text: triggerText == null ? "" : String(triggerText), depth: 0, seen: {} };
+  return { text: triggerText == null ? "" : String(triggerText), gate: triggerText != null, depth: 0, seen: {} };
 }
 
 function down(ctx, seen) {
-  return { text: ctx.text, depth: (ctx.depth || 0) + 1, seen: seen || ctx.seen || {} };
+  return { text: ctx.text, gate: ctx.gate, depth: (ctx.depth || 0) + 1, seen: seen || ctx.seen || {} };
 }
 
 // key 触发：没 key 常开；有 key 要求关键词出现在触发文本里（逗号分隔，大小写不敏感）
@@ -91,7 +91,17 @@ function isTriggered(triggerText, keyValue) {
   return false;
 }
 
-const RESERVED = { key: 1 };
+// 激活关键词字段：主名用「激活词」，兼容旧的 key
+const GATE_FIELDS = ["激活词", "key"];
+const RESERVED = { "激活词": 1, key: 1 };
+
+function readGate(node) {
+  if (!isPlainObject(node)) return undefined;
+  for (const f of GATE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(node, f)) return node[f];
+  }
+  return undefined;
+}
 
 // 投影：只展开这一层（字符串/数组）；下一层的对象是分组，不进去
 function project(root, baseSegs, value, ctx) {
@@ -109,7 +119,7 @@ function project(root, baseSegs, value, ctx) {
     return parts.join(", ");
   }
   if (isPlainObject(value)) {
-    if (!isTriggered(c.text, value.key)) return "";
+    if (c.gate !== false && !isTriggered(c.text, readGate(value))) return "";
     const parts = [];
     for (const k of Object.keys(value)) {
       if (k.charAt(0) === "_" || RESERVED[k]) continue;
@@ -159,7 +169,17 @@ function evalText(root, baseSegs, text, ctx) {
   for (const p of parts) {
     const q = p.trim();
     if (!q) continue;
-    if (q.charAt(0) === "-" && q.length > 1) removals.push(q.slice(1).trim().toLowerCase());
+    if (q.charAt(0) === "-" && q.length > 1) {
+      const body = q.slice(1).trim();
+      if (body.indexOf("$") >= 0) {
+        // -$引用$：把这个引用产出的所有 tag 都减掉
+        const expanded = expandRefs(root, baseSegs, body, c);
+        const pieces = expanded.split(",").map((x) => x.trim()).filter(Boolean);
+        for (const piece of pieces) removals.push(piece.toLowerCase());
+      } else {
+        removals.push(body.toLowerCase());
+      }
+    }
     else if (q.indexOf("$") >= 0 && q.indexOf("${") < 0) hasRef = true;
   }
   if (!hasRef && !removals.length) return text;
@@ -423,12 +443,28 @@ window.stChatu8Vars = {
   version: "1.0.0",
 
   // 生图 LLM 输出：摘掉 <变量更新> 块并写入该楼层，返回摘干净后的提示词
-  ingestMessage: function (mes, id) {
+  ingestMessage: function (mes, id, expand) {
     var r = parseUpdate(mes);
     var out = { changed: r.clean !== mes, clean: r.clean, ok: false, wrote: false, error: r.error };
     if (!r.ok) return out;
+    var patch = r.patch;
+    // 写入前把 ${...}$ 预设调用展开成 tag（$路径$ 指针由展开器原样放行，保持不变）
+    if (typeof expand === "function") {
+      try {
+        var text = JSON.stringify(patch);
+        if (text.indexOf("$") >= 0) {
+          var uc = window.collectedCharacterNegatives;
+          var expanded;
+          try { expanded = expand(text); } finally { window.collectedCharacterNegatives = uc; }
+          if (expanded && expanded !== text) {
+            var parsed = looseJsonParse(expanded);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) patch = parsed;
+          }
+        }
+      } catch (e) { console.warn("[ChatU8 vars] expand patch failed", e); }
+    }
     var s = __stSys();
-    var merged = mergeTags(s.tags(id), r.patch);
+    var merged = mergeTags(s.tags(id), patch);
     out.wrote = s.storage.writeAt(id, merged);
     out.ok = true;
     return out;
@@ -454,7 +490,35 @@ window.stChatu8Vars = {
   promptBlock: function (id) {
     var t = __stSys().tags(id);
     var body = (t && t["角色列表"]) ? t["角色列表"] : {};
-    return "\n<当前变量>\n" + JSON.stringify({ "角色列表": body }) + "\n</当前变量>";
+    var view = this.viewText(undefined, id);
+    var tail = view ? "\n<当前状态>\n" + view + "\n</当前状态>" : "";
+    return "\n<当前变量>\n" + JSON.stringify({ "角色列表": body }) + "\n</当前变量>" + tail;
+  },
+
+
+  // {{绘图变量}} -> 原始存储（给模型改：保留 $路径$ 指针原样）
+  rawText: function (id) {
+    try {
+      var t = __stSys().tags(id == null ? __stLastId() : id);
+      var body = (t && t["角色列表"]) ? t["角色列表"] : {};
+      return JSON.stringify({ "角色列表": body });
+    } catch (e) { return ""; }
+  },
+
+  // {{绘图变量视图}} -> 求值后的最终 tag（key 命中的角色才出现，指针展开）
+  viewText: function (triggerText, id) {
+    try {
+      var t = __stSys().tags(id == null ? __stLastId() : id);
+      var list = (t && t["角色列表"]) ? t["角色列表"] : {};
+      var lines = [];
+      for (var name in list) {
+        if (!Object.prototype.hasOwnProperty.call(list, name)) continue;
+        if (name.charAt(0) === "_") continue;
+        var proj = evaluate(t, "$" + name + "$", triggerText);
+        if (proj) lines.push(name + ": " + proj);
+      }
+      return lines.join("\n");
+    } catch (e) { return ""; }
   },
 
   // 调试/测试用

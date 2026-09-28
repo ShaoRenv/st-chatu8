@@ -19739,6 +19739,10 @@ ${floorContext}`;
   result = replacePlaceholder(result, "{{\u79D2\u6570}}", durationStr, replacedVariables);
   result = replacePlaceholder(result, "{{\u89C6\u9891\u79D2\u6570}}", durationStr, replacedVariables);
   result = replacePlaceholder(result, "{{duration}}", durationStr, replacedVariables);
+  // ==== stChatu8Vars v1: macro ====
+  result = replacePlaceholder(result, "{{绘图变量}}", (function () { try { return window.stChatu8Vars ? window.stChatu8Vars.rawText() : ""; } catch (e) { console.warn("[ChatU8 vars] macro raw", e); return ""; } })(), replacedVariables);
+  result = replacePlaceholder(result, "{{绘图变量视图}}", (function () { try { return window.stChatu8Vars ? window.stChatu8Vars.viewText(String(replacedBody || "") + "\n" + String(userDemand || "")) : ""; } catch (e) { console.warn("[ChatU8 vars] macro view", e); return ""; } })(), replacedVariables);
+  result = replacePlaceholder(result, "{{绘图激活变量}}", (function () { try { return window.stChatu8Vars ? window.stChatu8Vars.viewText(String(replacedBody || "") + "\n" + String(userDemand || "")) : ""; } catch (e) { console.warn("[ChatU8 vars] macro 激活变量", e); return ""; } })(), replacedVariables);
   if (variables && Object.keys(variables).length > 0) {
     const getvarPattern = /\{\{getvar::([^}]+)\}\}/g;
     const promptStr = JSON.stringify(result);
@@ -33683,6 +33687,7 @@ function appendFixedPromptModeInstruction(promptText, preset, kind) {
   const instruction = isOutfit ? "\n\n\u3010\u8F93\u51FA\u683C\u5F0F\u3011\u5F53\u524D\u670D\u88C5\u4F7F\u7528\u300C\u56FA\u5B9A\u63D0\u793A\u8BCD\u300D\u5B58\u50A8\u5F62\u5F0F\uFF1A\u8BF7\u53EA\u8F93\u51FA <\u670D\u88C5> \u5757\uFF0C\u5916\u89C2\u53EA\u5199\u4E00\u884C\u300C\u670D\u88C5\u5F62\u8C61: \u2026\u300D\uFF0C\u4E0D\u8981\u518D\u8F93\u51FA \u4E0A\u534A\u8EAB/\u4E0B\u534A\u8EAB/\u80CC\u9762 \u7B49\u5206\u90E8\u4F4D\u5B57\u6BB5\u3002" : "\n\n\u3010\u8F93\u51FA\u683C\u5F0F\u3011\u5F53\u524D\u89D2\u8272\u4F7F\u7528\u300C\u56FA\u5B9A\u63D0\u793A\u8BCD\u300D\u5B58\u50A8\u5F62\u5F0F\uFF1A\u8BF7\u53EA\u8F93\u51FA <\u4EBA\u7269> \u5757\uFF0C\u5916\u89C2\u53EA\u5199\u4E00\u884C\u300C\u4EBA\u7269\u5F62\u8C61: \u2026\u300D\uFF0C\u4E0D\u8981\u518D\u8F93\u51FA \u4E94\u5B98\u5916\u8C8C/\u4E0A\u534A\u8EABSFW/\u4E0B\u534A\u8EABNSFW \u7B49\u5206\u90E8\u4F4D\u5B57\u6BB5\u3002";
   return promptText + instruction;
 }
+/*== stChatu8Vars v1: capture ==*/ try { window.__stChatu8ExpandPrompt = processCharacterPrompt; } catch (e) { }
 function processCharacterPrompt(prompt2) {
   /*== stChatu8Vars v1: render ==*/
   try { if (window.stChatu8Vars) prompt2 = window.stChatu8Vars.render(prompt2); } catch (e) { console.warn("[ChatU8 vars] render", e); }
@@ -36799,7 +36804,7 @@ function initializeNewlineFixer() {
         if (vs && vs.varsEnabled === false) return;
         const vm = chat2[id];
         if (!vm || typeof vm.mes !== "string") return;
-        const vr = mod.ingestMessage(vm.mes, id);
+        const vr = mod.ingestMessage(vm.mes, id, window.__stChatu8ExpandPrompt);
         if (vr && vr.changed) {
           chat2[id].mes = vr.clean;
           await saveChatConditional3();
