@@ -2448,6 +2448,7 @@ var init_config = __esm({
       characterAI: { model: "mistral", temperature: 0.8, systemPrompt: "", lastPrompt: "" },
       outfitAI: { model: "mistral", temperature: 0.8, systemPrompt: "", lastPrompt: "" },
       newlineFixEnabled: "true",
+    varsEnabled: "true",
       yushe: { "\u9ED8\u8BA4": { "fixedPrompt": "", "fixedPrompt_end": "", "negativePrompt": "" }, "\u5C0F\u9A6C\u6A21\u578B\u9ED8\u8BA4": { "fixedPrompt": "score_9,score_8_up,score_7_up,anime", "fixedPrompt_end": "", "negativePrompt": "score_4,score_3,score_2,score_1,score_5" } },
       yusheid_sd: "\u9ED8\u8BA4",
       yusheid_novelai: "\u9ED8\u8BA4",
@@ -33683,6 +33684,8 @@ function appendFixedPromptModeInstruction(promptText, preset, kind) {
   return promptText + instruction;
 }
 function processCharacterPrompt(prompt2) {
+  /*== stChatu8Vars v1: render ==*/
+  try { if (window.stChatu8Vars) prompt2 = window.stChatu8Vars.render(prompt2); } catch (e) { console.warn("[ChatU8 vars] render", e); }
   if (!prompt2 || typeof prompt2 !== "string") {
     return prompt2;
   }
@@ -33965,6 +33968,8 @@ function collectNegativeToGlobal(negative) {
   console.log("[CharacterPrompt] \u6536\u96C6\u8D1F\u9762\u63D0\u793A\u8BCD\u5230\u5168\u5C40:", trimmed);
 }
 function processMultiCharacterPrompt(prompt2) {
+  /*== stChatu8Vars v1: render ==*/
+  try { if (window.stChatu8Vars) prompt2 = window.stChatu8Vars.render(prompt2); } catch (e) { console.warn("[ChatU8 vars] render", e); }
   try {
     const prompt_data = parsePromptStringWithCoordinates(prompt2);
     console.log("[CharacterPrompt] \u89E3\u6790\u540E\u7684 prompt_data:", prompt_data);
@@ -36772,6 +36777,66 @@ var init_character = __esm({
 
 
 function initializeNewlineFixer() {
+  /*== stChatu8Vars v1: loader + ingest ==*/
+  try {
+    if (!window.stChatu8Vars && !window.__stChatu8VarsLoading) {
+      window.__stChatu8VarsLoading = true;
+      const varsEl = document.createElement("script");
+      varsEl.src = new URL(extensionFolderPath + "/vars/st-chatu8-vars.js", window.location.href).href;
+      varsEl.async = true;
+      varsEl.onload = function () { window.__stChatu8VarsLoading = false; };
+      varsEl.onerror = function () { window.__stChatu8VarsLoading = false; };
+      document.head.appendChild(varsEl);
+    }
+    window.__stChatu8VarsIngest = async function (id, tries) {
+      try {
+        const mod = window.stChatu8Vars;
+        if (!mod) {
+          if ((tries || 0) < 10) setTimeout(function () { window.__stChatu8VarsIngest(id, (tries || 0) + 1); }, 300);
+          return;
+        }
+        const vs = extension_settings37[extensionName];
+        if (vs && vs.varsEnabled === false) return;
+        const vm = chat2[id];
+        if (!vm || typeof vm.mes !== "string") return;
+        const vr = mod.ingestMessage(vm.mes, id);
+        if (vr && vr.changed) {
+          chat2[id].mes = vr.clean;
+          await saveChatConditional3();
+          render(id);
+          console.log("ChatU8: 变量块已解析并写回楼层 " + id);
+        }
+      } catch (e) { console.warn("[ChatU8 vars] ingest", e); }
+    };
+    eventSource16.on(event_types3.MESSAGE_RECEIVED, async function (id) { await window.__stChatu8VarsIngest(id); });
+    eventSource16.on(event_types3.MESSAGE_EDITED, async function (id) { await window.__stChatu8VarsIngest(id); });
+  /*== stChatu8Vars v1: inject ==*/
+  window.__stChatu8VarsInjectHookRan = true;
+  try {
+    if (typeof generateCharacterListText === "function" && !generateCharacterListText.__stVarsWrapped) {
+      const __stOrigGCLT = generateCharacterListText;
+      const __stWrappedGCLT = function () {
+        const __t = __stOrigGCLT.apply(this, arguments);
+        try {
+          if (window.stChatu8Vars && typeof __t === "string" && __t.indexOf("<当前变量>") < 0) return __t + window.stChatu8Vars.promptBlock();
+        } catch (e) { }
+        return __t;
+      };
+      __stWrappedGCLT.__stVarsWrapped = true;
+      window.__stChatu8VarsInjectWrapped = true;
+      generateCharacterListText = __stWrappedGCLT;
+    }
+  } catch (e) { console.warn("[ChatU8 vars] inject hook failed", e); }
+  try {
+    document.addEventListener("change", function (ev) {
+      const el = ev.target;
+      if (!el || el.id !== "varsEnabled") return;
+      const vs = extension_settings37[extensionName];
+      vs.varsEnabled = el.checked ? "true" : "false";
+      try { const c = window.SillyTavern.getContext(); if (c && c.saveSettingsDebounced) c.saveSettingsDebounced(); } catch (e) { }
+    }, true);
+  } catch (e) { console.warn("[ChatU8 vars] settings toggle failed", e); }
+  } catch (e) { console.warn("[ChatU8 vars] hook init failed", e); }
   eventSource16.on(event_types3.MESSAGE_RECEIVED, async function(id) {
     if (String(extension_settings37[extensionName].newlineFixEnabled) !== "true") {
       return;
@@ -111205,7 +111270,7 @@ async function initUI({ check_update: check_update2 }) {
       settings2.theme_id = "\u9ED8\u8BA4-\u767D\u5929";
     }
     applyTheme(settings2.themes[settings2.theme_id]);
-    const mainKeys = ["scriptEnabled", "helpTipsEnabled", "disablePluginToast", "newlineFixEnabled", "mode", "client", "displayMode", "heavyFrontendMode", "insertOriginalText", "dbclike", "collapseImage", "zidongdianji", "zidongdianji2", "longPressToEdit", "clickToPreview", "startTag", "endTag", "cache", "sdUrl", "st_chatu8_sd_auth", "comfyuiUrl", "novelaiApi", "novelaisite", "novelaiOtherSite", "enableCloudQueue", "cloudQueueUrl", "cloudQueueGreeting", "showQueueGreeting", "novelaimode", "novelai_sampler", "Schedule", "nai3Scale", "cfg_rescale", "AI_use_coords", "sm", "dyn", "nai3Variety", "nai3Deceisp", "sd_cwidth", "sd_cheight", "sd_csteps", "sd_cseed", "sdCfgScale", "restoreFaces", "novelai_width", "novelai_height", "novelai_steps", "novelai_seed", "nai3VibeTransfer", "enableVibeGroupTransfer", "randomVibeGroup", "normalizeRefStrength", "InformationExtracted", "ReferenceStrength", "nai3CharRef", "nai3StylePerception", "comfyui_width", "comfyui_height", "comfyui_steps", "comfyui_seed", "cfg_comfyui", "worker", "ipa", "c_fenwei", "c_xijie", "c_quanzhong", "c_idquanzhong", "AQT_sd", "UCP_sd", "AQT_novelai", "UCP_novelai", "AQT_comfyui", "UCP_comfyui", "addFurryDataset", "sd_cupscale_factor", "sd_chires_fix", "sd_chires_steps", "sd_cdenoising_strength", "sd_cclip_skip", "sd_cadetailer", "worldBookEnabled", "ai_temperature", "ai_top_p", "ai_presence_penalty", "ai_frequency_penalty", "ai_stream", "ai_private", "ai_token", "vocabulary_search_startswith", "vocabulary_search_limit", "vocabulary_search_sort", "enablePregen", "autoLLMImageGen", "randomYushe", "aiAutonomousResolution", "videoChannel", "imageAlignment", "imageSizeScale", "imageGenInterval", "translation_system_prompt", "ai_test_system", "ai_test_user", "ai_test_output", "jiuguanchucun", "vibeJiuguanchucun", "convertToJpegStorage", "weilin_lora_fix"];
+    const mainKeys = ["varsEnabled", "scriptEnabled", "helpTipsEnabled", "disablePluginToast", "newlineFixEnabled", "mode", "client", "displayMode", "heavyFrontendMode", "insertOriginalText", "dbclike", "collapseImage", "zidongdianji", "zidongdianji2", "longPressToEdit", "clickToPreview", "startTag", "endTag", "cache", "sdUrl", "st_chatu8_sd_auth", "comfyuiUrl", "novelaiApi", "novelaisite", "novelaiOtherSite", "enableCloudQueue", "cloudQueueUrl", "cloudQueueGreeting", "showQueueGreeting", "novelaimode", "novelai_sampler", "Schedule", "nai3Scale", "cfg_rescale", "AI_use_coords", "sm", "dyn", "nai3Variety", "nai3Deceisp", "sd_cwidth", "sd_cheight", "sd_csteps", "sd_cseed", "sdCfgScale", "restoreFaces", "novelai_width", "novelai_height", "novelai_steps", "novelai_seed", "nai3VibeTransfer", "enableVibeGroupTransfer", "randomVibeGroup", "normalizeRefStrength", "InformationExtracted", "ReferenceStrength", "nai3CharRef", "nai3StylePerception", "comfyui_width", "comfyui_height", "comfyui_steps", "comfyui_seed", "cfg_comfyui", "worker", "ipa", "c_fenwei", "c_xijie", "c_quanzhong", "c_idquanzhong", "AQT_sd", "UCP_sd", "AQT_novelai", "UCP_novelai", "AQT_comfyui", "UCP_comfyui", "addFurryDataset", "sd_cupscale_factor", "sd_chires_fix", "sd_chires_steps", "sd_cdenoising_strength", "sd_cclip_skip", "sd_cadetailer", "worldBookEnabled", "ai_temperature", "ai_top_p", "ai_presence_penalty", "ai_frequency_penalty", "ai_stream", "ai_private", "ai_token", "vocabulary_search_startswith", "vocabulary_search_limit", "vocabulary_search_sort", "enablePregen", "autoLLMImageGen", "randomYushe", "aiAutonomousResolution", "videoChannel", "imageAlignment", "imageSizeScale", "imageGenInterval", "translation_system_prompt", "ai_test_system", "ai_test_user", "ai_test_output", "jiuguanchucun", "vibeJiuguanchucun", "convertToJpegStorage", "weilin_lora_fix"];
     mainKeys.forEach((key) => {
       const element = document.getElementById(key);
       if (element) {
