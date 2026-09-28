@@ -218,9 +218,9 @@ function evaluate(root, text, triggerText) {
   return evalText(root, [], text, makeCtx(triggerText));
 }
 /* ---- store.js ---- */
-// st-chatu8 tag 存储：酒馆消息楼层变量读写（纯逻辑，无依赖；注入时删掉 export）
-// 变量表根下用命名空间隔离：table["st-chatu8"] = { _v: 1, <角色名>: {...} }
-// 优先用酒馆助手 window.TavernHelper；没有就直接读写 SillyTavern.chat[i].variables[swipe_id]
+// st-chatu8 tag 存储：默认写【消息楼层变量】（酒馆助手 TavernHelper 的 message 域）
+// 可选 backend: "chat" 走聊天变量 chatMetadata.variables
+// 纯逻辑；注入 index.js 时删掉 export
 
 
 // 深合并：对象递归；字符串/数组/数字直接替换；null 或 "" 表示删除该键
@@ -241,19 +241,26 @@ function createStorage(opts) {
   const win = cfg.win || (typeof window !== "undefined" ? window : {});
   const ns = cfg.namespace || "st-chatu8";
   const version = cfg.version || 1;
-
-  function helper() {
-    const h = win.TavernHelper;
-    if (!h) return null;
-    if (typeof h.getVariables === "function" && typeof h.replaceVariables === "function") return h;
-    return null;
-  }
+  const backend = cfg.backend || "message";
 
   function ctx() {
     try {
       if (win.SillyTavern && typeof win.SillyTavern.getContext === "function") return win.SillyTavern.getContext();
       if (typeof win.getContext === "function") return win.getContext();
     } catch (e) { }
+    return null;
+  }
+
+  function chatVars(c) {
+    if (!c) return null;
+    if (!isPlainObject(c.chatMetadata)) c.chatMetadata = {};
+    if (!isPlainObject(c.chatMetadata.variables)) c.chatMetadata.variables = {};
+    return c.chatMetadata.variables;
+  }
+
+  function helper() {
+    const h = win.TavernHelper;
+    if (h && typeof h.getVariables === "function" && typeof h.replaceVariables === "function") return h;
     return null;
   }
 
@@ -266,8 +273,7 @@ function createStorage(opts) {
 
   function lastMessageId() {
     const arr = chatArr();
-    if (arr && arr.length) return arr.length - 1;
-    return -1;
+    return arr && arr.length ? arr.length - 1 : -1;
   }
 
   function swipeOf(msg) {
@@ -275,7 +281,23 @@ function createStorage(opts) {
     return 0;
   }
 
-  // 读某一楼层的变量表（整表，含别人的键）
+  function readChat() {
+    const c = ctx();
+    const vars = chatVars(c);
+    if (!vars) return null;
+    const mine = vars[ns];
+    return isPlainObject(mine) ? mine : null;
+  }
+
+  function writeChat(tags) {
+    const c = ctx();
+    const vars = chatVars(c);
+    if (!vars) return false;
+    vars[ns] = Object.assign({ _v: version }, tags || {});
+    try { if (c && typeof c.saveMetadata === "function") c.saveMetadata(); } catch (e) { }
+    return true;
+  }
+
   function readTable(messageId) {
     const h = helper();
     if (h) { try { return h.getVariables({ type: "message", message_id: messageId }) || {}; } catch (e) { return {}; } }
@@ -303,14 +325,21 @@ function createStorage(opts) {
   }
 
   function readAt(messageId) {
-    const table = readTable(messageId);
-    const mine = table[ns];
+    if (backend === "chat") return readChat();
+    const mine = readTable(messageId)[ns];
     return isPlainObject(mine) ? mine : null;
   }
 
-  // 从 fromId 往前找第一个有我们命名空间的楼层
+  function writeAt(messageId, tags) {
+    if (backend === "chat") return writeChat(tags);
+    const table = readTable(messageId);
+    const next = Object.assign({}, isPlainObject(table) ? table : {});
+    next[ns] = Object.assign({ _v: version }, tags || {});
+    return writeTable(messageId, next);
+  }
+
   function findLatest(fromId) {
-    // 负数 = 酒馆助手的「最新楼层」语义
+    if (backend === "chat") return { messageId: -1, tags: readChat() };
     if (typeof fromId === "number" && fromId < 0) {
       const mine = readAt(fromId);
       if (mine) return { messageId: fromId, tags: mine };
@@ -323,18 +352,17 @@ function createStorage(opts) {
     return { messageId: -1, tags: null };
   }
 
-  function writeAt(messageId, tags) {
-    const table = readTable(messageId);
-    const next = Object.assign({}, isPlainObject(table) ? table : {});
-    next[ns] = Object.assign({ _v: version }, tags || {});
-    return writeTable(messageId, next);
-  }
-
   return {
-    ns: ns, version: version,
+    ns: ns,
+    version: version,
+    backend: backend,
+    usingHelper: function () { return !!helper(); },
     lastMessageId: lastMessageId,
-    readTable: readTable, writeTable: writeTable,
-    readAt: readAt, writeAt: writeAt, findLatest: findLatest,
+    readTable: readTable,
+    writeTable: writeTable,
+    readAt: readAt,
+    writeAt: writeAt,
+    findLatest: findLatest,
     readTags: function (fromId) { try { return findLatest(fromId).tags || {}; } catch (e) { return {}; } },
     applyUpdate: function (messageId, patch) {
       const cur = readAt(messageId) || findLatest(messageId).tags || {};
@@ -344,6 +372,7 @@ function createStorage(opts) {
     }
   };
 }
+
 /* ---- patch.js ---- */
 // st-chatu8 更新块：从生图 LLM 的输出里摘出变量更新，并把这段从提示词里去掉
 // 更新 = 一棵部分树（不用 op/path）：写值=设置/新增，空串=删除，对象=往库里加条目
@@ -434,7 +463,7 @@ function createVarSystem(opts) {
 // 对外接口（被 build-vars.mjs 拼到 bundle 尾部）
 var __system = null;
 function __stSys() {
-  if (!__system) __system = createVarSystem({ namespace: "st-chatu8", version: 1 });
+  if (!__system) __system = createVarSystem({ namespace: "st-chatu8", version: 1, backend: (window.__stChatu8VarsBackend || "message") });
   return __system;
 }
 function __stLastId() { return __stSys().storage.lastMessageId(); }

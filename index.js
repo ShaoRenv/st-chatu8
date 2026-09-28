@@ -36810,6 +36810,11 @@ function initializeNewlineFixer() {
         if (vs && vs.varsEnabled === false) return;
         const vm = chat2[id];
         if (!vm || typeof vm.mes !== "string") return;
+        if (!window.TavernHelper && !window.__stVarsWarnedTH) {
+          window.__stVarsWarnedTH = true;
+          __stVarsLog("未检测到酒馆助手（TavernHelper）—— 楼层变量由它提供，现在只能退回直写 chat[i].variables", true);
+          try { if (window.toastr) toastr.error("楼层变量需要「酒馆助手」扩展", "茶兔8"); } catch (e) { }
+        }
         const vr = mod.ingestMessage(vm.mes, id, window.__stChatu8ExpandPrompt);
         try { __stVarsLog("ingest 结果 changed=" + (vr && vr.changed) + " ok=" + (vr && vr.ok) + " wrote=" + (vr && vr.wrote) + " 后端=" + (window.TavernHelper ? "TavernHelper" : "chat.variables")); } catch (e) { }
         if (vr && !vr.ok) try { __stVarsLog("有更新块但解析失败: " + vr.error, true); } catch (e) { }
@@ -36832,14 +36837,6 @@ function initializeNewlineFixer() {
         __stVarsLog("进入聊天，变量表检查完成（楼层 " + last + " 新建=" + w + "）");
       } catch (e) { try { __stVarsLog("初始化变量表失败: " + e, true); } catch (e2) { } }
     });
-    try {
-      if (!window.TavernHelper) {
-        __stVarsLog("未检测到酒馆助手（TavernHelper）—— 楼层变量由酒馆助手提供，没有它变量无法读写", true);
-        if (window.toastr) toastr.error("变量系统需要「酒馆助手」扩展：楼层变量由它提供", "茶兔8");
-      } else {
-        __stVarsLog("已检测到酒馆助手，走 TavernHelper 写楼层变量");
-      }
-    } catch (e) { }
     try { __stVarsLog("钩子已注册（等待 LLM 回复）"); } catch (e) { }
   /*== stChatu8Vars v1: inject ==*/
   window.__stChatu8VarsInjectHookRan = true;
