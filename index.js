@@ -36789,14 +36789,16 @@ function initializeNewlineFixer() {
       const varsEl = document.createElement("script");
       varsEl.src = new URL(extensionFolderPath + "/vars/st-chatu8-vars.js", window.location.href).href;
       varsEl.async = true;
-      varsEl.onload = function () { window.__stChatu8VarsLoading = false; };
-      varsEl.onerror = function () { window.__stChatu8VarsLoading = false; };
+      varsEl.onload = function () { window.__stChatu8VarsLoading = false; console.log("[ChatU8 vars] 模块已加载 v" + (window.stChatu8Vars && window.stChatu8Vars.version)); };
+      varsEl.onerror = function () { window.__stChatu8VarsLoading = false; console.error("[ChatU8 vars] 模块加载失败: " + varsEl.src); };
+      console.log("[ChatU8 vars] 正在加载: " + varsEl.src);
       document.head.appendChild(varsEl);
     }
     window.__stChatu8VarsIngest = async function (id, tries) {
       try {
         const mod = window.stChatu8Vars;
         if (!mod) {
+          if ((tries || 0) === 0) console.warn("[ChatU8 vars] 模块尚未加载，稍后重试 id=" + id);
           if ((tries || 0) < 10) setTimeout(function () { window.__stChatu8VarsIngest(id, (tries || 0) + 1); }, 300);
           return;
         }
@@ -36805,6 +36807,7 @@ function initializeNewlineFixer() {
         const vm = chat2[id];
         if (!vm || typeof vm.mes !== "string") return;
         const vr = mod.ingestMessage(vm.mes, id, window.__stChatu8ExpandPrompt);
+        if (vr && !vr.ok) console.warn("[ChatU8 vars] 有更新块但解析失败: " + vr.error + " | " + String(vm.mes).slice(-200));
         if (vr && vr.changed) {
           chat2[id].mes = vr.clean;
           await saveChatConditional3();

@@ -467,6 +467,7 @@ window.stChatu8Vars = {
     var merged = mergeTags(s.tags(id), patch);
     out.wrote = s.storage.writeAt(id, merged);
     out.ok = true;
+    console.log("[ChatU8 vars] 写入楼层 " + id + " ok=" + out.wrote + " 后端=" + (window.TavernHelper ? "TavernHelper" : "chat.variables"));
     return out;
   },
 
