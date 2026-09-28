@@ -36783,22 +36783,26 @@ var init_character = __esm({
 
 function initializeNewlineFixer() {
   /*== stChatu8Vars v1: loader + ingest ==*/
+  const __stVarsLog = function (msg, isErr) {
+    try { if (typeof addLog === "function") addLog("[变量] " + msg); } catch (e) { }
+    try { if (isErr) console.error("[ChatU8 vars] " + msg); else console.log("[ChatU8 vars] " + msg); } catch (e) { }
+  };
   try {
     if (!window.stChatu8Vars && !window.__stChatu8VarsLoading) {
       window.__stChatu8VarsLoading = true;
       const varsEl = document.createElement("script");
       varsEl.src = new URL(extensionFolderPath + "/vars/st-chatu8-vars.js", window.location.href).href;
       varsEl.async = true;
-      varsEl.onload = function () { window.__stChatu8VarsLoading = false; console.log("[ChatU8 vars] 模块已加载 v" + (window.stChatu8Vars && window.stChatu8Vars.version)); };
-      varsEl.onerror = function () { window.__stChatu8VarsLoading = false; console.error("[ChatU8 vars] 模块加载失败: " + varsEl.src); };
-      console.log("[ChatU8 vars] 正在加载: " + varsEl.src);
+      varsEl.onload = function () { window.__stChatu8VarsLoading = false; try { window.__stVarsLog("模块已加载 v" + (window.stChatu8Vars && window.stChatu8Vars.version)); } catch (e) { } };
+      varsEl.onerror = function () { window.__stChatu8VarsLoading = false; try { window.__stVarsLog("模块加载失败: " + varsEl.src, true); } catch (e) { } };
+      try { window.__stVarsLog("正在加载: " + varsEl.src); } catch (e) { }
       document.head.appendChild(varsEl);
     }
     window.__stChatu8VarsIngest = async function (id, tries) {
       try {
         const mod = window.stChatu8Vars;
         if (!mod) {
-          if ((tries || 0) === 0) console.warn("[ChatU8 vars] 模块尚未加载，稍后重试 id=" + id);
+          if ((tries || 0) === 0) try { window.__stVarsLog("模块尚未加载，稍后重试 id=" + id, true); } catch (e) { }
           if ((tries || 0) < 10) setTimeout(function () { window.__stChatu8VarsIngest(id, (tries || 0) + 1); }, 300);
           return;
         }
@@ -36807,17 +36811,18 @@ function initializeNewlineFixer() {
         const vm = chat2[id];
         if (!vm || typeof vm.mes !== "string") return;
         const vr = mod.ingestMessage(vm.mes, id, window.__stChatu8ExpandPrompt);
-        if (vr && !vr.ok) console.warn("[ChatU8 vars] 有更新块但解析失败: " + vr.error + " | " + String(vm.mes).slice(-200));
+        if (vr && !vr.ok) try { window.__stVarsLog("有更新块但解析失败: " + vr.error, true); } catch (e) { }
         if (vr && vr.changed) {
           chat2[id].mes = vr.clean;
           await saveChatConditional3();
           render(id);
-          console.log("ChatU8: 变量块已解析并写回楼层 " + id);
+          try { window.__stVarsLog("已解析并写回楼层 " + id); } catch (e) { }
         }
       } catch (e) { console.warn("[ChatU8 vars] ingest", e); }
     };
     eventSource16.on(event_types3.MESSAGE_RECEIVED, async function (id) { await window.__stChatu8VarsIngest(id); });
     eventSource16.on(event_types3.MESSAGE_EDITED, async function (id) { await window.__stChatu8VarsIngest(id); });
+    try { window.__stVarsLog("钩子已注册（等待 LLM 回复）"); } catch (e) { }
   /*== stChatu8Vars v1: inject ==*/
   window.__stChatu8VarsInjectHookRan = true;
   try {
