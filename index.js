@@ -33688,6 +33688,58 @@ function appendFixedPromptModeInstruction(promptText, preset, kind) {
   return promptText + instruction;
 }
 /*== stChatu8Vars v1: capture ==*/ try { window.__stChatu8ExpandPrompt = processCharacterPrompt; } catch (e) { }
+/*== stChatu8Vars v1: llm-hook ==*/
+// 生图 LLM 是插件自己发的请求，不会产生新的聊天楼层 → ST 的 MESSAGE_RECEIVED 根本不会触发。
+// 所以这里直接包住插件的 LLM 入口：拿到返回文本后先喂给变量系统（解析 <变量更新> 并写当前楼层），再把摘干净的文本还给插件。
+window.__stChatu8VarsIngestLlm = function (out, kind) {
+  try {
+    if (typeof out !== "string" || out.indexOf("<变量更新>") < 0) return out;
+    var mod = window.stChatu8Vars;
+    if (!mod || typeof mod.ingestMessage !== "function") return out;
+    var c = ( window.SillyTavern && window.SillyTavern.getContext ) ? window.SillyTavern.getContext() : null;
+    var arr = ( c && c.chat ) ? c.chat : [];
+    var id = arr.length - 1;
+    if (id < 0) return out;
+    var vs = c && c.extensionSettings ? c.extensionSettings["st-chatu8"] : null;
+    if (vs && vs.varsEnabled === "false") return out;
+    var r = mod.ingestMessage(out, id, window.__stChatu8ExpandPrompt);
+    var log = window.__stVarsLogBridge;
+    if (r && r.ok) {
+      if (log) log("LLM(" + kind + ") 变量已写入楼层 " + id + " 候选=" + (r.tried || 1) + " 后端=" + ( window.TavernHelper ? "TavernHelper" : "chat.variables" ));
+      return r.changed ? r.clean : out;
+    }
+    if (r && r.raw) { if (log) log("LLM(" + kind + ") 有更新块但解析失败: " + r.error, true); return r.changed ? r.clean : out; }
+    return out;
+  } catch (e) {
+    try { console.warn("[ChatU8 vars] llm ingest", e); } catch (e2) { }
+    return out;
+  }
+};
+try {
+  var __stWrapLlmFn = function (name, fn) {
+    var wrapped = function () {
+      var self = this;
+      var args = arguments;
+      var p = fn.apply(self, args);
+      if (p && typeof p.then === "function") {
+        return p.then(function (out) {
+          try { return window.__stChatu8VarsIngestLlm(out, name); } catch (e) { return out; }
+        }, function (err) { throw err; });
+      }
+      try { return window.__stChatu8VarsIngestLlm(p, name); } catch (e) { return p; }
+    };
+    wrapped.__stVarsWrapped = true;
+    return wrapped;
+  };
+  var __stLlmHooked = [];
+  if (typeof LLM_CHAR_DISPLAY === "function" && !LLM_CHAR_DISPLAY.__stVarsWrapped) { LLM_CHAR_DISPLAY = __stWrapLlmFn("角色展示", LLM_CHAR_DISPLAY); __stLlmHooked.push("LLM_CHAR_DISPLAY"); }
+  if (typeof LLM_CHAR_DISPLAY2 === "function" && !LLM_CHAR_DISPLAY2.__stVarsWrapped) { LLM_CHAR_DISPLAY2 = __stWrapLlmFn("角色展示2", LLM_CHAR_DISPLAY2); __stLlmHooked.push("LLM_CHAR_DISPLAY2"); }
+  if (typeof LLM_OUTFIT_DISPLAY === "function" && !LLM_OUTFIT_DISPLAY.__stVarsWrapped) { LLM_OUTFIT_DISPLAY = __stWrapLlmFn("服装展示", LLM_OUTFIT_DISPLAY); __stLlmHooked.push("LLM_OUTFIT_DISPLAY"); }
+  if (typeof LLM_OUTFIT_MODIFY === "function" && !LLM_OUTFIT_MODIFY.__stVarsWrapped) { LLM_OUTFIT_MODIFY = __stWrapLlmFn("服装修改", LLM_OUTFIT_MODIFY); __stLlmHooked.push("LLM_OUTFIT_MODIFY"); }
+  if (typeof LLM_IMAGE_GEN === "function" && !LLM_IMAGE_GEN.__stVarsWrapped) { LLM_IMAGE_GEN = __stWrapLlmFn("正文图片", LLM_IMAGE_GEN); __stLlmHooked.push("LLM_IMAGE_GEN"); }
+  window.__stChatu8VarsLlmHooked = __stLlmHooked;
+  if (__stLlmHooked.length) { try { console.log("[ChatU8 vars] 生图 LLM 钩子已挂载: " + __stLlmHooked.join(", ")); } catch (e) { } }
+} catch (e) { try { console.warn("[ChatU8 vars] llm hook failed", e); } catch (e2) { } }
 function processCharacterPrompt(prompt2) {
   /*== stChatu8Vars v1: render ==*/
   try { if (window.stChatu8Vars) prompt2 = window.stChatu8Vars.render(prompt2); } catch (e) { console.warn("[ChatU8 vars] render", e); }
@@ -36787,6 +36839,7 @@ function initializeNewlineFixer() {
     try { if (typeof addLog === "function") addLog("[变量] " + msg); } catch (e) { }
     try { if (isErr) console.error("[ChatU8 vars] " + msg); else console.log("[ChatU8 vars] " + msg); } catch (e) { }
   };
+  window.__stVarsLogBridge = __stVarsLog;
   try {
     if (!window.stChatu8Vars && !window.__stChatu8VarsLoading) {
       window.__stChatu8VarsLoading = true;
