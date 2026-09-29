@@ -19740,9 +19740,38 @@ ${floorContext}`;
   result = replacePlaceholder(result, "{{\u89C6\u9891\u79D2\u6570}}", durationStr, replacedVariables);
   result = replacePlaceholder(result, "{{duration}}", durationStr, replacedVariables);
   // ==== stChatu8Vars v1: macro ====
+  var __stVarsHadMacro = false;
+  try {
+    var __stMsgList = Array.isArray(result) ? result : [result];
+    for (var __sti = 0; __sti < __stMsgList.length; __sti++) {
+      var __stm = __stMsgList[__sti];
+      var __stt = (__stm && typeof __stm.content === "string") ? __stm.content : (typeof __stm === "string" ? __stm : "");
+      if (__stt.indexOf("{{绘图变量}}") >= 0 || __stt.indexOf("{{绘图变量视图}}") >= 0 || __stt.indexOf("{{绘图激活变量}}") >= 0) __stVarsHadMacro = true;
+    }
+  } catch (e) { }
   result = replacePlaceholder(result, "{{绘图变量}}", (function () { try { return window.stChatu8Vars ? window.stChatu8Vars.rawText() : ""; } catch (e) { console.warn("[ChatU8 vars] macro raw", e); return ""; } })(), replacedVariables);
   result = replacePlaceholder(result, "{{绘图变量视图}}", (function () { try { return window.stChatu8Vars ? window.stChatu8Vars.viewText(String(replacedBody || "") + "\n" + String(userDemand || "")) : ""; } catch (e) { console.warn("[ChatU8 vars] macro view", e); return ""; } })(), replacedVariables);
   result = replacePlaceholder(result, "{{绘图激活变量}}", (function () { try { return window.stChatu8Vars ? window.stChatu8Vars.viewText(String(replacedBody || "") + "\n" + String(userDemand || "")) : ""; } catch (e) { console.warn("[ChatU8 vars] macro 激活变量", e); return ""; } })(), replacedVariables);
+  try {
+    var __stVarsAuto = true;
+    var __stCtx2 = (window.SillyTavern && window.SillyTavern.getContext) ? window.SillyTavern.getContext() : null;
+    var __stCfg2 = (__stCtx2 && __stCtx2.extensionSettings) ? __stCtx2.extensionSettings["st-chatu8"] : null;
+    if (__stCfg2 && (__stCfg2.varsInject === "false" || __stCfg2.varsInject === false)) __stVarsAuto = false;
+    var __stList2 = Array.isArray(result) ? result : [result];
+    var __stHas2 = false;
+    for (var __stj = 0; __stj < __stList2.length; __stj++) {
+      var __stmm = __stList2[__stj];
+      var __sttt = (__stmm && typeof __stmm.content === "string") ? __stmm.content : (typeof __stmm === "string" ? __stmm : "");
+      if (__sttt.indexOf("<当前变量>") >= 0) __stHas2 = true;
+    }
+    if (__stVarsAuto && !__stVarsHadMacro && !__stHas2 && window.stChatu8Vars && __stList2.length) {
+      var __stTail = __stList2[__stList2.length - 1];
+      if (__stTail && typeof __stTail.content === "string") {
+        __stTail.content = __stTail.content + "\n" + window.stChatu8Vars.promptBlock();
+        console.log("[ChatU8 vars] 当前变量已附加到提示词末尾（第 " + __stList2.length + " 条消息）");
+      }
+    }
+  } catch (e) { try { console.warn("[ChatU8 vars] auto inject", e); } catch (e2) { } }
   if (variables && Object.keys(variables).length > 0) {
     const getvarPattern = /\{\{getvar::([^}]+)\}\}/g;
     const promptStr = JSON.stringify(result);
@@ -36900,23 +36929,12 @@ function initializeNewlineFixer() {
       } catch (e) { try { __stVarsLog("初始化变量表失败: " + e, true); } catch (e2) { } }
     });
     try { __stVarsLog("钩子已注册（等待 LLM 回复）"); } catch (e) { }
-  /*== stChatu8Vars v1: inject ==*/
-  window.__stChatu8VarsInjectHookRan = true;
-  try {
-    if (typeof generateCharacterListText === "function" && !generateCharacterListText.__stVarsWrapped) {
-      const __stOrigGCLT = generateCharacterListText;
-      const __stWrappedGCLT = function () {
-        const __t = __stOrigGCLT.apply(this, arguments);
-        try {
-          if (window.stChatu8Vars && typeof __t === "string" && __t.indexOf("<当前变量>") < 0) return __t + window.stChatu8Vars.promptBlock();
-        } catch (e) { }
-        return __t;
-      };
-      __stWrappedGCLT.__stVarsWrapped = true;
-      window.__stChatu8VarsInjectWrapped = true;
-      generateCharacterListText = __stWrappedGCLT;
-    }
-  } catch (e) { console.warn("[ChatU8 vars] inject hook failed", e); }
+  /*== stChatu8Vars v1: inject(off) ==*/
+  // v1.1.1：不再把 <当前变量> 追加到 generateCharacterListText() 上 ——
+  // 那会让世界书条目里的 {{角色启用列表}} 后面跟一大段变量（编辑框里看着像被写脏）。
+  // 现在改成在 replaceAllPlaceholders 里注入到发给 LLM 的最后一条消息末尾（见 macro 块）。
+  window.__stChatu8VarsInjectHookRan = false;
+  window.__stChatu8VarsInjectWrapped = false;
   try {
     document.addEventListener("change", function (ev) {
       const el = ev.target;

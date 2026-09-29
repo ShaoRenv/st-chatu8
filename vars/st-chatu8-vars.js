@@ -883,7 +883,7 @@ function __stFindVarBox(obj, depth, path) {
 }
 
 window.stChatu8Vars = {
-  version: "1.1.0",
+  version: "1.1.1",
 
   // 生图 LLM 输出：摘掉 <变量更新> 块并写入该楼层，返回摘干净后的提示词
   ingestMessage: function (mes, id, expand) {
@@ -1067,6 +1067,9 @@ function __stDbgInfo(sys, win) {
     hooked: w.__stChatu8VarsLlmHooked || [],
     llmHook: w.__stChatu8VarsLlmStats || null,
     expandAvailable: typeof w.__stChatu8ExpandPrompt === "function" ? true : false,
+    // 变量是否自动附加到发给 LLM 的提示词末尾（可用 stChatu8VarsDebug.setInject(false) 关掉，改用 {{绘图变量}} 宏）
+    autoInject: __stDbgSettings(w).varsInject !== "false",
+    injectOnCharList: __stDbgSettings(w).varsInjectCharList === "true",
     error: err,
     logTail: __stDbgLog(8, w)
   };
@@ -1253,6 +1256,16 @@ window.stChatu8VarsDebug = {
   merge: function (json, id) { return __stDbgWrite(json, id, "merge"); },
   write: function (json, id, mode) { return __stDbgWrite(json, id, mode || "replace"); },
   clear: function (id) { return __stDbgWrite({}, id, "replace"); },
+  // 自动注入开关：setInject(false) = 不自动附加变量，改用 {{绘图变量}} / {{绘图激活变量}} 宏自己放位置
+  setInject: function (on) {
+    try {
+      var c = window.SillyTavern.getContext();
+      var cfg = c.extensionSettings["st-chatu8"];
+      cfg.varsInject = on ? "true" : "false";
+      try { if (c.saveSettingsDebounced) c.saveSettingsDebounced(); } catch (e) { }
+      return { ok: true, autoInject: cfg.varsInject !== "false" };
+    } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+  },
   log: function (n) { return __stDbgLog(n); }
 };
 
