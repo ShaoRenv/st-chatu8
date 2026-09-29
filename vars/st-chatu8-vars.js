@@ -412,6 +412,23 @@ function expandRefs(root, baseSegs, text, ctx) {
   });
 }
 
+
+// 写入时判断：这个 $...$ 要不要原样存进变量（true = 变量指针，别交给预设/官方调用展开器）
+//   $路径$        → 指针，原样存
+//   ${...}$       → 预设调用，展开
+//   短引用：能在库里找到就是变量；找不到才当官方调用（$xiao hong-from front$）展开
+function isVarPointer(root, span) {
+  const s = String(span == null ? "" : span).trim();
+  if (s.length < 3 || s.charAt(0) !== "$" || s.charAt(s.length - 1) !== "$") return false;
+  const inner = s.slice(1, -1).trim();
+  if (!inner) return false;
+  if (inner.charAt(0) === "{") return false; // ${...}$ 预设调用
+  if (inner.indexOf("/") >= 0 || inner.indexOf("*") >= 0 || inner.indexOf(".") >= 0) return true;
+  try { if (readPath(root || {}, [], inner).value !== undefined) return true; } catch (e) { }
+  try { if (expandGlobRef(root || {}, [], inner, makeCtx("")) !== null) return true; } catch (e) { }
+  return false;
+}
+
 // 求值一段值：
 //   $路径$   取存储
 //   -tag     从本段里【所有】引用的结果里减掉这个 tag（位置无关）
@@ -866,7 +883,7 @@ function __stFindVarBox(obj, depth, path) {
 }
 
 window.stChatu8Vars = {
-  version: "1.0.9",
+  version: "1.1.0",
 
   // 生图 LLM 输出：摘掉 <变量更新> 块并写入该楼层，返回摘干净后的提示词
   ingestMessage: function (mes, id, expand) {
@@ -883,7 +900,15 @@ window.stChatu8Vars = {
       // ① 先展开预设调用（此时还是模型原样写的文本，$...$ 里的引号没转义也能认）
       if (typeof expand === "function" && raw.indexOf("$") >= 0) {
         var uc = window.collectedCharacterNegatives;
-        try { raw = expandSpans(raw, expand); } catch (e) { console.warn("[ChatU8 vars] expand patch failed", e); } finally { window.collectedCharacterNegatives = uc; }
+        // 只把「预设调用 / 官方调用」交给插件展开器；$路径$ 指针（含多重调用、通配）原样存进变量，
+        // 否则 processCharacterPrompt 会把指针也展开成 tag 写进存储（v1.0.9 及以前的 bug）
+        var root0 = null;
+        try { root0 = __stSys().tags(id == null ? __stLastId() : id); } catch (e) { root0 = null; }
+        var guarded = function (span) {
+          try { if (root0 && isVarPointer(root0, span)) return span; } catch (e) { }
+          return expand(span);
+        };
+        try { raw = expandSpans(raw, guarded); } catch (e) { console.warn("[ChatU8 vars] expand patch failed", e); } finally { window.collectedCharacterNegatives = uc; }
       }
       // ② 再把 $...$ 里漏转义的引号补上，然后解析
       var patch;
@@ -990,6 +1015,7 @@ window.stChatu8Vars = {
     parseUpdate: parseUpdate,
     parsePatchText: parsePatchText,
     expandSpans: expandSpans,
+    isVarPointer: isVarPointer,
     repairQuotesInCalls: repairQuotesInCalls,
     mergeTags: mergeTags,
     evaluate: evaluate,
