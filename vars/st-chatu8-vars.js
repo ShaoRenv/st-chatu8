@@ -373,8 +373,22 @@ function createStorage(opts) {
 /* ---- patch.js ---- */
 // st-chatu8 更新块：从生图 LLM 的输出里摘出变量更新，并把这段从提示词里去掉
 // 更新 = 一棵部分树（不用 op/path）：写值=设置/新增，空串=删除，对象=往库里加条目
+//
+// 模型输出经常不干净（会复述格式模板），实测出现过：
+//   <变量更新>json<变量更新></images>
+//
+//   </images>
+//   <变量更新>
+//   { ... 真正的 JSON ... }
+//   </变量更新>
+// 老写法「第一个开标签配第一个闭标签」会把 json<变量更新></images>… 一起抓进来 → JSON.parse 直接失败 → 变量一个字都写不进去。
+// 现在改成：列出所有候选片段（最内层优先），逐个尝试解析，谁解析成功用谁；整段垃圾一起从正文里摘掉。
 
 const UPDATE_TAG = "变量更新";
+
+const OPEN_RE = new RegExp("<" + UPDATE_TAG + ">", "gi");
+const CLOSE_RE = new RegExp("</" + UPDATE_TAG + ">", "gi");
+const ANY_TAG_RE = new RegExp("</?" + UPDATE_TAG + ">", "gi");
 
 function stripFence(s) {
   let t = String(s).trim();
@@ -383,9 +397,17 @@ function stripFence(s) {
   return t;
 }
 
-// 宽松解析：去掉尾随逗号再试
+// 候选片段里的噪音：代码围栏、"json" 字样（模型把格式说明一起吐出来了）、残留的复述开标签
+function stripJsonLabel(s) {
+  let t = stripFence(s);
+  t = t.replace(/^json\s*/i, "");
+  t = t.replace(/^(?:<" + UPDATE_TAG + ">)+\s*/i, "");
+  return t.trim();
+}
+
+// 宽松解析：去掉 json 标签/代码围栏、去掉尾随逗号再试
 function looseJsonParse(s) {
-  const t = stripFence(s).replace(/,\s*([}\]])/g, "$1");
+  const t = stripJsonLabel(s).replace(/,\s*([}\]])/g, "$1");
   return JSON.parse(t);
 }
 
@@ -412,28 +434,81 @@ function parsePatchText(text) {
   return obj;
 }
 
-function extractUpdateBlock(text) {
+// 所有 <变量更新>…</变量更新> 候选：每个闭标签先配「它前面最近的开标签」（最内层，最像真 JSON），
+// 再补上其它开×闭组合兜底；去重并限量
+function updateCandidates(text) {
   const s = String(text == null ? "" : text);
-  const re = new RegExp("<" + UPDATE_TAG + ">([\\s\\S]*?)</" + UPDATE_TAG + ">", "i");
-  const m = s.match(re);
-  if (!m) return { clean: s, raw: "" };
-  const clean = s.replace(re, "").replace(/\n{3,}/g, "\n\n").trim();
-  return { clean: clean, raw: m[1] };
+  const opens = [];
+  const closes = [];
+  for (const m of s.matchAll(OPEN_RE)) opens.push(m.index);
+  for (const m of s.matchAll(CLOSE_RE)) closes.push(m.index);
+  const out = [];
+  const seen = {};
+  const add = (o, c) => {
+    const start = o + UPDATE_TAG.length + 2;
+    if (c <= start) return;
+    const key = o + ":" + c;
+    if (seen[key]) return;
+    seen[key] = 1;
+    out.push({ open: o, close: c, start: start, end: c, text: s.slice(start, c) });
+  };
+  if (!opens.length || !closes.length) return out;
+  for (const c of closes) {
+    let inner;
+    for (const o of opens) { if (o < c) inner = o; else break; }
+    if (inner !== undefined) add(inner, c);
+  }
+  for (const o of opens) for (const c of closes) if (c > o) add(o, c);
+  return out.slice(0, 24);
 }
 
+// 摘块：把 [第一个开标签 → 最后一个闭标签] 整段（含模型复述的模板垃圾）从正文里去掉，
+// 顺手清掉残留的标签本身
+function extractUpdateBlock(text) {
+  const s = String(text == null ? "" : text);
+  const candidates = updateCandidates(s);
+  if (!candidates.length) {
+    const hasTag = new RegExp("<" + UPDATE_TAG + ">", "i").test(s) || new RegExp("</" + UPDATE_TAG + ">", "i").test(s);
+    if (!hasTag) return { clean: s, raw: "", candidates: [] };
+    return { clean: s.replace(ANY_TAG_RE, "").replace(/\n{3,}/g, "\n\n").trim(), raw: "", candidates: [] };
+  }
+  const first = candidates[0];
+  const opens = [];
+  for (const m of s.matchAll(OPEN_RE)) opens.push(m.index);
+  const closes = [];
+  for (const m of s.matchAll(CLOSE_RE)) closes.push(m.index);
+  const from = Math.min.apply(null, opens);
+  const to = Math.max.apply(null, closes) + UPDATE_TAG.length + 3;
+  const clean = (s.slice(0, from) + s.slice(to)).replace(ANY_TAG_RE, "").replace(/\n{3,}/g, "\n\n").trim();
+  let raw = "";
+  if (first) {
+    const best = candidates.find((c) => c.text.trim().length > 0);
+    raw = best ? best.text : "";
+  }
+  return { clean: clean, raw: raw, candidates: candidates };
+}
+
+// 逐个候选尝试解析，谁先解析成功就用谁
 function parseUpdate(text) {
   const got = extractUpdateBlock(text);
-  if (!got.raw.trim()) return { clean: got.clean, raw: "", patch: null, ok: false, error: "no-block" };
-  try {
-    const patch = looseJsonParse(got.raw);
-    if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
-      return { clean: got.clean, raw: got.raw, patch: null, ok: false, error: "not-object" };
-    }
-    return { clean: got.clean, raw: got.raw, patch: patch, ok: true, error: "" };
-  } catch (e) {
-    return { clean: got.clean, raw: got.raw, patch: null, ok: false, error: String(e && e.message || e) };
+  const list = got.candidates || [];
+  if (!list.length || !String(got.raw || "").trim()) {
+    return { clean: got.clean, raw: "", candidates: list, patch: null, ok: false, error: "no-block" };
   }
+  let lastErr = "";
+  for (const c of list) {
+    const body = String(c && c.text != null ? c.text : "");
+    if (!body.trim()) continue;
+    try {
+      const patch = parsePatchText(body);
+      return { clean: got.clean, raw: body, candidates: list, patch: patch, ok: true, error: "" };
+    } catch (e) {
+      lastErr = String(e && e.message || e);
+    }
+  }
+  return { clean: got.clean, raw: got.raw, candidates: list, patch: null, ok: false, error: lastErr || "no-json" };
 }
+
 /* ---- glue.js ---- */
 // st-chatu8 变量系统粘合层：生图 LLM 输出 -> 摘块 -> 写楼层变量 -> 生图前求值
 // 纯逻辑；注入 index.js 时删掉 import/export
@@ -488,32 +563,40 @@ function __stSys() {
 function __stLastId() { return __stSys().storage.lastMessageId(); }
 
 window.stChatu8Vars = {
-  version: "1.0.3",
+  version: "1.0.4",
 
   // 生图 LLM 输出：摘掉 <变量更新> 块并写入该楼层，返回摘干净后的提示词
   ingestMessage: function (mes, id, expand) {
     var r = parseUpdate(mes);
-    var out = { changed: r.clean !== mes, clean: r.clean, ok: false, wrote: false, error: r.error, raw: "" };
-    if (!r.raw) return out; // 没有 <变量更新> 块；解析失败也要继续，下面会修引号重解析
-    var raw = r.raw;
-    // ① 先展开预设调用（此时还是模型原样写的文本，$...$ 里的引号没转义也能认）
-    if (typeof expand === "function" && raw.indexOf("$") >= 0) {
-      var uc = window.collectedCharacterNegatives;
-      try { raw = expandSpans(raw, expand); } catch (e) { console.warn("[ChatU8 vars] expand patch failed", e); } finally { window.collectedCharacterNegatives = uc; }
-    }
-    // ② 再把 $...$ 里漏转义的引号补上，然后解析
-    var patch;
-    try { patch = parsePatchText(raw); }
-    catch (e) {
-      out.error = "parse: " + String(e && e.message || e);
-      out.raw = String(raw).slice(0, 300);
+    var out = { changed: r.clean !== mes, clean: r.clean, ok: false, wrote: false, error: r.error, raw: "", tried: 0 };
+    var list = (r.candidates && r.candidates.length) ? r.candidates : (r.raw ? [{ text: r.raw }] : []);
+    if (!list.length) return out; // 没有 <变量更新> 块
+    var lastErr = "";
+    // 逐个候选试：模型可能把格式模板也复述出来（<变量更新>json<变量更新>），第一个候选往往不是真 JSON
+    for (var i = 0; i < list.length; i++) {
+      var raw = String(list[i] && list[i].text != null ? list[i].text : "");
+      if (!raw.trim()) continue;
+      out.tried = out.tried + 1;
+      // ① 先展开预设调用（此时还是模型原样写的文本，$...$ 里的引号没转义也能认）
+      if (typeof expand === "function" && raw.indexOf("$") >= 0) {
+        var uc = window.collectedCharacterNegatives;
+        try { raw = expandSpans(raw, expand); } catch (e) { console.warn("[ChatU8 vars] expand patch failed", e); } finally { window.collectedCharacterNegatives = uc; }
+      }
+      // ② 再把 $...$ 里漏转义的引号补上，然后解析
+      var patch;
+      try { patch = parsePatchText(raw); }
+      catch (e) { lastErr = String(e && e.message || e); continue; }
+      var s = __stSys();
+      var merged = mergeTags(s.tags(id), patch);
+      out.wrote = s.storage.writeAt(id, merged);
+      out.ok = true;
+      out.error = "";
+      out.raw = raw.slice(0, 300);
+      console.log("[ChatU8 vars] 写入楼层 " + id + " ok=" + out.wrote + " 后端=" + (window.TavernHelper ? "TavernHelper" : "chat.variables") + " 候选=" + (i + 1) + "/" + list.length);
       return out;
     }
-    var s = __stSys();
-    var merged = mergeTags(s.tags(id), patch);
-    out.wrote = s.storage.writeAt(id, merged);
-    out.ok = true;
-    console.log("[ChatU8 vars] 写入楼层 " + id + " ok=" + out.wrote + " 后端=" + (window.TavernHelper ? "TavernHelper" : "chat.variables"));
+    out.error = "parse: " + lastErr;
+    out.raw = "";
     return out;
   },
 
