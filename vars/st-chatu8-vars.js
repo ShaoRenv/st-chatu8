@@ -563,7 +563,7 @@ function __stSys() {
 function __stLastId() { return __stSys().storage.lastMessageId(); }
 
 window.stChatu8Vars = {
-  version: "1.0.4",
+  version: "1.0.5",
 
   // 生图 LLM 输出：摘掉 <变量更新> 块并写入该楼层，返回摘干净后的提示词
   ingestMessage: function (mes, id, expand) {
@@ -681,4 +681,236 @@ window.stChatu8Vars = {
     createStorage: createStorage
   }
 };
+/* ---- debug.js ---- */
+// ---- 变量调试：读取 / 写入指定 JSON / 模拟模型回复（build-vars.mjs 拼到 api.js 之后）----
+// 全部函数都接受可选的 sys 参数，便于在 node 里单测（不传就用全局 __stSys()）
+
+function __stDbgSys(sys) {
+  if (sys) return sys;
+  return (typeof __stSys === "function") ? __stSys() : null;
+}
+
+// 当前楼层号（没有聊天时返回 -1）
+function __stDbgLastId(sys) {
+  var s = __stDbgSys(sys);
+  if (!s) return -1;
+  var id = s.storage.lastMessageId();
+  return (id == null) ? -1 : id;
+}
+
+// 插件设置对象（进度日志/开关）
+function __stDbgSettings(win) {
+  var w = win || (typeof window !== "undefined" ? window : null);
+  try { return w.SillyTavern.getContext().extensionSettings["st-chatu8"] || {}; } catch (e) { return {}; }
+}
+
+function __stDbgLog(n, win) {
+  var es = __stDbgSettings(win);
+  return String(es.log || "").split("\n").filter(function (x) { return x.indexOf("[变量]") >= 0; }).slice(-(n || 8));
+}
+
+// 一、整体状态：一眼看出「加载了没 / 后端是谁 / 楼层几 / 钩子挂上没」
+function __stDbgInfo(sys, win) {
+  var w = win || (typeof window !== "undefined" ? window : {});
+  var s = __stDbgSys(sys);
+  var mid = -1, exact = false, err = "";
+  try { mid = __stDbgLastId(s); exact = !!(s && s.storage.readAt(mid)); } catch (e) { err = String(e && e.message || e); }
+  return {
+    varsVersion: (w.stChatu8Vars && w.stChatu8Vars.version) || (typeof window !== "undefined" && window.stChatu8Vars ? window.stChatu8Vars.version : "?"),
+    moduleLoaded: !!(w.stChatu8Vars || (typeof window !== "undefined" && window.stChatu8Vars)),
+    backend: w.TavernHelper ? "TavernHelper(楼层变量)" : "chat.variables(降级)",
+    messageId: mid,
+    floorHasStore: exact,
+    enabled: __stDbgSettings(w).varsEnabled !== "false",
+    hooked: w.__stChatu8VarsLlmHooked || [],
+    expandAvailable: typeof w.__stChatu8ExpandPrompt === "function" ? true : false,
+    error: err,
+    logTail: __stDbgLog(8, w)
+  };
+}
+
+// 二、读取：楼层变量（命名空间 st-chatu8）+ 同一楼层的整张原始表
+function __stDbgRead(id, sys, win) {
+  var w = win || (typeof window !== "undefined" ? window : {});
+  var s = __stDbgSys(sys);
+  var mid = (id == null) ? __stDbgLastId(s) : id;
+  var out = { id: mid, exact: false, source: "empty", store: null, fallback: null, rawTable: null, error: "" };
+  if (!s) { out.error = "变量系统未初始化"; return out; }
+  try {
+    var at = s.storage.readAt(mid);
+    out.exact = !!at;
+    out.store = at || s.tags(mid);
+    out.source = at ? "本楼层存储" : "向上继承最近楼层";
+    if (!at && mid >= 0) { var f = s.storage.findLatest(mid); out.fallback = { from: f.messageId, tags: f.tags || {} }; }
+    if (w.TavernHelper && mid >= 0) {
+      var table = w.TavernHelper.getVariables({ type: "message", message_id: mid });
+      out.rawTable = table || null;
+    }
+  } catch (e) { out.error = String(e && e.message || e); }
+  return out;
+}
+
+// 三、只看不写：把模型回复里的 <变量更新> 逐个候选解析出来，直接暴露是哪一步的问题
+function __stDbgAnalyze(text, sys, win) {
+  var w = win || (typeof window !== "undefined" ? window : {});
+  var out = { hasBlock: false, candidates: [], parsed: false, error: "", patch: null };
+  try {
+    var r = parseUpdate(String(text == null ? "" : text));
+    out.hasBlock = r.clean !== text;
+    out.error = r.error || "";
+    var list = (r.candidates && r.candidates.length) ? r.candidates : (r.raw ? [{ text: r.raw }] : []);
+    for (var i = 0; i < list.length; i++) {
+      var raw = String(list[i] && list[i].text != null ? list[i].text : "");
+      var item = { index: i, length: raw.length, head: raw.replace(/\s+/g, " ").slice(0, 60), expanded: false, parsed: false, error: "" };
+      var body = raw;
+      if (typeof w.__stChatu8ExpandPrompt === "function" && body.indexOf("$") >= 0) {
+        try { body = expandSpans(body, w.__stChatu8ExpandPrompt); item.expanded = true; } catch (e) { item.error = "expand: " + String(e && e.message || e); }
+      }
+      try { item.patch = parsePatchText(body); item.parsed = true; out.parsed = true; out.patch = item.patch; }
+      catch (e) { item.error = String(e && e.message || e); }
+      out.candidates.push(item);
+    }
+    out.cleanHead = String(r.clean || "").replace(/\s+/g, " ").slice(0, 120);
+  } catch (e) { out.error = String(e && e.message || e); }
+  return out;
+}
+
+// 四、写入：把一段 JSON（字符串或对象）按 合并/覆盖 写进指定楼层
+function __stDbgWrite(json, id, mode, sys) {
+  var s = __stDbgSys(sys);
+  var mid = (id == null) ? __stDbgLastId(s) : id;
+  var out = { ok: false, id: mid, mode: mode || "merge", merged: null, error: "" };
+  if (!s) { out.error = "变量系统未初始化"; return out; }
+  if (mid < 0) { out.error = "没有打开的聊天（楼层号 " + mid + "）"; return out; }
+  var patch;
+  try { patch = (typeof json === "string") ? JSON.parse(json) : json; }
+  catch (e) { out.error = "JSON 解析失败: " + String(e && e.message || e); return out; }
+  if (!patch || typeof patch !== "object") { out.error = "需要一个 JSON 对象"; return out; }
+  try {
+    var next = (out.mode === "replace") ? patch : mergeTags(s.tags(mid), patch);
+    out.merged = next;
+    out.ok = !!s.storage.writeAt(mid, next);
+    if (!out.ok) out.error = "写入被拒绝（storage.writeAt 返回 false）";
+  } catch (e) { out.error = String(e && e.message || e); }
+  return out;
+}
+
+// 五、模拟：把「模型原样回复」当真实生图返回来跑一遍完整管线（展开 -> 补引号 -> 解析 -> 合并 -> 写）
+function __stDbgSimulate(text, id, sys, win) {
+  var w = win || (typeof window !== "undefined" ? window : {});
+  var s = __stDbgSys(sys);
+  var mid = (id == null) ? __stDbgLastId(s) : id;
+  var before = null;
+  try { before = s ? s.storage.readAt(mid) : null; } catch (e) {}
+  var vm = w.stChatu8Vars || (typeof window !== "undefined" ? window.stChatu8Vars : null);
+  if (!vm || typeof vm.ingestMessage !== "function") return { ok: false, wrote: false, error: "变量模块未加载" };
+  var r = vm.ingestMessage(String(text == null ? "" : text), mid, w.__stChatu8ExpandPrompt);
+  var after = null;
+  try { after = s ? s.storage.readAt(mid) : null; } catch (e) {}
+  return { id: mid, ok: !!r.ok, wrote: !!r.wrote, tried: r.tried, error: r.error || "", cleaned: String(r.clean || "").slice(0, 200), before: before, after: after };
+}
+
+function __stDbgReadAll(sys) {
+  var s = __stDbgSys(sys);
+  var out = [];
+  if (!s) return out;
+  var w = (typeof window !== "undefined") ? window : {};
+  var len = 0;
+  try { len = w.SillyTavern.getContext().chat.length; } catch (e) { return out; }
+  for (var i = 0; i < len; i++) {
+    var at = null;
+    try { at = s.storage.readAt(i); } catch (e) { continue; }
+    if (!at) continue;
+    var names = [];
+    for (var k in (at["角色列表"] || {})) if (Object.prototype.hasOwnProperty.call(at["角色列表"], k)) names.push(k);
+    out.push({ id: i, chars: names, bytes: JSON.stringify(at).length });
+  }
+  return out;
+}
+
+// ---- 悬浮调试面板（纯 DOM，不依赖插件设置页）----
+function mountVarsDebugPanel(win) {
+  var w = win || (typeof window !== "undefined" ? window : null);
+  if (!w || !w.document || w.__stVarsDebugPanelMounted) return false;
+  var doc = w.document;
+  if (!doc.body) return false;
+  w.__stVarsDebugPanelMounted = true;
+
+  var btn = doc.createElement("div");
+  btn.textContent = "🧪 变量调试";
+  btn.setAttribute("style", "position:fixed;left:10px;bottom:10px;z-index:2147483000;background:#2b2b3c;color:#fff;padding:6px 10px;border-radius:8px;font-size:12px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.4);opacity:.85");
+  var panel = doc.createElement("div");
+  panel.setAttribute("style", "position:fixed;left:10px;bottom:44px;z-index:2147483000;width:460px;max-height:70vh;overflow:auto;background:#1e1e2a;color:#ddd;border:1px solid #444;border-radius:10px;padding:10px;font-size:12px;line-height:1.5;display:none;box-shadow:0 6px 24px rgba(0,0,0,.5)");
+  var status = doc.createElement("pre");
+  status.setAttribute("style", "white-space:pre-wrap;margin:0 0 6px;color:#9fd");
+  var store = doc.createElement("textarea");
+  store.setAttribute("style", "width:100%;height:110px;background:#12121a;color:#eee;border:1px solid #444;border-radius:6px;font-family:monospace;font-size:11px");
+  var llm = doc.createElement("textarea");
+  llm.setAttribute("placeholder", "把模型回复原文粘到这里（含 <变量更新> 块）");
+  llm.setAttribute("style", "width:100%;height:70px;background:#12121a;color:#eee;border:1px solid #444;border-radius:6px;font-family:monospace;font-size:11px");
+  var result = doc.createElement("pre");
+  result.setAttribute("style", "white-space:pre-wrap;margin:6px 0 0;color:#fc9;max-height:180px;overflow:auto");
+
+  function mkBtn(label, fn, color) {
+    var b = doc.createElement("button");
+    b.textContent = label;
+    b.setAttribute("style", "margin:2px 4px 2px 0;padding:4px 8px;border-radius:6px;border:1px solid #555;background:" + (color || "#33334a") + ";color:#eee;cursor:pointer;font-size:12px");
+    b.addEventListener("click", function () { try { fn(); } catch (e) { result.textContent = "ERROR " + String(e && e.message || e); } });
+    return b;
+  }
+  function dump(o) { result.textContent = typeof o === "string" ? o : JSON.stringify(o, null, 1); }
+  function refresh() {
+    var info = w.stChatu8VarsDebug.info();
+    status.textContent = "版本 " + info.varsVersion + " · 后端 " + info.backend + " · 楼层 " + info.messageId + " · 存储=" + (info.floorHasStore ? "有" : "无(继承)") + " · 开关=" + (info.enabled ? "开" : "关") + "\n钩子 " + (info.hooked.join(", ") || "(无)") + "\n日志:\n" + info.logTail.slice(-4).join("\n");
+    return info;
+  }
+
+  var bar1 = doc.createElement("div");
+  bar1.appendChild(mkBtn("刷新状态", function () { refresh(); dump("已刷新"); }));
+  bar1.appendChild(mkBtn("读取当前楼层变量", function () {
+    var r = w.stChatu8VarsDebug.read();
+    store.value = JSON.stringify(r.store || {}, null, 1);
+    dump({ id: r.id, source: r.source, exact: r.exact, rawNamespaceKeys: r.rawTable ? Object.keys(r.rawTable) : null, error: r.error });
+  }));
+  bar1.appendChild(mkBtn("读全部楼层", function () { dump(w.stChatu8VarsDebug.readAll()); }));
+  var bar2 = doc.createElement("div");
+  bar2.appendChild(mkBtn("合并写入(上面文本框)", function () { dump(w.stChatu8VarsDebug.merge(store.value)); }, "#2f4a2f"));
+  bar2.appendChild(mkBtn("覆盖写入", function () { dump(w.stChatu8VarsDebug.write(store.value, null, "replace")); }, "#4a3a2f"));
+  bar2.appendChild(mkBtn("清空本楼层", function () { dump(w.stChatu8VarsDebug.clear()); }, "#4a2f2f"));
+  var bar3 = doc.createElement("div");
+  bar3.appendChild(mkBtn("解析预览(只读不写)", function () { dump(w.stChatu8VarsDebug.analyze(llm.value)); }));
+  bar3.appendChild(mkBtn("按真实流程解析并写入", function () { dump(w.stChatu8VarsDebug.simulate(llm.value)); }, "#2f3f5a"));
+
+  panel.appendChild(doc.createTextNode("变量调试 · 楼层 = 当前聊天最后一楼"));
+  panel.appendChild(status);
+  panel.appendChild(bar1);
+  panel.appendChild(bar2);
+  panel.appendChild(store);
+  panel.appendChild(doc.createTextNode("模型原文（粘贴后点下面两个按钮）"));
+  panel.appendChild(llm);
+  panel.appendChild(bar3);
+  panel.appendChild(result);
+  doc.body.appendChild(btn);
+  doc.body.appendChild(panel);
+  btn.addEventListener("click", function () { panel.style.display = (panel.style.display === "none") ? "block" : "none"; if (panel.style.display === "block") refresh(); });
+  return true;
+}
+
+// ---- 对外调试接口：window.stChatu8VarsDebug ----
+window.stChatu8VarsDebug = {
+  version: "1.0.0",
+  show: function () { return mountVarsDebugPanel(); },
+  info: function () { return __stDbgInfo(); },
+  read: function (id) { return __stDbgRead(id); },
+  readAll: function () { return __stDbgReadAll(); },
+  analyze: function (text) { return __stDbgAnalyze(text); },
+  simulate: function (text, id) { return __stDbgSimulate(text, id); },
+  merge: function (json, id) { return __stDbgWrite(json, id, "merge"); },
+  write: function (json, id, mode) { return __stDbgWrite(json, id, mode || "replace"); },
+  clear: function (id) { return __stDbgWrite({ "角色列表": {} }, id, "replace"); },
+  log: function (n) { return __stDbgLog(n); }
+};
+
+if (typeof document !== "undefined" && document && document.body) setTimeout(function () { mountVarsDebugPanel(); }, 2500);
+
 })();
