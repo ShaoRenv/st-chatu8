@@ -206,6 +206,34 @@ function evalText(root, baseSegs, text, ctx) {
   return out.filter(Boolean).join(", ");
 }
 
+// 结构无关的「激活」过滤：对象只要带 激活词/key，未命中就整块删掉；不认键名、不认层数
+// 不传触发文本时不做过滤（原样返回）；数组里的元素同样过滤
+function filterActive(node, triggerText, depth) {
+  const d = depth || 0;
+  if (d > 8) return node;
+  if (triggerText == null || String(triggerText).trim() === "") return node;
+  if (Array.isArray(node)) {
+    const arr = [];
+    for (const x of node) {
+      const f = filterActive(x, triggerText, d + 1);
+      if (f !== undefined) arr.push(f);
+    }
+    return arr;
+  }
+  if (!isPlainObject(node)) return node;
+  if (!isTriggered(triggerText, readGate(node))) return undefined;
+  const out = {};
+  for (const k of Object.keys(node)) {
+    const v = node[k];
+    const f = (isPlainObject(v) || Array.isArray(v)) ? filterActive(v, triggerText, d + 1) : v;
+    if (f === undefined) continue;
+    if (isPlainObject(v) && isPlainObject(f) && Object.keys(v).length > 0 && Object.keys(f).length === 0) continue;
+    if (Array.isArray(v) && Array.isArray(f) && v.length > 0 && f.length === 0) continue;
+    out[k] = f;
+  }
+  return out;
+}
+
 // 快速调用：$角色名$ -> 该角色整棵投影
 function renderCharacter(root, name, triggerText) {
   const hit = readPath(root, [], name);
@@ -581,7 +609,7 @@ function __stFindVarBox(obj, depth, path) {
 }
 
 window.stChatu8Vars = {
-  version: "1.0.6",
+  version: "1.0.7",
 
   // 生图 LLM 输出：摘掉 <变量更新> 块并写入该楼层，返回摘干净后的提示词
   ingestMessage: function (mes, id, expand) {
@@ -643,7 +671,7 @@ window.stChatu8Vars = {
     try {
       var s = __stSys();
       var root = s.tags(id == null ? __stLastId() : id);
-      if (!root || !root["角色列表"]) return text;
+      if (!root || !Object.keys(root).length) return text;
       return evaluate(root, text, text);
     } catch (e) {
       console.warn("[ChatU8 vars] render failed", e);
@@ -667,18 +695,18 @@ window.stChatu8Vars = {
         }
         return "exists";
       }
-      return s.storage.writeAt(id, { "角色列表": {} }) ? "created" : false;
+      // 只建命名空间这一层，不预设任何结构（结构自己定）
+      return s.storage.writeAt(id, {}) ? "created" : false;
     } catch (e) { return false; }
   },
   char: function (name, id) { return __stSys().char(name, id); },
 
   // 注入给模型的当前变量块
   promptBlock: function (id) {
-    var t = __stSys().tags(id);
-    var body = (t && t["角色列表"]) ? t["角色列表"] : {};
+    var t = __stSys().tags(id) || {};
     var view = this.viewText(undefined, id);
-    var tail = view ? "\n<当前状态>\n" + view + "\n</当前状态>" : "";
-    return "\n<当前变量>\n" + JSON.stringify({ "角色列表": body }) + "\n</当前变量>" + tail;
+    var tail = (view && view !== "{}" && view !== "[]") ? "\n<当前变量视图>\n" + view + "\n</当前变量视图>" : "";
+    return "\n<当前变量>\n" + JSON.stringify(t) + "\n</当前变量>" + tail;
   },
 
 
@@ -686,24 +714,16 @@ window.stChatu8Vars = {
   rawText: function (id) {
     try {
       var t = __stSys().tags(id == null ? __stLastId() : id);
-      var body = (t && t["角色列表"]) ? t["角色列表"] : {};
-      return JSON.stringify({ "角色列表": body });
+      return JSON.stringify(t || {});
     } catch (e) { return ""; }
   },
 
   // {{绘图变量视图}} -> 求值后的最终 tag（key 命中的角色才出现，指针展开）
   viewText: function (triggerText, id) {
     try {
-      var t = __stSys().tags(id == null ? __stLastId() : id);
-      var list = (t && t["角色列表"]) ? t["角色列表"] : {};
-      var lines = [];
-      for (var name in list) {
-        if (!Object.prototype.hasOwnProperty.call(list, name)) continue;
-        if (name.charAt(0) === "_") continue;
-        var proj = evaluate(t, "$" + name + "$", triggerText);
-        if (proj) lines.push(name + ": " + proj);
-      }
-      return lines.join("\n");
+      var t = __stSys().tags(id == null ? __stLastId() : id) || {};
+      var filtered = filterActive(t, triggerText);
+      return JSON.stringify(filtered === undefined ? {} : filtered);
     } catch (e) { return ""; }
   },
 
@@ -759,6 +779,7 @@ function __stDbgInfo(sys, win) {
     backend: w.TavernHelper ? "TavernHelper(楼层变量)" : "chat.variables(降级)",
     messageId: mid,
     floorHasStore: exact,
+    storeKeys: (function () { try { return Object.keys((s && s.storage.readAt(mid)) || {}); } catch (e) { return []; } })(),
     enabled: __stDbgSettings(w).varsEnabled !== "false",
     hooked: w.__stChatu8VarsLlmHooked || [],
     llmHook: w.__stChatu8VarsLlmStats || null,
@@ -860,9 +881,7 @@ function __stDbgReadAll(sys) {
     var at = null;
     try { at = s.storage.readAt(i); } catch (e) { continue; }
     if (!at) continue;
-    var names = [];
-    for (var k in (at["角色列表"] || {})) if (Object.prototype.hasOwnProperty.call(at["角色列表"], k)) names.push(k);
-    out.push({ id: i, chars: names, bytes: JSON.stringify(at).length });
+    out.push({ id: i, keys: Object.keys(at), bytes: JSON.stringify(at).length });
   }
   return out;
 }
@@ -902,7 +921,7 @@ function mountVarsDebugPanel(win) {
     var info = w.stChatu8VarsDebug.info();
     var lh = info.llmHook;
     var lhText = lh ? ("调用 " + lh.calls + " 次（" + JSON.stringify(lh.byKind) + "） 写入 " + lh.writes + " 次 · 无变量块 " + lh.noBlock + " 次 · 解析失败 " + lh.parseFail + " 次" + (lh.last ? " · 最近: " + lh.last.kind + " ok=" + lh.last.ok + " wrote=" + lh.last.wrote + " 字段=" + lh.last.field + " 楼层=" + lh.last.floor + (lh.last.error ? " 错误=" + lh.last.error : "") : "")) : "(还没调用过)";
-    status.textContent = "版本 " + info.varsVersion + " · 后端 " + info.backend + " · 楼层 " + info.messageId + " · 存储=" + (info.floorHasStore ? "有" : "无(继承)") + " · 开关=" + (info.enabled ? "开" : "关") + "\nLLM 钩子: " + lhText + "\n日志:\n" + info.logTail.slice(-4).join("\n");
+    status.textContent = "版本 " + info.varsVersion + " · 后端 " + info.backend + " · 楼层 " + info.messageId + " · 存储=" + (info.floorHasStore ? "有" : "无(继承)") + " · 顶层键=" + JSON.stringify(info.storeKeys) + " · 开关=" + (info.enabled ? "开" : "关") + "\nLLM 钩子: " + lhText + "\n日志:\n" + info.logTail.slice(-4).join("\n");
     return info;
   }
 
@@ -921,6 +940,7 @@ function mountVarsDebugPanel(win) {
   bar2.appendChild(mkBtn("清空本楼层", function () { dump(w.stChatu8VarsDebug.clear()); }, "#4a2f2f"));
   var bar3 = doc.createElement("div");
   bar3.appendChild(mkBtn("解析预览(只读不写)", function () { dump(w.stChatu8VarsDebug.analyze(llm.value)); }));
+  bar3.appendChild(mkBtn("看激活变量视图(用输入框文字当触发文本)", function () { dump(String(w.stChatu8Vars.viewText(llm.value))); }));
   bar3.appendChild(mkBtn("按真实流程解析并写入", function () { dump(w.stChatu8VarsDebug.simulate(llm.value)); }, "#2f3f5a"));
 
   panel.appendChild(doc.createTextNode("变量调试 · 楼层 = 当前聊天最后一楼"));
@@ -949,7 +969,7 @@ window.stChatu8VarsDebug = {
   simulate: function (text, id) { return __stDbgSimulate(text, id); },
   merge: function (json, id) { return __stDbgWrite(json, id, "merge"); },
   write: function (json, id, mode) { return __stDbgWrite(json, id, mode || "replace"); },
-  clear: function (id) { return __stDbgWrite({ "角色列表": {} }, id, "replace"); },
+  clear: function (id) { return __stDbgWrite({}, id, "replace"); },
   log: function (n) { return __stDbgLog(n); }
 };
 
