@@ -134,6 +134,121 @@ function project(root, baseSegs, value, ctx) {
   return "";
 }
 
+const GROUP_SEP = /[;,]/;
+
+// 把 $...$ 里的内容按 ; 或 , 切开（花括号里的逗号不算分隔）
+function splitGroupItems(text) {
+  const out = [];
+  let buf = "";
+  let depth = 0;
+  const str = String(text);
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charAt(i);
+    if (ch === "{") { depth++; buf += ch; continue; }
+    if (ch === "}") { depth = Math.max(0, depth - 1); buf += ch; continue; }
+    if (GROUP_SEP.test(ch) && depth === 0) { out.push(buf); buf = ""; continue; }
+    buf += ch;
+  }
+  out.push(buf);
+  return out.map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
+// 花括号并列：$A/{x,y}$ -> ["A/x","A/y"]（可嵌套，最多 cap 项）
+function braceExpandItems(text, cap) {
+  const str = String(text);
+  const open = str.indexOf("{");
+  if (open < 0) return [str];
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < str.length; i++) {
+    const ch = str.charAt(i);
+    if (ch === "{") depth++;
+    else if (ch === "}") { depth--; if (depth === 0) { close = i; break; } }
+  }
+  if (close < 0) return [str];
+  const head = str.slice(0, open);
+  const body = str.slice(open + 1, close);
+  const tail = str.slice(close + 1);
+  const out = [];
+  for (const opt of body.split(",")) {
+    for (const rest of braceExpandItems(tail, cap)) {
+      out.push(head + opt.trim() + rest);
+      if (out.length >= (cap || 32)) return out;
+    }
+  }
+  return out;
+}
+
+// 组内查找：先按「续写基址」逐级往上找（基址 + 路径、基址 + 包装层 + 路径）
+// 全部落空再回到单路径的原规则（含 / 绝对、包装层、原样保留）
+function readPathInGroup(root, bases, ref, outerBase) {
+  const raw = String(ref).trim();
+  const segs = splitPath(raw);
+  if (!segs.length) return { value: undefined, segs: [] };
+  if (raw.charAt(0) !== "/") {
+    const wrappers = ["", "角色", "角色列表", "人物", "人物列表"];
+    for (const b of bases) {
+      for (const w of wrappers) {
+        const t = (w ? [w] : []).concat(b).concat(segs);
+        const v = readSegs(root, t);
+        if (v !== undefined) return { value: v, segs: t };
+      }
+    }
+  }
+  const direct = readPath(root, [], raw);
+  if (direct.value !== undefined) return direct;
+  return readPath(root, outerBase || [], raw);
+}
+
+// 多重调用：$路径1;路径2;-路径3$ —— 组基 = 第一个「取用项」的父路径
+//   - 非 - 项：取出来拼在一起；- 项：把它产出的 tag 从本组结果里减掉（认不出路径就当字面 tag 减）
+//   查不到的取用项原样保留；整组都没命中就返回 null（交回老的单路径逻辑）
+function expandRefGroup(root, baseSegs, inner, ctx) {
+  const hasBrace = inner.indexOf("{") >= 0;
+  const raw = splitGroupItems(inner);
+  if (raw.length < 2 && !hasBrace) return null;
+  const items = [];
+  for (const it of raw) {
+    const minus = it.charAt(0) === "-";
+    const body = minus ? it.slice(1).trim() : it;
+    for (const o of braceExpandItems(body, 32)) items.push((minus ? "-" : "") + o);
+    if (items.length > 32) break;
+  }
+  const list = items.filter((s) => s.length > 0 && s !== "-");
+  if (list.length < 2) return null;
+  const firstTake = list.find((i) => i.charAt(0) !== "-") || list[0];
+  // 续写基址：第一个取用项的各级父路径（就近优先），最后回到外层 baseSegs
+  const firstSegs = splitPath(firstTake);
+  const bases = [];
+  for (let n = firstSegs.length - 1; n >= 0; n--) bases.push(firstSegs.slice(0, n));
+  if (baseSegs.length) bases.push(baseSegs);
+  const takes = [];
+  const removals = [];
+  let anyHit = false;
+  for (const it of list) {
+    const minus = it.charAt(0) === "-";
+    const body = minus ? it.slice(1).trim() : it;
+    if (!body) continue;
+    if (body.indexOf("$") >= 0) { if (!minus) takes.push(body); continue; }
+    const hit = (it === firstTake && !bases.length) ? readPath(root, baseSegs, body) : readPathInGroup(root, bases, body, baseSegs);
+    if (hit.value === undefined) {
+      if (minus) removals.push(body.toLowerCase());
+      else takes.push(body);
+      continue;
+    }
+    anyHit = true;
+    const hitBase = (typeof hit.value === "string" && hit.segs.length) ? hit.segs.slice(0, -1) : hit.segs;
+    const txt = project(root, hitBase, hit.value, ctx);
+    if (minus) {
+      for (const piece of String(txt).split(",").map((x) => x.trim()).filter(Boolean)) removals.push(piece.toLowerCase());
+    } else if (txt) takes.push(txt);
+  }
+  if (!anyHit) return null;
+  let out = takes.join(", ");
+  if (removals.length) out = out.split(",").map((x) => x.trim()).filter((x) => x && removals.indexOf(x.toLowerCase()) < 0).join(", ");
+  return out;
+}
+
 // 展开一段文本里的 $...$（路径形态取存储，JSON 形态留给预设管线）
 function expandRefs(root, baseSegs, text, ctx) {
   const c = ctx;
@@ -141,6 +256,8 @@ function expandRefs(root, baseSegs, text, ctx) {
     const t = String(inner).trim();
     if (!t) return match;
     if (t.charAt(0) === "{") return match;
+    const grouped = expandRefGroup(root, baseSegs, t, c);
+    if (grouped !== null) return grouped;
     const hit = readPath(root, baseSegs, t);
     if (hit.value === undefined) {
       // 查不到就原样保留：不认识的 $...$ 交给原有管线（与扩展原本的行为一致），绝不误删
@@ -609,7 +726,7 @@ function __stFindVarBox(obj, depth, path) {
 }
 
 window.stChatu8Vars = {
-  version: "1.0.7",
+  version: "1.0.8",
 
   // 生图 LLM 输出：摘掉 <变量更新> 块并写入该楼层，返回摘干净后的提示词
   ingestMessage: function (mes, id, expand) {
