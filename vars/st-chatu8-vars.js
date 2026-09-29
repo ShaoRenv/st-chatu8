@@ -764,8 +764,31 @@ function updateCandidates(text) {
   return out.slice(0, 24);
 }
 
-// 摘块：把 [第一个开标签 → 最后一个闭标签] 整段（含模型复述的模板垃圾）从正文里去掉，
-// 顺手清掉残留的标签本身
+// 哪些候选算「真块/复述垃圾」：文本里没有任何图片内容标记的都算
+const IMAGE_CONTENT_RE = /<(?:image|regex|title_styled|Tag_think|prompts|safe)\b/i;
+
+// 按候选各自的 [开标签 → 闭标签] 范围做掩码删除（重叠自动合并）；
+// 绝不从第一个开标签一路删到最后一个闭标签 —— 否则模型在 <thinking> 里写一句
+// 「后接 <变量更新>」就会把中间的 <images> 整段删掉（2026-09-30 报的格式错误就是这个）
+function removeByMask(s, spans) {
+  const mask = new Array(s.length).fill(false);
+  for (const c of spans) {
+    const to = Math.min(s.length, c.close + UPDATE_TAG.length + 3);
+    for (let i = c.open; i < to; i++) mask[i] = true;
+  }
+  let out = "";
+  for (let i = 0; i < s.length; i++) if (!mask[i]) out += s.charAt(i);
+  return out.replace(ANY_TAG_RE, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// 结尾要摘的候选：不含图片内容标记的候选（含真块）+ 命中的那个真块本身
+function junkAndParsed(s, candidates, parsed) {
+  const spans = candidates.filter((c) => !IMAGE_CONTENT_RE.test(c.text));
+  if (parsed && !spans.some((c) => c.open === parsed.open && c.close === parsed.close)) spans.push(parsed);
+  return spans.length ? removeByMask(s, spans) : s.replace(ANY_TAG_RE, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// 摘块：候选按「范围最小（最内层）」优先，取第一个非空候选作为真块
 function extractUpdateBlock(text) {
   const s = String(text == null ? "" : text);
   const candidates = updateCandidates(s);
@@ -774,20 +797,9 @@ function extractUpdateBlock(text) {
     if (!hasTag) return { clean: s, raw: "", candidates: [] };
     return { clean: s.replace(ANY_TAG_RE, "").replace(/\n{3,}/g, "\n\n").trim(), raw: "", candidates: [] };
   }
-  const first = candidates[0];
-  const opens = [];
-  for (const m of s.matchAll(OPEN_RE)) opens.push(m.index);
-  const closes = [];
-  for (const m of s.matchAll(CLOSE_RE)) closes.push(m.index);
-  const from = Math.min.apply(null, opens);
-  const to = Math.max.apply(null, closes) + UPDATE_TAG.length + 3;
-  const clean = (s.slice(0, from) + s.slice(to)).replace(ANY_TAG_RE, "").replace(/\n{3,}/g, "\n\n").trim();
-  let raw = "";
-  if (first) {
-    const best = candidates.find((c) => c.text.trim().length > 0);
-    raw = best ? best.text : "";
-  }
-  return { clean: clean, raw: raw, candidates: candidates };
+  const ordered = candidates.slice().sort((a, b) => a.text.length - b.text.length);
+  const best = ordered.find((c) => c.text.trim().length > 0) || ordered[0];
+  return { clean: junkAndParsed(s, candidates, best), raw: best ? best.text : "", candidates: candidates };
 }
 
 // 逐个候选尝试解析，谁先解析成功就用谁
@@ -798,12 +810,14 @@ function parseUpdate(text) {
     return { clean: got.clean, raw: "", candidates: list, patch: null, ok: false, error: "no-block" };
   }
   let lastErr = "";
-  for (const c of list) {
+  // 范围最小的候选优先（最像真块）；摘掉的是它自己的那一小段
+  const ordered = list.slice().sort((a, b) => a.text.length - b.text.length);
+  for (const c of ordered) {
     const body = String(c && c.text != null ? c.text : "");
     if (!body.trim()) continue;
     try {
       const patch = parsePatchText(body);
-      return { clean: got.clean, raw: body, candidates: list, patch: patch, ok: true, error: "" };
+      return { clean: junkAndParsed(String(text == null ? "" : text), list, c), raw: body, candidates: list, patch: patch, ok: true, error: "" };
     } catch (e) {
       lastErr = String(e && e.message || e);
     }
@@ -883,7 +897,7 @@ function __stFindVarBox(obj, depth, path) {
 }
 
 window.stChatu8Vars = {
-  version: "1.1.1",
+  version: "1.1.2",
 
   // 生图 LLM 输出：摘掉 <变量更新> 块并写入该楼层，返回摘干净后的提示词
   ingestMessage: function (mes, id, expand) {
