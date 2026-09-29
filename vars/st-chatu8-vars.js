@@ -93,7 +93,7 @@ function isTriggered(triggerText, keyValue) {
 
 // 激活关键词字段：主名用「激活词」，兼容旧的 key
 const GATE_FIELDS = ["激活词", "key"];
-const RESERVED = { "激活词": 1, key: 1 };
+const RESERVED = { "激活词": 1, key: 1, "不遍历": 1 };
 
 function readGate(node) {
   if (!isPlainObject(node)) return undefined;
@@ -101,6 +101,142 @@ function readGate(node) {
     if (Object.prototype.hasOwnProperty.call(node, f)) return node[f];
   }
   return undefined;
+}
+
+
+// ===== 批量调用（通配符）=====
+//   *   这一层的每个键（一级）      $角色列表/*/人物状态$   $沈慕微/服装列表/*$
+//   **  这一层往下所有层级的字段    $角色列表/**$           $沈慕微/**$
+//   前缀/后缀写法也支持            $沈慕微/人物*$（= 人物形象 + 人物状态）
+// 通配不会带出 _ 备注、激活词/key、不遍历 标记；一个都没命中=原样保留
+// 批量调用不看激活词（有多少拉多少）；不想被批量拉走的块写上 "不遍历": true
+function skipMetaKey(k) { return k.charAt(0) === "_" || RESERVED[k] === 1; }
+function isNoTraverse(node) {
+  if (!isPlainObject(node)) return false;
+  const v = node["不遍历"];
+  if (v === undefined || v === null) return false;
+  if (v === false || v === 0 || v === "") return false;
+  const s = String(v).trim().toLowerCase();
+  return s !== "false" && s !== "0" && s !== "no";
+}
+function isGlobSeg(seg) { return seg === "**" || seg.indexOf("*") >= 0; }
+function globRe(pattern) {
+  const esc = String(pattern).split("*").map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*");
+  return new RegExp("^" + esc + "$");
+}
+// 自身 + 所有后代（只下探容器），跳过 _ / 保留键 / 不遍历 的块
+function collectDesc(node, segs, out, ctx) {
+  if (isNoTraverse(node)) return;
+  out.push({ node: node, segs: segs });
+  if (!isPlainObject(node)) return;
+  for (const k of Object.keys(node)) {
+    if (skipMetaKey(k)) continue;
+    collectDesc(node[k], segs.concat(k), out, ctx);
+  }
+}
+// 所有叶子值（字符串 / 数组元素），不重复、不做对象投影
+function collectLeaves(node, segs, out, ctx) {
+  if (isNoTraverse(node)) return;
+  if (typeof node === "string") { out.push({ value: node, base: segs.slice(0, -1) }); return; }
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      if (typeof item === "string") out.push({ value: item, base: segs });
+      else if (Array.isArray(item)) collectLeaves(item, segs, out, ctx);
+    }
+    return;
+  }
+  if (!isPlainObject(node)) return;
+  for (const k of Object.keys(node)) {
+    if (skipMetaKey(k)) continue;
+    collectLeaves(node[k], segs.concat(k), out, ctx);
+  }
+}
+// 按通配路径从根匹配：命中返回展开后的 tag 文本（可能是空串），一个都没命中返回 null
+function globHit(root, patternSegs, ctx) {
+  // 批量调用不看激活词：投影时显式关掉门控
+  const gc = { text: (ctx && ctx.text) || "", gate: false, depth: (ctx && ctx.depth) || 0, seen: (ctx && ctx.seen) || {} };
+  let cands = [{ node: root, segs: [] }];
+  for (let i = 0; i < patternSegs.length; i++) {
+    const seg = patternSegs[i];
+    const next = [];
+    for (const c of cands) {
+      if (seg === "**") { collectDesc(c.node, c.segs, next, ctx); continue; }
+      if (!isPlainObject(c.node)) continue;
+      if (seg.indexOf("*") >= 0) {
+        const re = globRe(seg);
+        for (const k of Object.keys(c.node)) {
+          if (skipMetaKey(k) || !re.test(k)) continue;
+          const child = c.node[k];
+          if (isPlainObject(child) && isNoTraverse(child)) continue; // 不遍历
+          next.push({ node: child, segs: c.segs.concat(k) });
+        }
+        continue;
+      }
+      if (!Object.prototype.hasOwnProperty.call(c.node, seg)) continue;
+      {
+        const child = c.node[seg];
+        if (isPlainObject(child) && isNoTraverse(child)) continue; // 不遍历
+        next.push({ node: child, segs: c.segs.concat(seg) });
+      }
+    }
+    cands = next;
+    if (!cands.length) return null;
+  }
+  const last = patternSegs[patternSegs.length - 1];
+  const out = [];
+  for (const c of cands) {
+    if (last === "**") {
+      const leaves = [];
+      collectLeaves(c.node, c.segs, leaves, ctx);
+      for (const L of leaves) {
+        const txt = project(root, L.base, L.value, gc);
+        if (txt) out.push(txt);
+      }
+      continue;
+    }
+    const base = (typeof c.node === "string" && c.segs.length) ? c.segs.slice(0, -1) : c.segs;
+    const txt = project(root, base, c.node, gc);
+    if (txt) out.push(txt);
+  }
+  // 批量调用自动去重（同一 tag 只留一次）
+  const uniq = [];
+  const seenTag = {};
+  for (const s of out) {
+    for (const piece of String(s).split(",").map((x) => x.trim()).filter(Boolean)) {
+      const k = piece.toLowerCase();
+      if (seenTag[k]) continue;
+      seenTag[k] = 1;
+      uniq.push(piece);
+    }
+  }
+  return uniq.join(", ");
+}
+// 通配引用：不含通配返回 null；沿 readPath 的同一套尝试顺序找，命中返回 tag 文本
+function expandGlobRef(root, baseSegs, ref, ctx, bases) {
+  const raw = String(ref).trim();
+  const segs = splitPath(raw);
+  if (!segs.length || !segs.some(isGlobSeg)) return null;
+  const tries = [];
+  if (raw.charAt(0) === "/") tries.push(segs);
+  else {
+    if (bases && bases.length) {
+      for (const b of bases) {
+        for (const w of ["", "角色", "角色列表", "人物", "人物列表"]) tries.push((w ? [w] : []).concat(b).concat(segs));
+      }
+    }
+    if (baseSegs && baseSegs.length) tries.push(baseSegs.concat(segs));
+    tries.push(segs);
+    for (const a of ["角色", "角色列表", "人物", "人物列表"]) tries.push([a].concat(segs));
+  }
+  const seen = {};
+  for (const t of tries) {
+    const key = segsToString(t);
+    if (seen[key]) continue;
+    seen[key] = 1;
+    const txt = globHit(root, t, ctx);
+    if (txt !== null) return txt;
+  }
+  return null;
 }
 
 // 投影：只展开这一层（字符串/数组）；下一层的对象是分组，不进去
@@ -181,10 +317,12 @@ function braceExpandItems(text, cap) {
 
 // 组内查找：先按「续写基址」逐级往上找（基址 + 路径、基址 + 包装层 + 路径）
 // 全部落空再回到单路径的原规则（含 / 绝对、包装层、原样保留）
-function readPathInGroup(root, bases, ref, outerBase) {
+function readPathInGroup(root, bases, ref, outerBase, ctx) {
   const raw = String(ref).trim();
   const segs = splitPath(raw);
   if (!segs.length) return { value: undefined, segs: [] };
+  const globbed = expandGlobRef(root, outerBase || [], raw, ctx, bases);
+  if (globbed !== null) return { value: globbed, segs: [] };
   if (raw.charAt(0) !== "/") {
     const wrappers = ["", "角色", "角色列表", "人物", "人物列表"];
     for (const b of bases) {
@@ -230,7 +368,7 @@ function expandRefGroup(root, baseSegs, inner, ctx) {
     const body = minus ? it.slice(1).trim() : it;
     if (!body) continue;
     if (body.indexOf("$") >= 0) { if (!minus) takes.push(body); continue; }
-    const hit = (it === firstTake && !bases.length) ? readPath(root, baseSegs, body) : readPathInGroup(root, bases, body, baseSegs);
+    const hit = (it === firstTake && !bases.length) ? readPath(root, baseSegs, body) : readPathInGroup(root, bases, body, baseSegs, ctx);
     if (hit.value === undefined) {
       if (minus) removals.push(body.toLowerCase());
       else takes.push(body);
@@ -258,6 +396,8 @@ function expandRefs(root, baseSegs, text, ctx) {
     if (t.charAt(0) === "{") return match;
     const grouped = expandRefGroup(root, baseSegs, t, c);
     if (grouped !== null) return grouped;
+    const globbed = expandGlobRef(root, baseSegs, t, c);
+    if (globbed !== null) return globbed;
     const hit = readPath(root, baseSegs, t);
     if (hit.value === undefined) {
       // 查不到就原样保留：不认识的 $...$ 交给原有管线（与扩展原本的行为一致），绝不误删
@@ -726,7 +866,7 @@ function __stFindVarBox(obj, depth, path) {
 }
 
 window.stChatu8Vars = {
-  version: "1.0.8",
+  version: "1.0.9",
 
   // 生图 LLM 输出：摘掉 <变量更新> 块并写入该楼层，返回摘干净后的提示词
   ingestMessage: function (mes, id, expand) {
