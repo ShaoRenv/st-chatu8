@@ -562,8 +562,26 @@ function __stSys() {
 }
 function __stLastId() { return __stSys().storage.lastMessageId(); }
 
+// 在插件 LLM 入口的返回值里找「装着 <变量更新> 的字符串」，并记住怎么写回去
+// （LLM_IMAGE_GEN 返回的是 { result, testMode } 对象，不是字符串 —— 这就是"正文生图不更新"的原因）
+function __stFindVarBox(obj, depth, path) {
+  if (!obj || typeof obj !== "object" || (depth || 0) > 3) return null;
+  var keys = Object.keys(obj);
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i], v = obj[k];
+    var p = (path ? path + "." : "") + k;
+    if (typeof v === "string") {
+      if (v.indexOf("变量更新") >= 0) return { value: v, path: p, key: k, host: obj };
+    } else if (v && typeof v === "object") {
+      var found = __stFindVarBox(v, (depth || 0) + 1, p);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 window.stChatu8Vars = {
-  version: "1.0.5",
+  version: "1.0.6",
 
   // 生图 LLM 输出：摘掉 <变量更新> 块并写入该楼层，返回摘干净后的提示词
   ingestMessage: function (mes, id, expand) {
@@ -598,6 +616,26 @@ window.stChatu8Vars = {
     out.error = "parse: " + lastErr;
     out.raw = "";
     return out;
+  },
+
+  // 插件 LLM 入口的统一处理：字符串 / {result:...} / 嵌套对象都能吃
+  // 返回 {ok, wrote, changed, clean, error, field, tried}；对象会就地写回摘干净的正文
+  ingestLlm: function (out, id, kind, expand) {
+    var mid = (id == null) ? __stLastId() : id;
+    var empty = { ok: false, wrote: false, changed: false, clean: "", error: "", field: null, tried: 0, kind: kind || "" };
+    if (typeof out === "string") {
+      if (out.indexOf("变量更新") < 0) { empty.error = "没有 <变量更新> 块"; return empty; }
+      var r = this.ingestMessage(out, mid, expand);
+      r.field = null; r.kind = kind || "";
+      return r;
+    }
+    if (!out || typeof out !== "object") { empty.error = "返回结果既不是字符串也不是对象"; return empty; }
+    var box = __stFindVarBox(out, 0, "");
+    if (!box) { empty.error = "没有 <变量更新> 块"; return empty; }
+    var r2 = this.ingestMessage(box.value, mid, expand);
+    r2.field = box.path; r2.kind = kind || "";
+    if (r2.changed) { try { box.host[box.key] = r2.clean; } catch (e) { } }
+    return r2;
   },
 
   // 生图前：把提示词里的 $路径$ 用当前变量求值（官方 $...$ 调用原样穿过）
@@ -723,6 +761,7 @@ function __stDbgInfo(sys, win) {
     floorHasStore: exact,
     enabled: __stDbgSettings(w).varsEnabled !== "false",
     hooked: w.__stChatu8VarsLlmHooked || [],
+    llmHook: w.__stChatu8VarsLlmStats || null,
     expandAvailable: typeof w.__stChatu8ExpandPrompt === "function" ? true : false,
     error: err,
     logTail: __stDbgLog(8, w)
@@ -861,7 +900,9 @@ function mountVarsDebugPanel(win) {
   function dump(o) { result.textContent = typeof o === "string" ? o : JSON.stringify(o, null, 1); }
   function refresh() {
     var info = w.stChatu8VarsDebug.info();
-    status.textContent = "版本 " + info.varsVersion + " · 后端 " + info.backend + " · 楼层 " + info.messageId + " · 存储=" + (info.floorHasStore ? "有" : "无(继承)") + " · 开关=" + (info.enabled ? "开" : "关") + "\n钩子 " + (info.hooked.join(", ") || "(无)") + "\n日志:\n" + info.logTail.slice(-4).join("\n");
+    var lh = info.llmHook;
+    var lhText = lh ? ("调用 " + lh.calls + " 次（" + JSON.stringify(lh.byKind) + "） 写入 " + lh.writes + " 次 · 无变量块 " + lh.noBlock + " 次 · 解析失败 " + lh.parseFail + " 次" + (lh.last ? " · 最近: " + lh.last.kind + " ok=" + lh.last.ok + " wrote=" + lh.last.wrote + " 字段=" + lh.last.field + " 楼层=" + lh.last.floor + (lh.last.error ? " 错误=" + lh.last.error : "") : "")) : "(还没调用过)";
+    status.textContent = "版本 " + info.varsVersion + " · 后端 " + info.backend + " · 楼层 " + info.messageId + " · 存储=" + (info.floorHasStore ? "有" : "无(继承)") + " · 开关=" + (info.enabled ? "开" : "关") + "\nLLM 钩子: " + lhText + "\n日志:\n" + info.logTail.slice(-4).join("\n");
     return info;
   }
 
@@ -873,6 +914,7 @@ function mountVarsDebugPanel(win) {
     dump({ id: r.id, source: r.source, exact: r.exact, rawNamespaceKeys: r.rawTable ? Object.keys(r.rawTable) : null, error: r.error });
   }));
   bar1.appendChild(mkBtn("读全部楼层", function () { dump(w.stChatu8VarsDebug.readAll()); }));
+  bar1.appendChild(mkBtn("重置钩子统计", function () { w.__stChatu8VarsLlmStats = { calls: 0, byKind: {}, writes: 0, noBlock: 0, parseFail: 0, last: null }; refresh(); dump("统计已重置"); }));
   var bar2 = doc.createElement("div");
   bar2.appendChild(mkBtn("合并写入(上面文本框)", function () { dump(w.stChatu8VarsDebug.merge(store.value)); }, "#2f4a2f"));
   bar2.appendChild(mkBtn("覆盖写入", function () { dump(w.stChatu8VarsDebug.write(store.value, null, "replace")); }, "#4a3a2f"));

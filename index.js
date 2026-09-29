@@ -33691,24 +33691,33 @@ function appendFixedPromptModeInstruction(promptText, preset, kind) {
 /*== stChatu8Vars v1: llm-hook ==*/
 // 生图 LLM 是插件自己发的请求，不会产生新的聊天楼层 → ST 的 MESSAGE_RECEIVED 根本不会触发。
 // 所以这里直接包住插件的 LLM 入口：拿到返回文本后先喂给变量系统（解析 <变量更新> 并写当前楼层），再把摘干净的文本还给插件。
+window.__stChatu8VarsLlmStats = window.__stChatu8VarsLlmStats || { calls: 0, byKind: {}, writes: 0, noBlock: 0, parseFail: 0, last: null };
 window.__stChatu8VarsIngestLlm = function (out, kind) {
   try {
-    if (typeof out !== "string" || out.indexOf("<变量更新>") < 0) return out;
+    var st = window.__stChatu8VarsLlmStats;
+    st.calls++; st.byKind[kind] = (st.byKind[kind] || 0) + 1;
     var mod = window.stChatu8Vars;
-    if (!mod || typeof mod.ingestMessage !== "function") return out;
+    if (!mod || typeof mod.ingestLlm !== "function") return out;
+    // 插件自己的 LLM 请求不产生聊天楼层，所以变量写进"当前最后一楼"
     var c = ( window.SillyTavern && window.SillyTavern.getContext ) ? window.SillyTavern.getContext() : null;
     var arr = ( c && c.chat ) ? c.chat : [];
     var id = arr.length - 1;
     if (id < 0) return out;
     var vs = c && c.extensionSettings ? c.extensionSettings["st-chatu8"] : null;
     if (vs && vs.varsEnabled === "false") return out;
-    var r = mod.ingestMessage(out, id, window.__stChatu8ExpandPrompt);
+    // 注意：各入口返回值不一样 —— LLM_CHAR_DISPLAY/OUTFIT_* 返回字符串，
+    // LLM_IMAGE_GEN(正文生图) 返回 { result, testMode } 对象，统一交给 ingestLlm 处理
+    var r = mod.ingestLlm(out, id, kind, window.__stChatu8ExpandPrompt);
+    st.last = { kind: kind, at: Date.now(), ok: !!(r && r.ok), wrote: !!(r && r.wrote), floor: id, field: (r && r.field) || "字符串", tried: (r && r.tried) || 0, error: (r && r.error) || "" };
     var log = window.__stVarsLogBridge;
     if (r && r.ok) {
-      if (log) log("LLM(" + kind + ") 变量已写入楼层 " + id + " 候选=" + (r.tried || 1) + " 后端=" + ( window.TavernHelper ? "TavernHelper" : "chat.variables" ));
-      return r.changed ? r.clean : out;
-    }
-    if (r && r.raw) { if (log) log("LLM(" + kind + ") 有更新块但解析失败: " + r.error, true); return r.changed ? r.clean : out; }
+      st.writes++;
+      if (log) log("LLM(" + kind + ") 变量已写入楼层 " + id + " 候选=" + (r.tried || 1) + " 字段=" + ((r.field) || "字符串") + " 后端=" + ( window.TavernHelper ? "TavernHelper" : "chat.variables" ));
+    } else if (r && r.error && r.error.indexOf("没有") !== 0) {
+      st.parseFail++;
+      if (log) log("LLM(" + kind + ") 有更新块但解析失败: " + r.error, true);
+    } else { st.noBlock++; }
+    if (typeof out === "string") return (r && r.changed) ? r.clean : out;
     return out;
   } catch (e) {
     try { console.warn("[ChatU8 vars] llm ingest", e); } catch (e2) { }
