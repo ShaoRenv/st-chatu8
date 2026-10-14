@@ -33717,6 +33717,91 @@ function appendFixedPromptModeInstruction(promptText, preset, kind) {
   return promptText + instruction;
 }
 /*== stChatu8Vars v1: capture ==*/ try { window.__stChatu8ExpandPrompt = processCharacterPrompt; } catch (e) { }
+/*== stChatu8Vars v1: floor ==*/
+// 变量按楼层走：模型看【上一个消息楼层】，本轮更新写进【当前楼层】。
+// 插件自己的 LLM 请求不产生聊天楼层，所以得知道「现在在处理哪条消息」：
+//   处理某条消息的流程（正文生图/视材准备/角色设计/人设生成/标签修改…）都会先过 getElContext(el)，
+//   而 processImageLikeRequest 这一段里还会真的去生图（$路径$ 求值就发生在这里），所以整段锁住楼层、结束还原。
+try {
+  window.__stChatu8VarsFloor = window.__stChatu8VarsFloor || { id: -1, at: 0, src: "" };
+  window.__stChatu8VarsFloorWrapped = [];
+  window.__stVarsFloorFromEl = function (el) {
+    try {
+      if (!el) return -1;
+      if (!el.getAttribute && el[0] && el[0].getAttribute) el = el[0];
+      var node = null, mesid = null;
+      if (el.classList && el.classList.contains("mes_text") && el.parentElement && el.parentElement.parentElement) node = el.parentElement.parentElement;
+      else if (el.closest) node = el.closest(".mes");
+      if (node && node.getAttribute) mesid = node.getAttribute("mesid");
+      if (mesid == null && el.getAttribute) mesid = el.getAttribute("mesid");
+      if (mesid == null || mesid === "") return -1;
+      var n = parseInt(mesid, 10);
+      return isNaN(n) ? -1 : n;
+    } catch (e) { return -1; }
+  };
+  window.__stVarsSetFloor = function (id, src) {
+    if (typeof id !== "number" || isNaN(id) || id < 0) return false;
+    window.__stChatu8VarsFloor = { id: id, at: Date.now(), src: String(src || "") };
+    return true;
+  };
+  window.__stVarsSetFloorFromEl = function (el, src) {
+    var id = window.__stVarsFloorFromEl(el);
+    if (id >= 0) { window.__stVarsSetFloor(id, src); return id; }
+    return -1;
+  };
+  window.__stVarsClearFloor = function (src) { window.__stChatu8VarsFloor = { id: -1, at: 0, src: String(src || "") }; };
+  // 这次请求的「当前楼层」：有处理中的楼层就用它（旧楼层重绘也各归各楼），否则退回最新一楼
+  window.__stVarsHookFloor = function (arr) {
+    try {
+      var h = window.__stChatu8VarsFloor;
+      if (h && typeof h.id === "number" && h.id >= 0 && (!arr || h.id < arr.length)) return h.id;
+    } catch (e) { }
+    return (arr && arr.length) ? arr.length - 1 : -1;
+  };
+  window.__stVarsHookFloorSrc = function () {
+    try { var h = window.__stChatu8VarsFloor; if (h && typeof h.id === "number" && h.id >= 0) return h.src || "处理中"; } catch (e) { }
+    return "最新一楼";
+  };
+
+  var __stVarsWrapFloor = function (name, fn, src) {
+    var wrapped = function () {
+      var prev = window.__stChatu8VarsFloor;
+      try { window.__stVarsSetFloorFromEl(arguments[0], src || name); } catch (e) { }
+      var p;
+      try { p = fn.apply(this, arguments); }
+      catch (e) { window.__stChatu8VarsFloor = prev; throw e; }
+      if (p && typeof p.then === "function") {
+        return p.then(function (v) { window.__stChatu8VarsFloor = prev; return v; }, function (e) { window.__stChatu8VarsFloor = prev; throw e; });
+      }
+      window.__stChatu8VarsFloor = prev;
+      return p;
+    };
+    wrapped.__stVarsFloorWrapped = true;
+    return wrapped;
+  };
+  if (typeof getElContext === "function" && !getElContext.__stVarsFloorWrapped) {
+    var __stVarsOrigGetEl = getElContext;
+    getElContext = function () {
+      try { window.__stVarsSetFloorFromEl(arguments[0], "消息上下文"); } catch (e) { }
+      return __stVarsOrigGetEl.apply(this, arguments);
+    };
+    getElContext.__stVarsFloorWrapped = true;
+    window.__stChatu8VarsFloorWrapped.push("getElContext");
+  }
+  if (typeof processImageLikeRequest === "function" && !processImageLikeRequest.__stVarsFloorWrapped) {
+    processImageLikeRequest = __stVarsWrapFloor("正文生图", processImageLikeRequest, "正文生图");
+    window.__stChatu8VarsFloorWrapped.push("processImageLikeRequest");
+  }
+  if (typeof handleImageToVideoGen === "function" && !handleImageToVideoGen.__stVarsFloorWrapped) {
+    handleImageToVideoGen = __stVarsWrapFloor("图生视频", handleImageToVideoGen, "图生视频");
+    window.__stChatu8VarsFloorWrapped.push("handleImageToVideoGen");
+  }
+  try {
+    eventSource16.on(event_types3.CHAT_CHANGED, function () { window.__stVarsClearFloor("换聊天"); });
+    eventSource16.on(event_types3.GENERATION_STARTED, function () { window.__stVarsClearFloor("新生成"); });
+  } catch (e) { try { console.warn("[ChatU8 vars] floor events", e); } catch (e2) { } }
+  try { console.log("[ChatU8 vars] 楼层标记已挂载: 读上一楼 / 写当前楼层 · " + window.__stChatu8VarsFloorWrapped.join(", ")); } catch (e) { }
+} catch (e) { try { console.warn("[ChatU8 vars] floor hook failed", e); } catch (e2) { } }
 /*== stChatu8Vars v1: llm-hook ==*/
 // 生图 LLM 是插件自己发的请求，不会产生新的聊天楼层 → ST 的 MESSAGE_RECEIVED 根本不会触发。
 // 所以这里直接包住插件的 LLM 入口：拿到返回文本后先喂给变量系统（解析 <变量更新> 并写当前楼层），再把摘干净的文本还给插件。
@@ -33727,21 +33812,22 @@ window.__stChatu8VarsIngestLlm = function (out, kind) {
     st.calls++; st.byKind[kind] = (st.byKind[kind] || 0) + 1;
     var mod = window.stChatu8Vars;
     if (!mod || typeof mod.ingestLlm !== "function") return out;
-    // 插件自己的 LLM 请求不产生聊天楼层，所以变量写进"当前最后一楼"
+    // 插件自己的 LLM 请求不产生聊天楼层：写进【当前楼层】（正在处理的那条消息），
+    // 没有标记时才退回最新一楼。模型看到的变量由变量模块按「当前楼层 - 1」读。
     var c = ( window.SillyTavern && window.SillyTavern.getContext ) ? window.SillyTavern.getContext() : null;
     var arr = ( c && c.chat ) ? c.chat : [];
-    var id = arr.length - 1;
+    var id = window.__stVarsHookFloor ? window.__stVarsHookFloor(arr) : (arr.length - 1);
     if (id < 0) return out;
     var vs = c && c.extensionSettings ? c.extensionSettings["st-chatu8"] : null;
     if (vs && vs.varsEnabled === "false") return out;
     // 注意：各入口返回值不一样 —— LLM_CHAR_DISPLAY/OUTFIT_* 返回字符串，
     // LLM_IMAGE_GEN(正文生图) 返回 { result, testMode } 对象，统一交给 ingestLlm 处理
     var r = mod.ingestLlm(out, id, kind, window.__stChatu8ExpandPrompt);
-    st.last = { kind: kind, at: Date.now(), ok: !!(r && r.ok), wrote: !!(r && r.wrote), floor: id, field: (r && r.field) || "字符串", tried: (r && r.tried) || 0, error: (r && r.error) || "" };
+    st.last = { kind: kind, at: Date.now(), ok: !!(r && r.ok), wrote: !!(r && r.wrote), floor: id, floorFrom: (window.__stVarsHookFloorSrc ? window.__stVarsHookFloorSrc() : "?"), field: (r && r.field) || "字符串", tried: (r && r.tried) || 0, error: (r && r.error) || "" };
     var log = window.__stVarsLogBridge;
     if (r && r.ok) {
       st.writes++;
-      if (log) log("LLM(" + kind + ") 变量已写入楼层 " + id + " 候选=" + (r.tried || 1) + " 字段=" + ((r.field) || "字符串") + " 后端=" + ( window.TavernHelper ? "TavernHelper" : "chat.variables" ));
+      if (log) log("LLM(" + kind + ") 变量已写入楼层 " + id + "（" + (window.__stVarsHookFloorSrc ? window.__stVarsHookFloorSrc() : "?") + "）候选=" + (r.tried || 1) + " 字段=" + ((r.field) || "字符串") + " 后端=" + ( window.TavernHelper ? "TavernHelper" : "chat.variables" ));
     } else if (r && r.error && r.error.indexOf("没有") !== 0) {
       st.parseFail++;
       if (log) log("LLM(" + kind + ") 有更新块但解析失败: " + r.error, true);

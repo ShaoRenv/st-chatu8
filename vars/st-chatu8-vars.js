@@ -57,6 +57,9 @@ function readPath(root, baseSegs, ref) {
 const REF_RE = /\$([^$]+)\$/g;
 
 // 按逗号分段，但跳过 $...$ 内部（${"name":"x","angle":"y"}$ 里的逗号不算分段）
+// 半角 , ; 与全角 ，；都算分段符（模型常写全角）
+function isSegSep(ch) { return ch === "," || ch === ";" || ch === "，" || ch === "；"; }
+
 function splitSegments(text) {
   const out = [];
   let buf = "";
@@ -65,7 +68,7 @@ function splitSegments(text) {
   for (let i = 0; i < str.length; i++) {
     const ch = str.charAt(i);
     if (ch === "$") { inRef = !inRef; buf += ch; continue; }
-    if (ch === "," && !inRef) { out.push(buf); buf = ""; continue; }
+    if (!inRef && isSegSep(ch)) { out.push(buf); buf = ""; continue; }
     buf += ch;
   }
   out.push(buf);
@@ -270,7 +273,7 @@ function project(root, baseSegs, value, ctx) {
   return "";
 }
 
-const GROUP_SEP = /[;,]/;
+const GROUP_SEP = /[;,，；]/;
 
 // 把 $...$ 里的内容按 ; 或 , 切开（花括号里的逗号不算分隔）
 function splitGroupItems(text) {
@@ -306,13 +309,24 @@ function braceExpandItems(text, cap) {
   const body = str.slice(open + 1, close);
   const tail = str.slice(close + 1);
   const out = [];
-  for (const opt of body.split(",")) {
+  for (const opt of body.split(/[,，]/)) {
+    const raw = opt.trim();
+    const neg = raw.charAt(0) === "-";
+    const core = neg ? raw.slice(1) : raw;
     for (const rest of braceExpandItems(tail, cap)) {
-      out.push(head + opt.trim() + rest);
+      // 减号提到整项最前：$A/{状态,-服装列表/长袍}$ 才能被当成「减一项」而不是取用项
+      out.push((neg ? "-" : "") + head + core + rest);
       if (out.length >= (cap || 32)) return out;
     }
   }
   return out;
+}
+
+// 保险：展开后若减号被挤到路径中间（角色列表/沈慕微/-服装列表/长袍），提回最前
+function hoistMinus(s) {
+  const str = String(s);
+  if (str.indexOf("/-") < 0) return str;
+  return "-" + str.split("/-").join("/");
 }
 
 // 组内查找：先按「续写基址」逐级往上找（基址 + 路径、基址 + 包装层 + 路径）
@@ -341,6 +355,19 @@ function readPathInGroup(root, bases, ref, outerBase, ctx) {
 // 多重调用：$路径1;路径2;-路径3$ —— 组基 = 第一个「取用项」的父路径
 //   - 非 - 项：取出来拼在一起；- 项：把它产出的 tag 从本组结果里减掉（认不出路径就当字面 tag 减）
 //   查不到的取用项原样保留；整组都没命中就返回 null（交回老的单路径逻辑）
+// 续写梯子：第一个取用项的各级父路径（就近优先）→ 第一项自己（第一项是分组时，第 2 项写在它下面）→ 外层 baseSegs
+function groupLadder(segs, outer) {
+  const base = Array.isArray(segs) ? segs : [];
+  const out = [];
+  for (let n = base.length - 1; n >= 0; n--) out.push(base.slice(0, n));
+  if (base.length) out.push(base.slice());
+  if (outer && outer.length) out.push(outer.slice());
+  return out;
+}
+
+// 像「路径」的项（含 / . *）：查不到就是写错了，别把中文路径原文塞进图
+function isPathLike(body) { return /[\/.*]/.test(String(body)); }
+
 function expandRefGroup(root, baseSegs, inner, ctx) {
   const hasBrace = inner.indexOf("{") >= 0;
   const raw = splitGroupItems(inner);
@@ -348,18 +375,16 @@ function expandRefGroup(root, baseSegs, inner, ctx) {
   const items = [];
   for (const it of raw) {
     const minus = it.charAt(0) === "-";
-    const body = minus ? it.slice(1).trim() : it;
-    for (const o of braceExpandItems(body, 32)) items.push((minus ? "-" : "") + o);
+    const body = minus ? it.slice(1).trim() : it.trim();
+    for (const o of braceExpandItems(body, 32)) items.push(hoistMinus((minus ? "-" : "") + o));
     if (items.length > 32) break;
   }
   const list = items.filter((s) => s.length > 0 && s !== "-");
   if (list.length < 2) return null;
   const firstTake = list.find((i) => i.charAt(0) !== "-") || list[0];
-  // 续写基址：第一个取用项的各级父路径（就近优先），最后回到外层 baseSegs
-  const firstSegs = splitPath(firstTake);
-  const bases = [];
-  for (let n = firstSegs.length - 1; n >= 0; n--) bases.push(firstSegs.slice(0, n));
-  if (baseSegs.length) bases.push(baseSegs);
+  // 第 1 项解析出来之后，梯子换成它的「真实路径」（含它自己），后面的项就能相对它写
+  let ladder = groupLadder(splitPath(firstTake), baseSegs);
+  let firstDone = false;
   const takes = [];
   const removals = [];
   let anyHit = false;
@@ -368,15 +393,26 @@ function expandRefGroup(root, baseSegs, inner, ctx) {
     const body = minus ? it.slice(1).trim() : it;
     if (!body) continue;
     if (body.indexOf("$") >= 0) { if (!minus) takes.push(body); continue; }
-    const hit = (it === firstTake && !bases.length) ? readPath(root, baseSegs, body) : readPathInGroup(root, bases, body, baseSegs, ctx);
+    const hit = readPathInGroup(root, ladder, body, baseSegs, ctx);
+    if (!firstDone && it === firstTake) {
+      firstDone = true;
+      if (hit.value !== undefined && hit.segs && hit.segs.length) ladder = groupLadder(hit.segs, baseSegs);
+    }
     if (hit.value === undefined) {
       if (minus) removals.push(body.toLowerCase());
-      else takes.push(body);
+      else if (!isPathLike(body)) takes.push(body); // 字面 tag 留着；写错的路径丢掉
       continue;
     }
     anyHit = true;
     const hitBase = (typeof hit.value === "string" && hit.segs.length) ? hit.segs.slice(0, -1) : hit.segs;
-    const txt = project(root, hitBase, hit.value, ctx);
+    // 下探一层 + 记住这条路径：值里再引用回自己（或互相引用）时能收住，不会递归爆栈
+    const pc = down(ctx);
+    if (hit.segs && hit.segs.length) {
+      const seen2 = Object.assign({}, pc.seen || {});
+      seen2[segsToString(hit.segs)] = true;
+      pc.seen = seen2;
+    }
+    const txt = project(root, hitBase, hit.value, pc);
     if (minus) {
       for (const piece of String(txt).split(",").map((x) => x.trim()).filter(Boolean)) removals.push(piece.toLowerCase());
     } else if (txt) takes.push(txt);
@@ -423,6 +459,8 @@ function isVarPointer(root, span) {
   const inner = s.slice(1, -1).trim();
   if (!inner) return false;
   if (inner.charAt(0) === "{") return false; // ${...}$ 预设调用
+  // 多重调用 / 花括号并列：整条都当变量指针（里面某一项查不到也不交给官方展开器去猜）
+  if (/[,;，；]/.test(inner) || inner.indexOf("{") >= 0) return true;
   if (inner.indexOf("/") >= 0 || inner.indexOf("*") >= 0 || inner.indexOf(".") >= 0) return true;
   try { if (readPath(root || {}, [], inner).value !== undefined) return true; } catch (e) { }
   try { if (expandGlobRef(root || {}, [], inner, makeCtx("")) !== null) return true; } catch (e) { }
@@ -836,7 +874,9 @@ function createVarSystem(opts) {
   const cfg = opts || {};
   const st = createStorage(cfg);
 
+  // 某楼层的状态：优先这一楼自己的表，没有就往下找最近一个楼层（楼层变量是逐楼快照）
   function currentTags(messageId) {
+    if (messageId == null) return {};
     const at = st.readAt(messageId);
     if (at) return at;
     const latest = st.findLatest(messageId);
@@ -846,6 +886,12 @@ function createVarSystem(opts) {
   return {
     storage: st,
     tags: currentTags,
+
+    // 上一个消息楼层的状态（模型要看的「上一楼」，也是本楼层更新时的起点）
+    prevTags: function (messageId) {
+      const cur = (messageId == null) ? st.lastMessageId() : messageId;
+      return cur > 0 ? currentTags(cur - 1) : {};
+    },
 
     // 生图 LLM 输出：摘掉更新块，其余是图片提示词；有更新就写进这一楼
     ingest: function (text, messageId) {
@@ -878,6 +924,43 @@ function __stSys() {
 }
 function __stLastId() { return __stSys().storage.lastMessageId(); }
 
+// 当前聊天楼层数（拿不到返回 -1）
+function __stChatLen() {
+  try {
+    var c = (window.SillyTavern && window.SillyTavern.getContext) ? window.SillyTavern.getContext() : null;
+    var arr = c && c.chat;
+    return Array.isArray(arr) ? arr.length : -1;
+  } catch (e) { return -1; }
+}
+
+// 当前楼层 = 这次请求正在处理的那一楼。
+// index.js 在处理某条消息（生图 / 视材准备 / 角色设计…）时会打标记 window.__stChatu8VarsFloor，
+// 所以旧楼层重绘、连续点几条消息都能各归各楼；没有标记（设置页直接点按钮）才退回聊天最后一楼。
+function __stCurId() {
+  var last = __stLastId();
+  try {
+    var h = window.__stChatu8VarsFloor;
+    if (h && typeof h.id === "number" && h.id >= 0) {
+      var len = __stChatLen();
+      var fresh = (Date.now() - (h.at || 0)) < 6 * 3600 * 1000;
+      if (fresh && (len < 0 || h.id < len)) return h.id;
+    }
+  } catch (e) { }
+  return last;
+}
+
+// 给模型看的变量 = 上一个消息楼层（当前楼层还没定稿，它该看的是自己之前的状态）
+function __stReadId() {
+  var cur = __stCurId();
+  return cur > 0 ? cur - 1 : -1;
+}
+
+// 指定楼层的状态（<0 视为空）
+function __stTagsAt(at) {
+  if (at == null || at < 0) return {};
+  try { return __stSys().tags(at) || {}; } catch (e) { return {}; }
+}
+
 // 在插件 LLM 入口的返回值里找「装着 <变量更新> 的字符串」，并记住怎么写回去
 // （LLM_IMAGE_GEN 返回的是 { result, testMode } 对象，不是字符串 —— 这就是"正文生图不更新"的原因）
 function __stFindVarBox(obj, depth, path) {
@@ -897,10 +980,12 @@ function __stFindVarBox(obj, depth, path) {
 }
 
 window.stChatu8Vars = {
-  version: "1.1.2",
+  version: "1.2.0",
 
   // 生图 LLM 输出：摘掉 <变量更新> 块并写入该楼层，返回摘干净后的提示词
+  // id 不给 = 写当前楼层（正在处理的那一楼）
   ingestMessage: function (mes, id, expand) {
+    var at = (id == null) ? __stCurId() : id;
     var r = parseUpdate(mes);
     var out = { changed: r.clean !== mes, clean: r.clean, ok: false, wrote: false, error: r.error, raw: "", tried: 0 };
     var list = (r.candidates && r.candidates.length) ? r.candidates : (r.raw ? [{ text: r.raw }] : []);
@@ -917,7 +1002,7 @@ window.stChatu8Vars = {
         // 只把「预设调用 / 官方调用」交给插件展开器；$路径$ 指针（含多重调用、通配）原样存进变量，
         // 否则 processCharacterPrompt 会把指针也展开成 tag 写进存储（v1.0.9 及以前的 bug）
         var root0 = null;
-        try { root0 = __stSys().tags(id == null ? __stLastId() : id); } catch (e) { root0 = null; }
+        try { root0 = __stTagsAt(at); } catch (e) { root0 = null; }
         var guarded = function (span) {
           try { if (root0 && isVarPointer(root0, span)) return span; } catch (e) { }
           return expand(span);
@@ -929,12 +1014,12 @@ window.stChatu8Vars = {
       try { patch = parsePatchText(raw); }
       catch (e) { lastErr = String(e && e.message || e); continue; }
       var s = __stSys();
-      var merged = mergeTags(s.tags(id), patch);
-      out.wrote = s.storage.writeAt(id, merged);
+      var merged = mergeTags(__stTagsAt(at), patch);
+      out.wrote = s.storage.writeAt(at, merged);
       out.ok = true;
       out.error = "";
       out.raw = raw.slice(0, 300);
-      console.log("[ChatU8 vars] 写入楼层 " + id + " ok=" + out.wrote + " 后端=" + (window.TavernHelper ? "TavernHelper" : "chat.variables") + " 候选=" + (i + 1) + "/" + list.length);
+      console.log("[ChatU8 vars] 写入楼层 " + at + "（读上一楼 " + __stReadId() + "）ok=" + out.wrote + " 后端=" + (window.TavernHelper ? "TavernHelper" : "chat.variables") + " 候选=" + (i + 1) + "/" + list.length);
       return out;
     }
     out.error = "parse: " + lastErr;
@@ -945,7 +1030,7 @@ window.stChatu8Vars = {
   // 插件 LLM 入口的统一处理：字符串 / {result:...} / 嵌套对象都能吃
   // 返回 {ok, wrote, changed, clean, error, field, tried}；对象会就地写回摘干净的正文
   ingestLlm: function (out, id, kind, expand) {
-    var mid = (id == null) ? __stLastId() : id;
+    var mid = (id == null) ? __stCurId() : id;
     var empty = { ok: false, wrote: false, changed: false, clean: "", error: "", field: null, tried: 0, kind: kind || "" };
     if (typeof out === "string") {
       if (out.indexOf("变量更新") < 0) { empty.error = "没有 <变量更新> 块"; return empty; }
@@ -962,17 +1047,26 @@ window.stChatu8Vars = {
     return r2;
   },
 
-  // 生图前：把提示词里的 $路径$ 用当前变量求值（官方 $...$ 调用原样穿过）
+  // 生图前：把提示词里的 $路径$ 用【当前楼层】的变量求值（官方 $...$ 调用原样穿过）
+  // 当前楼层 = 正在处理的这条消息；它的更新已经写进这一楼，所以这里读自己这一楼
   render: function (text, id) {
     try {
       var s = __stSys();
-      var root = s.tags(id == null ? __stLastId() : id);
+      var root = __stTagsAt(id == null ? __stCurId() : id);
       if (!root || !Object.keys(root).length) return text;
       return evaluate(root, text, text);
     } catch (e) {
       console.warn("[ChatU8 vars] render failed", e);
       return text;
     }
+  },
+
+  // 楼层去向（调试用）：当前楼层 / 读哪一楼 / 写哪一楼
+  floor: function (id) {
+    var cur = (id == null) ? __stCurId() : id;
+    var h = null;
+    try { h = window.__stChatu8VarsFloor || null; } catch (e) { h = null; }
+    return { current: cur, read: cur > 0 ? cur - 1 : -1, write: cur, last: __stLastId(), hint: h };
   },
 
   tags: function (id) { return __stSys().tags(id); },
@@ -997,27 +1091,26 @@ window.stChatu8Vars = {
   },
   char: function (name, id) { return __stSys().char(name, id); },
 
-  // 注入给模型的当前变量块
+  // 注入给模型的当前变量块（读【上一个消息楼层】）
   promptBlock: function (id) {
-    var t = __stSys().tags(id) || {};
+    var t = __stTagsAt(id == null ? __stReadId() : id);
     var view = this.viewText(undefined, id);
     var tail = (view && view !== "{}" && view !== "[]") ? "\n<当前变量视图>\n" + view + "\n</当前变量视图>" : "";
     return "\n<当前变量>\n" + JSON.stringify(t) + "\n</当前变量>" + tail;
   },
 
 
-  // {{绘图变量}} -> 原始存储（给模型改：保留 $路径$ 指针原样）
+  // {{绘图变量}} -> 原始存储（给模型改：保留 $路径$ 指针原样）；读【上一个消息楼层】
   rawText: function (id) {
     try {
-      var t = __stSys().tags(id == null ? __stLastId() : id);
-      return JSON.stringify(t || {});
+      return JSON.stringify(__stTagsAt(id == null ? __stReadId() : id));
     } catch (e) { return ""; }
   },
 
-  // {{绘图变量视图}} -> 求值后的最终 tag（key 命中的角色才出现，指针展开）
+  // {{绘图变量视图}} -> 求值后的最终 tag（key 命中的角色才出现，指针展开）；读【上一个消息楼层】
   viewText: function (triggerText, id) {
     try {
-      var t = __stSys().tags(id == null ? __stLastId() : id) || {};
+      var t = __stTagsAt(id == null ? __stReadId() : id);
       var filtered = filterActive(t, triggerText);
       return JSON.stringify(filtered === undefined ? {} : filtered);
     } catch (e) { return ""; }
@@ -1037,7 +1130,8 @@ window.stChatu8Vars = {
   }
 };
 /* ---- debug.js ---- */
-// ---- 变量调试：读取 / 写入指定 JSON / 模拟模型回复（build-vars.mjs 拼到 api.js 之后）----
+// ---- 变量调试接口（控制台用）：读取 / 写入指定 JSON / 模拟模型回复 ----
+// 注意：只提供 window.stChatu8VarsDebug 函数，不往页面里塞任何悬浮窗/按钮。
 // 全部函数都接受可选的 sys 参数，便于在 node 里单测（不传就用全局 __stSys()）
 
 function __stDbgSys(sys) {
@@ -1064,26 +1158,48 @@ function __stDbgLog(n, win) {
   return String(es.log || "").split("\n").filter(function (x) { return x.indexOf("[变量]") >= 0; }).slice(-(n || 8));
 }
 
+// 楼层去向：当前楼层 / 读哪一楼（模型看到的）/ 写哪一楼（更新写进去的）
+function __stDbgFloor(sys, win) {
+  var w = win || (typeof window !== "undefined" ? window : {});
+  var vm = w.stChatu8Vars || (typeof window !== "undefined" ? window.stChatu8Vars : null);
+  var out = { current: -1, read: -1, write: -1, last: -1, hint: null, src: "" };
+  try {
+    if (vm && typeof vm.floor === "function") return vm.floor();
+    var s = __stDbgSys(sys);
+    out.last = __stDbgLastId(s);
+    out.current = out.last; out.read = out.current > 0 ? out.current - 1 : -1; out.write = out.current;
+    out.hint = w.__stChatu8VarsFloor || null;
+  } catch (e) { }
+  return out;
+}
+
 // 一、整体状态：一眼看出「加载了没 / 后端是谁 / 楼层几 / 钩子挂上没」
 function __stDbgInfo(sys, win) {
   var w = win || (typeof window !== "undefined" ? window : {});
   var s = __stDbgSys(sys);
-  var mid = -1, exact = false, err = "";
-  try { mid = __stDbgLastId(s); exact = !!(s && s.storage.readAt(mid)); } catch (e) { err = String(e && e.message || e); }
+  var fl = __stDbgFloor(s, w);
+  var mid = fl.write;
+  var exact = false, err = "";
+  try { exact = (mid >= 0) ? !!(s && s.storage.readAt(mid)) : false; } catch (e) { err = String(e && e.message || e); }
   return {
     varsVersion: (w.stChatu8Vars && w.stChatu8Vars.version) || (typeof window !== "undefined" && window.stChatu8Vars ? window.stChatu8Vars.version : "?"),
     moduleLoaded: !!(w.stChatu8Vars || (typeof window !== "undefined" && window.stChatu8Vars)),
     backend: w.TavernHelper ? "TavernHelper(楼层变量)" : "chat.variables(降级)",
+    // 读上一楼（模型看的）/ 写当前楼层（更新写的）
+    floorCurrent: fl.current,
+    floorRead: fl.read,
+    floorWrite: fl.write,
+    floorLast: fl.last,
+    floorHint: fl.hint,
     messageId: mid,
     floorHasStore: exact,
-    storeKeys: (function () { try { return Object.keys((s && s.storage.readAt(mid)) || {}); } catch (e) { return []; } })(),
+    storeKeys: (function () { try { return Object.keys((mid >= 0 && s && s.storage.readAt(mid)) || {}); } catch (e) { return []; } })(),
     enabled: __stDbgSettings(w).varsEnabled !== "false",
     hooked: w.__stChatu8VarsLlmHooked || [],
     llmHook: w.__stChatu8VarsLlmStats || null,
     expandAvailable: typeof w.__stChatu8ExpandPrompt === "function" ? true : false,
     // 变量是否自动附加到发给 LLM 的提示词末尾（可用 stChatu8VarsDebug.setInject(false) 关掉，改用 {{绘图变量}} 宏）
     autoInject: __stDbgSettings(w).varsInject !== "false",
-    injectOnCharList: __stDbgSettings(w).varsInjectCharList === "true",
     error: err,
     logTail: __stDbgLog(8, w)
   };
@@ -1093,15 +1209,18 @@ function __stDbgInfo(sys, win) {
 function __stDbgRead(id, sys, win) {
   var w = win || (typeof window !== "undefined" ? window : {});
   var s = __stDbgSys(sys);
-  var mid = (id == null) ? __stDbgLastId(s) : id;
-  var out = { id: mid, exact: false, source: "empty", store: null, fallback: null, rawTable: null, error: "" };
+  var fl = __stDbgFloor(s, w);
+  var mid = (id == null) ? fl.write : id;
+  var out = { id: mid, floor: fl, exact: false, source: "empty", store: null, fallback: null, prev: null, rawTable: null, error: "" };
   if (!s) { out.error = "变量系统未初始化"; return out; }
   try {
-    var at = s.storage.readAt(mid);
+    var at = (mid >= 0) ? s.storage.readAt(mid) : null;
     out.exact = !!at;
     out.store = at || s.tags(mid);
     out.source = at ? "本楼层存储" : "向上继承最近楼层";
     if (!at && mid >= 0) { var f = s.storage.findLatest(mid); out.fallback = { from: f.messageId, tags: f.tags || {} }; }
+    // 模型这一轮看到的是上一楼
+    if (typeof s.prevTags === "function") { var p = fl.read; out.prev = { id: p, store: (p >= 0 ? s.prevTags(fl.current) : {}) }; }
     if (w.TavernHelper && mid >= 0) {
       var table = w.TavernHelper.getVariables({ type: "message", message_id: mid });
       out.rawTable = table || null;
@@ -1186,83 +1305,11 @@ function __stDbgReadAll(sys) {
   return out;
 }
 
-// ---- 悬浮调试面板（纯 DOM，不依赖插件设置页）----
-function mountVarsDebugPanel(win) {
-  var w = win || (typeof window !== "undefined" ? window : null);
-  if (!w || !w.document || w.__stVarsDebugPanelMounted) return false;
-  var doc = w.document;
-  if (!doc.body) return false;
-  w.__stVarsDebugPanelMounted = true;
-
-  var btn = doc.createElement("div");
-  btn.textContent = "🧪 变量调试";
-  btn.setAttribute("style", "position:fixed;left:10px;bottom:10px;z-index:2147483000;background:#2b2b3c;color:#fff;padding:6px 10px;border-radius:8px;font-size:12px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.4);opacity:.85");
-  var panel = doc.createElement("div");
-  panel.setAttribute("style", "position:fixed;left:10px;bottom:44px;z-index:2147483000;width:460px;max-height:70vh;overflow:auto;background:#1e1e2a;color:#ddd;border:1px solid #444;border-radius:10px;padding:10px;font-size:12px;line-height:1.5;display:none;box-shadow:0 6px 24px rgba(0,0,0,.5)");
-  var status = doc.createElement("pre");
-  status.setAttribute("style", "white-space:pre-wrap;margin:0 0 6px;color:#9fd");
-  var store = doc.createElement("textarea");
-  store.setAttribute("style", "width:100%;height:110px;background:#12121a;color:#eee;border:1px solid #444;border-radius:6px;font-family:monospace;font-size:11px");
-  var llm = doc.createElement("textarea");
-  llm.setAttribute("placeholder", "把模型回复原文粘到这里（含 <变量更新> 块）");
-  llm.setAttribute("style", "width:100%;height:70px;background:#12121a;color:#eee;border:1px solid #444;border-radius:6px;font-family:monospace;font-size:11px");
-  var result = doc.createElement("pre");
-  result.setAttribute("style", "white-space:pre-wrap;margin:6px 0 0;color:#fc9;max-height:180px;overflow:auto");
-
-  function mkBtn(label, fn, color) {
-    var b = doc.createElement("button");
-    b.textContent = label;
-    b.setAttribute("style", "margin:2px 4px 2px 0;padding:4px 8px;border-radius:6px;border:1px solid #555;background:" + (color || "#33334a") + ";color:#eee;cursor:pointer;font-size:12px");
-    b.addEventListener("click", function () { try { fn(); } catch (e) { result.textContent = "ERROR " + String(e && e.message || e); } });
-    return b;
-  }
-  function dump(o) { result.textContent = typeof o === "string" ? o : JSON.stringify(o, null, 1); }
-  function refresh() {
-    var info = w.stChatu8VarsDebug.info();
-    var lh = info.llmHook;
-    var lhText = lh ? ("调用 " + lh.calls + " 次（" + JSON.stringify(lh.byKind) + "） 写入 " + lh.writes + " 次 · 无变量块 " + lh.noBlock + " 次 · 解析失败 " + lh.parseFail + " 次" + (lh.last ? " · 最近: " + lh.last.kind + " ok=" + lh.last.ok + " wrote=" + lh.last.wrote + " 字段=" + lh.last.field + " 楼层=" + lh.last.floor + (lh.last.error ? " 错误=" + lh.last.error : "") : "")) : "(还没调用过)";
-    status.textContent = "版本 " + info.varsVersion + " · 后端 " + info.backend + " · 楼层 " + info.messageId + " · 存储=" + (info.floorHasStore ? "有" : "无(继承)") + " · 顶层键=" + JSON.stringify(info.storeKeys) + " · 开关=" + (info.enabled ? "开" : "关") + "\nLLM 钩子: " + lhText + "\n日志:\n" + info.logTail.slice(-4).join("\n");
-    return info;
-  }
-
-  var bar1 = doc.createElement("div");
-  bar1.appendChild(mkBtn("刷新状态", function () { refresh(); dump("已刷新"); }));
-  bar1.appendChild(mkBtn("读取当前楼层变量", function () {
-    var r = w.stChatu8VarsDebug.read();
-    store.value = JSON.stringify(r.store || {}, null, 1);
-    dump({ id: r.id, source: r.source, exact: r.exact, rawNamespaceKeys: r.rawTable ? Object.keys(r.rawTable) : null, error: r.error });
-  }));
-  bar1.appendChild(mkBtn("读全部楼层", function () { dump(w.stChatu8VarsDebug.readAll()); }));
-  bar1.appendChild(mkBtn("重置钩子统计", function () { w.__stChatu8VarsLlmStats = { calls: 0, byKind: {}, writes: 0, noBlock: 0, parseFail: 0, last: null }; refresh(); dump("统计已重置"); }));
-  var bar2 = doc.createElement("div");
-  bar2.appendChild(mkBtn("合并写入(上面文本框)", function () { dump(w.stChatu8VarsDebug.merge(store.value)); }, "#2f4a2f"));
-  bar2.appendChild(mkBtn("覆盖写入", function () { dump(w.stChatu8VarsDebug.write(store.value, null, "replace")); }, "#4a3a2f"));
-  bar2.appendChild(mkBtn("清空本楼层", function () { dump(w.stChatu8VarsDebug.clear()); }, "#4a2f2f"));
-  var bar3 = doc.createElement("div");
-  bar3.appendChild(mkBtn("解析预览(只读不写)", function () { dump(w.stChatu8VarsDebug.analyze(llm.value)); }));
-  bar3.appendChild(mkBtn("看激活变量视图(用输入框文字当触发文本)", function () { dump(String(w.stChatu8Vars.viewText(llm.value))); }));
-  bar3.appendChild(mkBtn("按真实流程解析并写入", function () { dump(w.stChatu8VarsDebug.simulate(llm.value)); }, "#2f3f5a"));
-
-  panel.appendChild(doc.createTextNode("变量调试 · 楼层 = 当前聊天最后一楼"));
-  panel.appendChild(status);
-  panel.appendChild(bar1);
-  panel.appendChild(bar2);
-  panel.appendChild(store);
-  panel.appendChild(doc.createTextNode("模型原文（粘贴后点下面两个按钮）"));
-  panel.appendChild(llm);
-  panel.appendChild(bar3);
-  panel.appendChild(result);
-  doc.body.appendChild(btn);
-  doc.body.appendChild(panel);
-  btn.addEventListener("click", function () { panel.style.display = (panel.style.display === "none") ? "block" : "none"; if (panel.style.display === "block") refresh(); });
-  return true;
-}
-
-// ---- 对外调试接口：window.stChatu8VarsDebug ----
+// ---- 对外调试接口：window.stChatu8VarsDebug（只有控制台函数，不往页面里塞任何悬浮窗）----
 window.stChatu8VarsDebug = {
-  version: "1.0.0",
-  show: function () { return mountVarsDebugPanel(); },
+  version: "1.1.0",
   info: function () { return __stDbgInfo(); },
+  floor: function (id) { return __stDbgFloor(__stDbgSys(), undefined); },
   read: function (id) { return __stDbgRead(id); },
   readAll: function () { return __stDbgReadAll(); },
   analyze: function (text) { return __stDbgAnalyze(text); },
@@ -1282,7 +1329,5 @@ window.stChatu8VarsDebug = {
   },
   log: function (n) { return __stDbgLog(n); }
 };
-
-if (typeof document !== "undefined" && document && document.body) setTimeout(function () { mountVarsDebugPanel(); }, 2500);
 
 })();
