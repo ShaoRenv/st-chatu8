@@ -385,8 +385,7 @@ function expandRefGroup(root, baseSegs, inner, ctx) {
   // 第 1 项解析出来之后，梯子换成它的「真实路径」（含它自己），后面的项就能相对它写
   let ladder = groupLadder(splitPath(firstTake), baseSegs);
   let firstDone = false;
-  const takes = [];
-  const removals = [];
+  const takes = []; // 已经取到的片段（按书写顺序）
   let anyHit = false;
   for (const it of list) {
     const minus = it.charAt(0) === "-";
@@ -399,7 +398,8 @@ function expandRefGroup(root, baseSegs, inner, ctx) {
       if (hit.value !== undefined && hit.segs && hit.segs.length) ladder = groupLadder(hit.segs, baseSegs);
     }
     if (hit.value === undefined) {
-      if (minus) removals.push(body.toLowerCase());
+      // 减项：认不出路径就当字面 tag 减（只减它前面已经取到的）
+      if (minus) pruneTakes(takes, [body.toLowerCase()]);
       else if (!isPathLike(body)) takes.push(body); // 字面 tag 留着；写错的路径丢掉
       continue;
     }
@@ -414,13 +414,20 @@ function expandRefGroup(root, baseSegs, inner, ctx) {
     }
     const txt = project(root, hitBase, hit.value, pc);
     if (minus) {
-      for (const piece of String(txt).split(",").map((x) => x.trim()).filter(Boolean)) removals.push(piece.toLowerCase());
+      // 左到右：减项只作用于它前面取到的内容，所以「先减旧的、再加新的」加得回来
+      pruneTakes(takes, String(txt).split(",").map((x) => x.trim()).filter(Boolean).map((x) => x.toLowerCase()));
     } else if (txt) takes.push(txt);
   }
   if (!anyHit) return null;
-  let out = takes.join(", ");
-  if (removals.length) out = out.split(",").map((x) => x.trim()).filter((x) => x && removals.indexOf(x.toLowerCase()) < 0).join(", ");
-  return out;
+  return takes.join(", ");
+}
+
+// 把 takes 里命中 removals（小写比较）的 tag 去掉
+function pruneTakes(takes, removals) {
+  if (!removals || !removals.length || !takes.length) return;
+  for (let i = 0; i < takes.length; i++) {
+    takes[i] = String(takes[i]).split(",").map((x) => x.trim()).filter((x) => x && removals.indexOf(x.toLowerCase()) < 0).join(", ");
+  }
 }
 
 // 展开一段文本里的 $...$（路径形态取存储，JSON 形态留给预设管线）
@@ -740,8 +747,14 @@ function stripFence(s) {
 // 候选片段里的噪音：代码围栏、"json" 字样（模型把格式说明一起吐出来了）、残留的复述开标签
 function stripJsonLabel(s) {
   let t = stripFence(s);
-  t = t.replace(/^json\s*/i, "");
-  t = t.replace(/^(?:<" + UPDATE_TAG + ">)+\s*/i, "");
+  const reTag = new RegExp("^(?:<" + UPDATE_TAG + ">)+\\s*", "i");
+  const reJson = /^json\s*/i;
+  // 模型可能复述成 <变量更新>json<变量更新>{...}：标签和 json 字样交替出现，反复剥几轮
+  for (let i = 0; i < 4; i++) {
+    const before = t;
+    t = t.replace(reTag, "").replace(reJson, "");
+    if (t === before) break;
+  }
   return t.trim();
 }
 
@@ -980,7 +993,7 @@ function __stFindVarBox(obj, depth, path) {
 }
 
 window.stChatu8Vars = {
-  version: "1.2.0",
+  version: "1.2.1",
 
   // 生图 LLM 输出：摘掉 <变量更新> 块并写入该楼层，返回摘干净后的提示词
   // id 不给 = 写当前楼层（正在处理的那一楼）
