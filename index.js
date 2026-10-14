@@ -21,7 +21,7 @@ import { extension_settings } from "../../../extensions.js";
 import { saveSettingsDebounced as saveSettingsDebounced3 } from "../../../../script.js";
 import { extension_settings as extension_settings2 } from "../../../extensions.js";
 import { extension_settings as extension_settings3 } from "../../../extensions.js";
-import { eventSource } from "../../../../script.js";
+import { eventSource, substituteParams } from "../../../../script.js";
 import { extension_settings as extension_settings4 } from "../../../extensions.js";
 import { saveSettingsDebounced as saveSettingsDebounced4 } from "../../../../script.js";
 import { extension_settings as extension_settings5 } from "../../../extensions.js";
@@ -2480,6 +2480,8 @@ var init_config = __esm({
       sdUrl: "http://localhost:7860",
       st_chatu8_sd_auth: "",
       comfyuiUrl: "http://localhost:8188",
+      comfyui_max_concurrency: 10,
+      comfyui_timeout: 1800,
       // RunningHub 配置
       runninghub_apiKey: "",
       runninghub_workflowId: "",
@@ -2734,6 +2736,7 @@ var init_config = __esm({
       editWorker: editwk,
       novelaimode: "nai-diffusion-4-5-full",
       novelai_straight_alpha: false,
+      novelai_v5_effort: "high",
       novelaisite: "\u5B98\u7F51",
       novelaiOtherSite: "http://localhost:9696/get-new-token",
       enableCloudQueue: "false",
@@ -3060,8 +3063,6 @@ var init_config = __esm({
       jiuguanchucun: "false",
       vibeJiuguanchucun: "true",
       convertToJpegStorage: "false",
-      compressBoostStorage: "false",
-      compressBoostLevel: "balanced",
       jiuguanStorage: {},
       banana: {
         apiKey: "123456",
@@ -3180,10 +3181,12 @@ var init_config = __esm({
           novelai_width: "1024",
           novelai_height: "1024",
           novelai_steps: "28",
-          novelai_seed: "0"
+          novelai_seed: "0",
+          novelai_model_configs: {}
         }
       },
       novelai_profile_id: "\u9ED8\u8BA4",
+      novelai_model_configs: {},
       // ComfyUI 配置档案
       comfyui_profiles: {
         "\u9ED8\u8BA4": {
@@ -3950,6 +3953,45 @@ var init_settingsSaveScheduler = __esm({
 // utils/database.js
 
 
+function formatToMimeType(format, isVideo = false) {
+  if (!format || typeof format !== "string") {
+    return isVideo ? "video/mp4" : "image/png";
+  }
+  const fmt = format.toLowerCase();
+  if (fmt.includes("webm")) return "video/webm";
+  if (fmt.includes("mp4") || fmt.includes("h264")) return "video/mp4";
+  if (fmt.includes("jpeg") || fmt.includes("jpg")) return "image/jpeg";
+  if (fmt.includes("png")) return "image/png";
+  if (fmt.includes("webp")) return "image/webp";
+  if (fmt.includes("gif")) return "image/gif";
+  if (fmt.startsWith("video/")) return fmt;
+  if (fmt.startsWith("image/")) return fmt;
+  return isVideo ? "video/mp4" : "image/png";
+}
+function detectMimeFromBuffer(buffer, isVideo = false) {
+  if (!buffer) return isVideo ? "video/mp4" : "image/png";
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  if (bytes.length < 4) return isVideo ? "video/mp4" : "image/png";
+  if (bytes[0] === 26 && bytes[1] === 69 && bytes[2] === 223 && bytes[3] === 163) {
+    return "video/webm";
+  }
+  if (bytes.length >= 8 && bytes[4] === 102 && bytes[5] === 116 && bytes[6] === 121 && bytes[7] === 112) {
+    return "video/mp4";
+  }
+  if (bytes.length >= 8 && bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71 && bytes[4] === 13 && bytes[5] === 10 && bytes[6] === 26 && bytes[7] === 10) {
+    return "image/png";
+  }
+  if (bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) {
+    return "image/jpeg";
+  }
+  if (bytes[0] === 71 && bytes[1] === 73 && bytes[2] === 70) {
+    return "image/gif";
+  }
+  if (bytes.length >= 12 && bytes[0] === 82 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 70 && bytes[8] === 87 && bytes[9] === 69 && bytes[10] === 66 && bytes[11] === 80) {
+    return "image/webp";
+  }
+  return isVideo ? "video/mp4" : "image/png";
+}
 function blobToBase64(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -4571,254 +4613,13 @@ async function getItemImg(tag, index = null) {
   } else if (imageEntry.source === "db" && imageEntry.uuid) {
     const imageData = await storeReadOnly(imageEntry.uuid);
     if (imageData && imageData.data) {
-      const mimeType = isVideo ? "video/mp4" : "image/png";
+      const mimeType = imageEntry.format ? formatToMimeType(imageEntry.format, isVideo) : detectMimeFromBuffer(imageData.data, isVideo);
       const mediaBase64 = `data:${mimeType};base64,` + arrayBufferToBase64(imageData.data);
       return [mediaBase64, change, finalIndex, isVideo, originalUrl, video, activeMode];
     }
   }
   return [false, false, false, false, "", "", ""];
 }
-// ===== chatu8 personal: HTTP 429 自动重发（自用，不进上游补丁集）=====
-// 配置（随时可改、立即生效；也可持久化到 localStorage['chatu8_retry429']）：
-//   window.__chatu8Retry = { enabled:true, delayMs:4000, maxRetries:5,
-//                            backoff:"exponential", factor:2, maxDelayMs:60000,
-//                            jitter:0.2, respectRetryAfter:true, retryStatuses:[429] }
-//   持久化调整：__chatu8RetrySet({ delayMs: 8000 })
-//   查看统计：  __chatu8RetryStats()      查看当前配置：__chatu8RetryGet()
-(function () {
-  var STORE_KEY = "chatu8_retry429";
-  var DEFAULTS = {
-    enabled: true,
-    delayMs: 4000,
-    maxRetries: 5,
-    backoff: "exponential",
-    factor: 2,
-    maxDelayMs: 60000,
-    jitter: 0.2,
-    respectRetryAfter: true,
-    retryStatuses: [429],
-    log: true
-  };
-  var stats = { attempts: 0, retries: 0, exhausted: 0, lastStatus: 0, lastUrl: "", lastWaitMs: 0, lastRetryAt: 0 };
-  function readStored() {
-    try {
-      var raw = window.localStorage.getItem(STORE_KEY);
-      return raw ? JSON.parse(raw) : {};
-    } catch (e) {
-      return {};
-    }
-  }
-  function cfg() {
-    var out = {};
-    var k;
-    for (k in DEFAULTS) out[k] = DEFAULTS[k];
-    var src = readStored();
-    for (k in src) if (src[k] !== undefined) out[k] = src[k];
-    try {
-      var w = window.__chatu8Retry;
-      if (w) for (k in w) if (w[k] !== undefined) out[k] = w[k];
-    } catch (e) {
-    }
-    return out;
-  }
-  function sleep(ms, signal) {
-    return new Promise(function (resolve, reject) {
-      var t = setTimeout(resolve, ms);
-      if (signal && signal.addEventListener) {
-        signal.addEventListener("abort", function () {
-          clearTimeout(t);
-          reject(new Error("chatu8-retry: aborted"));
-        }, { once: true });
-      }
-    });
-  }
-  function targetMatch(url) {
-    try {
-      return /image\.novelai\.net\/ai\/(generate-image|encode-vibe)/.test(url) ||
-        /\/api\/novelai\/generate-image/.test(url);
-    } catch (e) {
-      return false;
-    }
-  }
-  function delayFor(c, attempt, res) {
-    var base = Number(c.delayMs) || 4000;
-    var d = c.backoff === "exponential" ? base * Math.pow(Number(c.factor) || 2, attempt) : base;
-    var cap = Number(c.maxDelayMs) || 0;
-    if (cap > 0) d = Math.min(d, cap);
-    if (c.respectRetryAfter && res && res.headers && res.headers.get) {
-      var ra = parseInt(res.headers.get("retry-after") || "", 10);
-      if (!isNaN(ra) && ra > 0) {
-        var raMs = ra * 1000;
-        d = cap > 0 ? Math.max(d, Math.min(raMs, cap)) : Math.max(d, raMs);
-      }
-    }
-    var j = Number(c.jitter) || 0;
-    if (j > 0) d = Math.round(d * (1 + (Math.random() * 2 - 1) * j));
-    return Math.max(0, d);
-  }
-  function install() {
-    if (window.__chatu8RetryInstalled) return false;
-    var orig = window.fetch;
-    if (typeof orig !== "function") return false;
-    window.__chatu8RetryInstalled = true;
-    window.fetch = function (input, init) {
-      var url = "";
-      try {
-        url = typeof input === "string" ? input : (input && input.url) || "";
-      } catch (e) {
-      }
-      var c = cfg();
-      if (!c.enabled || !targetMatch(url)) return orig.apply(this, arguments);
-      if (init && init.body && typeof ReadableStream !== "undefined" && init.body instanceof ReadableStream) {
-        return orig.apply(this, arguments);
-      }
-      var attempt = 0;
-      var ctx = this;
-      var args = arguments;
-      function once() {
-        stats.attempts++;
-        stats.lastUrl = url;
-        return orig.apply(ctx, args).then(function (res) {
-          stats.lastStatus = res.status;
-          var list = c.retryStatuses || [429];
-          if (list.indexOf(res.status) === -1) return res;
-          if (attempt >= (Number(c.maxRetries) || 0)) {
-            stats.exhausted++;
-            if (c.log) console.warn("[chatu8-retry] HTTP " + res.status + " 已重试 " + attempt + " 次，放弃：" + url);
-            return res;
-          }
-          var waitMs = delayFor(c, attempt, res);
-          attempt++;
-          stats.retries++;
-          stats.lastWaitMs = waitMs;
-          stats.lastRetryAt = Date.now();
-          if (c.log) console.warn("[chatu8-retry] HTTP " + res.status + " → " + waitMs + "ms 后第 " + attempt + "/" + c.maxRetries + " 次重发：" + url);
-          updateStatus();
-          return sleep(waitMs, init && init.signal).then(once);
-        });
-      }
-      return once();
-    };
-    window.__chatu8RetryStats = function () {
-      return JSON.parse(JSON.stringify(stats));
-    };
-    window.__chatu8RetryGet = function () {
-      return cfg();
-    };
-    window.__chatu8RetrySet = function (patch) {
-      var cur = readStored();
-      var k;
-      for (k in patch || {}) cur[k] = patch[k];
-      try {
-        window.localStorage.setItem(STORE_KEY, JSON.stringify(cur));
-      } catch (e) {
-      }
-      var next = cfg();
-      console.info("[chatu8-retry] 配置已更新:", next);
-      return next;
-    };
-    console.info("[chatu8-retry] HTTP 429 自动重发已启用：基础延迟 " + cfg().delayMs + "ms、" + cfg().backoff + "、最多 " + cfg().maxRetries + " 次。");
-    console.info("  调整：__chatu8RetrySet({ delayMs: 8000 }) ｜ 临时：window.__chatu8Retry = { delayMs: 1000 } ｜ 统计：__chatu8RetryStats()");
-    return true;
-  }
-  function uiGet(id) {
-    try {
-      return document.getElementById(id);
-    } catch (e) {
-      return null;
-    }
-  }
-  function updateStatus() {
-    var el = uiGet("ch-429-status");
-    if (!el) return;
-    var s = stats;
-    var next = "已重发 " + s.retries + " 次 / 发起 " + s.attempts + " 次请求" +
-      (s.lastWaitMs ? "（上次等待 " + s.lastWaitMs + "ms）" : "");
-    // 只在文本真的变化时才写：写同样的 textContent 也会产生 childList 变更，
-    // 而我们的 MutationObserver 正盯着这个子树，会被自己的写入反复唤醒（死循环）。
-    if (el.textContent !== next) el.textContent = next;
-  }
-  function syncUi() {
-    var c = cfg();
-    var en = uiGet("ch-429-enabled");
-    if (en) en.checked = c.enabled !== false;
-    var d = uiGet("ch-429-delay");
-    if (d) d.value = c.delayMs;
-    var m = uiGet("ch-429-max");
-    if (m) m.value = c.maxRetries;
-    var b = uiGet("ch-429-backoff");
-    if (b) b.value = c.backoff === "fixed" ? "fixed" : "exponential";
-    var ra = uiGet("ch-429-retryafter");
-    if (ra) ra.checked = c.respectRetryAfter !== false;
-    var sec = uiGet("ch-429-retry-section");
-    if (sec && !uiGet("ch-429-status")) {
-      var small = document.createElement("small");
-      small.id = "ch-429-status";
-      small.style.opacity = "0.7";
-      sec.appendChild(small);
-    }
-    updateStatus();
-  }
-  function readUi() {
-    var patch = {};
-    var en = uiGet("ch-429-enabled");
-    if (en) patch.enabled = !!en.checked;
-    var d = uiGet("ch-429-delay");
-    if (d) {
-      var dv = parseInt(d.value, 10);
-      if (!isNaN(dv) && dv >= 0) patch.delayMs = dv;
-    }
-    var m = uiGet("ch-429-max");
-    if (m) {
-      var mv = parseInt(m.value, 10);
-      if (!isNaN(mv) && mv >= 0) patch.maxRetries = mv;
-    }
-    var b = uiGet("ch-429-backoff");
-    if (b && b.value) patch.backoff = b.value;
-    var ra = uiGet("ch-429-retryafter");
-    if (ra) patch.respectRetryAfter = !!ra.checked;
-    return patch;
-  }
-  function bindUi() {
-    if (window.__chatu8RetryUiBound) return;
-    window.__chatu8RetryUiBound = true;
-    var handler = function (ev) {
-      var t = ev.target;
-      if (!t || !t.id || String(t.id).indexOf("ch-429-") !== 0) return;
-      var patch = readUi();
-      window.__chatu8RetrySet(patch);
-      updateStatus();
-    };
-    document.addEventListener("change", handler, true);
-    document.addEventListener("input", handler, true);
-    try {
-      var scheduled = false;
-      var syncSoon = function () {
-        scheduled = false;
-        if (uiGet("ch-429-delay")) syncUi();
-      };
-      // 设置面板是这个插件点开标签页时才抓取注入的，所以必须监听 DOM 变化。
-      // 但回调里同步调用 syncUi() 会与 updateStatus() 的写入形成同步微任务死循环，
-      // 因此这里把同步合并成一次异步任务（每轮变更最多执行一次），双保险。
-      var mo = new MutationObserver(function () {
-        if (scheduled) return;
-        scheduled = true;
-        setTimeout(syncSoon, 0);
-      });
-      mo.observe(document.body || document.documentElement, { childList: true, subtree: true });
-    } catch (e) {
-    }
-    syncUi();
-  }
-  install();
-  try {
-    if (typeof document !== "undefined") {
-      if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bindUi);
-      else bindUi();
-    }
-  } catch (e) {
-  }
-})();
 async function setItemImg(tag, imgBase64, options = { format: "png" }) {
   if (isTailEnabled() && options && options.__tailRun !== true) {
     const carry = { hasTail: false, imagePath: null };
@@ -4995,6 +4796,7 @@ async function setItemImg(tag, imgBase64, options = { format: "png" }) {
         thumbnail_path: thumbnailPath,
         date: newDate,
         isVideo,
+        format: uploadFormat || format || (isVideo ? "mp4" : "png"),
         originalUrl: originalUrl || "",
         size: base64ByteLength(base64Data),
         thumbnail_size: thumbnailSize,
@@ -5113,6 +4915,7 @@ async function setItemImg(tag, imgBase64, options = { format: "png" }) {
       thumbnail_uuid: thumbnailUUID,
       date: newDate,
       isVideo,
+      format: format || (isVideo ? "mp4" : "png"),
       originalUrl: originalUrl || "",
       size: imageBuffer.byteLength,
       thumbnail_size: thumbnailSize,
@@ -5168,12 +4971,75 @@ async function setItemImg(tag, imgBase64, options = { format: "png" }) {
     return "indexeddb_saved";
   }
 }
+function awaitIdbRequest(request, transaction = null, timeoutMs = 3e4) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer = null;
+    const cleanup = () => {
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        if (settled) return;
+        cleanup();
+        try {
+          if (transaction && typeof transaction.abort === "function") {
+            transaction.abort();
+          }
+        } catch (_) {
+        }
+        reject(new Error(`[IDB] \u64CD\u4F5C\u8D85\u65F6\u7194\u65AD (${timeoutMs}ms)`));
+      }, timeoutMs);
+    }
+    request.onsuccess = (event) => {
+      if (settled) return;
+      cleanup();
+      resolve(event.target.result);
+    };
+    request.onerror = (event) => {
+      if (settled) return;
+      cleanup();
+      reject(event.target.error || new Error("[IDB] Request \u9519\u8BEF"));
+    };
+    if (transaction) {
+      transaction.onabort = (event) => {
+        if (settled) return;
+        cleanup();
+        const err = transaction.error || event && event.target && event.target.error || new Error("[IDB] Transaction \u4E8B\u52A1\u88AB\u4E2D\u6B62 (onabort)");
+        reject(err);
+      };
+      transaction.onerror = (event) => {
+        if (settled) return;
+        cleanup();
+        reject(transaction.error || event && event.target && event.target.error || new Error("[IDB] Transaction \u9519\u8BEF"));
+      };
+    }
+  });
+}
 async function openDB() {
   if (db) {
     return db;
   }
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const openTimeout = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        reject(new Error("[DB] \u6253\u5F00\u6570\u636E\u5E93\u8D85\u65F6 (30000ms)\uFF0C\u53EF\u80FD\u88AB\u540E\u53F0\u5347\u7EA7\u6216\u8FDE\u63A5\u6B7B\u9501\u963B\u6B62"));
+      }
+    }, 3e4);
+    const cleanupTimer = () => {
+      settled = true;
+      clearTimeout(openTimeout);
+    };
     const request = indexedDB.open(dbName, dbVersion);
+    request.onblocked = (event) => {
+      console.warn("[DB] \u6570\u636E\u5E93\u6253\u5F00\u88AB\u963B\u585E (onblocked)\uFF0C\u53EF\u80FD\u5176\u4ED6\u9875\u9762\u6B63\u5728\u4F7F\u7528\u65E7\u7248\u8FDE\u63A5\uFF0C\u7B49\u5F85\u4E2D...", event);
+    };
     request.onupgradeneeded = (event) => {
       const tempDb = event.target.result;
       console.log(`[DB] \u6570\u636E\u5E93\u5347\u7EA7: \u65E7\u7248\u672C ${event.oldVersion} -> \u65B0\u7248\u672C ${event.newVersion}`);
@@ -5231,10 +5097,14 @@ async function openDB() {
       }
     };
     request.onerror = (event) => {
+      if (settled) return;
+      cleanupTimer();
       console.error("[DB] \u6253\u5F00\u6570\u636E\u5E93\u5931\u8D25:", event.target.error);
       reject(event.target.error);
     };
     request.onsuccess = (event) => {
+      if (settled) return;
+      cleanupTimer();
       db = event.target.result;
       console.log(`[DB] \u6570\u636E\u5E93 '${dbName}' v${dbVersion} \u6253\u5F00\u6210\u529F\u3002`);
       resolve(db);
@@ -5245,11 +5115,8 @@ async function storeReadWrite(data) {
   const dbInstance = db || await openDB();
   const transaction = dbInstance.transaction([objectStoreName], "readwrite");
   const objectStore = transaction.objectStore(objectStoreName);
-  return new Promise((resolve, reject) => {
-    const request = objectStore.put(data);
-    request.onsuccess = () => resolve();
-    request.onerror = (event) => reject(event.target.error);
-  });
+  const request = objectStore.put(data);
+  return await awaitIdbRequest(request, transaction, 6e4);
 }
 async function getManualTags() {
   const db2 = await openDB();
@@ -5257,10 +5124,7 @@ async function getManualTags() {
   const store = transaction.objectStore("tags");
   const index = store.index("fileName");
   const request = index.getAll(IDBKeyRange.only("manual"));
-  return new Promise((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = (event) => reject(event.target.error);
-  });
+  return await awaitIdbRequest(request, transaction, 3e4);
 }
 async function deleteTagByName(tagName) {
   const db2 = await openDB();
@@ -5284,6 +5148,7 @@ async function deleteTagByName(tagName) {
       }
     };
     request.onerror = (event) => reject(event.target.error);
+    transaction.onabort = () => reject(new Error("[IDB] \u5220\u9664\u6807\u7B7E\u4E8B\u52A1\u88AB\u4E2D\u6B62"));
   });
   return new Promise((resolve, reject) => {
     transaction.oncomplete = () => {
@@ -5294,27 +5159,22 @@ async function deleteTagByName(tagName) {
       }
     };
     transaction.onerror = (event) => reject(event.target.error);
+    transaction.onabort = () => reject(new Error("[IDB] \u5220\u9664\u6807\u7B7E\u4E8B\u52A1\u88AB\u4E2D\u6B62"));
   });
 }
 async function storeReadOnly(id) {
-  const db2 = await openDB();
-  const transaction = db2.transaction([objectStoreName], "readonly");
+  const dbInstance = db || await openDB();
+  const transaction = dbInstance.transaction([objectStoreName], "readonly");
   const objectStore = transaction.objectStore(objectStoreName);
-  return new Promise((resolve, reject) => {
-    const request = objectStore.get(id);
-    request.onsuccess = (event) => resolve(event.target.result);
-    request.onerror = (event) => reject(event.target.error);
-  });
+  const request = objectStore.get(id);
+  return await awaitIdbRequest(request, transaction, 3e4);
 }
 async function storeDelete(id) {
   const dbInstance = db || await openDB();
   const transaction = dbInstance.transaction([objectStoreName], "readwrite");
   const objectStore = transaction.objectStore(objectStoreName);
-  return new Promise((resolve, reject) => {
-    const request = objectStore.delete(id);
-    request.onsuccess = () => resolve();
-    request.onerror = (event) => reject(event.target.error);
-  });
+  const request = objectStore.delete(id);
+  return await awaitIdbRequest(request, transaction, 3e4);
 }
 function __chatu8T03Enabled() {
   if (__chatu8T03EnabledMemo === void 0) {
@@ -5488,7 +5348,9 @@ async function getItemBlob(tag, index = null) {
     const uuid = imageEntry.uuid;
     const imageData = await storeReadOnly(uuid);
     if (imageData && imageData.data) {
-      return new Blob([imageData.data], { type: "image/png" });
+      const isVideo = imageEntry.isVideo || false;
+      const mimeType = imageEntry.format ? formatToMimeType(imageEntry.format, isVideo) : detectMimeFromBuffer(imageData.data, isVideo);
+      return new Blob([imageData.data], { type: mimeType });
     }
   }
   return null;
@@ -5745,7 +5607,9 @@ async function getAllImages(md5ORtag) {
     const imagePromises = dbEntry.images.map(async (imageEntry) => {
       const imageData = await storeReadOnly(imageEntry.uuid);
       if (imageData && imageData.data) {
-        return "data:image/png;base64," + arrayBufferToBase64(imageData.data);
+        const isVideo = imageEntry.isVideo || false;
+        const mimeType = imageEntry.format ? formatToMimeType(imageEntry.format, isVideo) : detectMimeFromBuffer(imageData.data, isVideo);
+        return `data:${mimeType};base64,` + arrayBufferToBase64(imageData.data);
       }
       return null;
     });
@@ -5797,14 +5661,16 @@ async function getAllImageBlobs(md5ORtag) {
 async function getImageByUUID(uuid) {
   const imageData = await storeReadOnly(uuid);
   if (imageData && imageData.data) {
-    return "data:image/png;base64," + arrayBufferToBase64(imageData.data);
+    const mimeType = detectMimeFromBuffer(imageData.data);
+    return `data:${mimeType};base64,` + arrayBufferToBase64(imageData.data);
   }
   return null;
 }
 async function getImageBlobByUUID(uuid) {
   const imageData = await storeReadOnly(uuid);
   if (imageData && imageData.data) {
-    return new Blob([imageData.data], { type: "image/png" });
+    const mimeType = detectMimeFromBuffer(imageData.data);
+    return new Blob([imageData.data], { type: mimeType });
   }
   const serverStorage = extension_settings[extensionName].jiuguanStorage || {};
   for (const md5 in serverStorage) {
@@ -9171,49 +9037,45 @@ function deduplicateTags(tagString) {
   }
   return result;
 }
+function getSortedCharacterIds(promptData) {
+  if (!promptData || typeof promptData !== "object") return [];
+  const ids = Object.keys(promptData).map((k) => {
+    const m = k.match(/^Character\s+(\d+)\s+Prompt$/i);
+    return m ? parseInt(m[1], 10) : null;
+  }).filter((id) => id !== null && promptData[`Character ${id} Prompt`]);
+  return Array.from(new Set(ids)).sort((a, b) => a - b);
+}
 function parsePromptStringWithCoordinates(promptString) {
   addLog(`\u89E3\u6790\u573A\u666F\u6784\u56FE\u5B57\u7B26\u4E32: ${promptString}`);
   const result = {
-    "Scene Composition": "",
-    "Character 1 Prompt": "",
-    "Character 1 UC": "",
-    "Character 2 Prompt": "",
-    "Character 2 UC": "",
-    "Character 3 Prompt": "",
-    "Character 3 UC": "",
-    "Character 4 Prompt": "",
-    "Character 4 UC": "",
-    "Character 1 centers": "",
-    "Character 2 centers": "",
-    "Character 3 centers": "",
-    "Character 4 centers": "",
-    "Character 1 coordinates": {},
-    "Character 2 coordinates": {},
-    "Character 3 coordinates": {},
-    "Character 4 coordinates": {}
+    "Scene Composition": ""
   };
-  const sceneMatch = promptString.match(/Scene Composition:([^;]+);/);
+  if (!promptString || typeof promptString !== "string") {
+    return result;
+  }
+  const sceneMatch = promptString.match(/Scene Composition:([\s\S]*?);/i);
   if (sceneMatch) {
     result["Scene Composition"] = deduplicateTags(sceneMatch[1].trim());
   }
-  for (let i = 1; i <= 4; i++) {
-    const promptMatch = promptString.match(new RegExp(`Character ${i} Prompt:(.*?)(?:\\s*\\|\\s*centers:(\\{[^}]+\\}|[^;\\s]+))?\\s*;`));
-    if (promptMatch) {
-      result[`Character ${i} Prompt`] = deduplicateTags(promptMatch[1].trim());
-      if (promptMatch[2]) {
-        result[`Character ${i} centers`] = promptMatch[2].trim();
-        result[`Character ${i} coordinates`] = centersToCoordinates(promptMatch[2].trim());
-      } else {
-        result[`Character ${i} coordinates`] = {
-          // x:  0.5,
-          // y: y2
-        };
-      }
+  const promptRegex = /Character\s+(\d+)\s+Prompt:([\s\S]*?)(?:\s*\|\s*centers:(\{[^}]+\}|[^;\s]+))?\s*;/gi;
+  let match;
+  while ((match = promptRegex.exec(promptString)) !== null) {
+    const charId = parseInt(match[1], 10);
+    const promptContent = match[2] ? deduplicateTags(match[2].trim()) : "";
+    result[`Character ${charId} Prompt`] = promptContent;
+    if (match[3]) {
+      const centersStr = match[3].trim();
+      result[`Character ${charId} centers`] = centersStr;
+      result[`Character ${charId} coordinates`] = centersToCoordinates(centersStr);
+    } else if (!result[`Character ${charId} coordinates`]) {
+      result[`Character ${charId} coordinates`] = {};
     }
-    const ucMatch = promptString.match(new RegExp(`Character ${i} UC:([^;]+);`));
-    if (ucMatch) {
-      result[`Character ${i} UC`] = ucMatch[1].trim();
-    }
+  }
+  const ucRegex = /Character\s+(\d+)\s+UC:([\s\S]*?);/gi;
+  let ucMatch;
+  while ((ucMatch = ucRegex.exec(promptString)) !== null) {
+    const charId = parseInt(ucMatch[1], 10);
+    result[`Character ${charId} UC`] = ucMatch[2] ? ucMatch[2].trim() : "";
   }
   addLog(`\u89E3\u6790\u7ED3\u679C: ${JSON.stringify(result, null, 2)}`);
   return result;
@@ -9274,6 +9136,15 @@ function cancelSerialLock(taskId) {
 }
 function resetSerialLock() {
   serialLock.reset();
+}
+function acquireComfyUILock(taskId, signal = null) {
+  return comfyuiConcurrencyLock.acquire(taskId, signal);
+}
+function releaseComfyUILock(taskId) {
+  comfyuiConcurrencyLock.release(taskId);
+}
+function cancelComfyUILock(taskId) {
+  comfyuiConcurrencyLock.remove(taskId);
 }
 function addSmoothShakeEffect(imgElement) {
   if (getComputedStyle(imgElement).position === "static") {
@@ -10178,6 +10049,35 @@ async function fixMp4Faststart(blob) {
     return blob;
   }
   try {
+    if (blob.size && blob.size > 16) {
+      const headerBuf = await blob.slice(0, Math.min(8192, blob.size)).arrayBuffer();
+      const headerBytes = new Uint8Array(headerBuf);
+      const headerView = new DataView(headerBuf);
+      let hPos = 0;
+      let firstBoxType = "";
+      let secondBoxType = "";
+      if (hPos + 8 <= headerBytes.length) {
+        const b1Size = headerView.getUint32(hPos);
+        firstBoxType = String.fromCharCode(headerBytes[hPos + 4], headerBytes[hPos + 5], headerBytes[hPos + 6], headerBytes[hPos + 7]);
+        if (b1Size >= 8 && hPos + b1Size + 8 <= headerBytes.length) {
+          hPos += b1Size;
+          secondBoxType = String.fromCharCode(headerBytes[hPos + 4], headerBytes[hPos + 5], headerBytes[hPos + 6], headerBytes[hPos + 7]);
+        }
+      }
+      if (firstBoxType === "ftyp" && secondBoxType === "moov") {
+        let hasMp4aV1 = false;
+        for (let i = 0; i < headerBytes.length - 18; i++) {
+          if (headerBytes[i + 4] === 109 && headerBytes[i + 5] === 112 && headerBytes[i + 6] === 52 && headerBytes[i + 7] === 97) {
+            const v = headerView.getUint16(i + 16);
+            if (v === 1) hasMp4aV1 = true;
+            break;
+          }
+        }
+        if (!hasMp4aV1) {
+          return blob;
+        }
+      }
+    }
     const buffer = await blob.arrayBuffer();
     const bytes = new Uint8Array(buffer);
     const view = new DataView(buffer);
@@ -10189,8 +10089,7 @@ async function fixMp4Faststart(blob) {
       if (size === 0) {
         size = bytes.length - pos;
       }
-      if (size < 8) break;
-      boxes.push({ type, pos, size, data: bytes.slice(pos, pos + size) });
+      boxes.push({ type, pos, size, data: bytes.subarray(pos, pos + size) });
       pos += size;
     }
     const moovIdx = boxes.findIndex((b) => b.type === "moov");
@@ -10272,11 +10171,37 @@ async function safeDataUrlToBlob(dataUrl) {
   }
   return new Blob(parts, { type: mimeType });
 }
+function clearMacroSubstitutionCache() {
+  macroSubstitutionCache.clear();
+}
+function safeSubstituteParams(text) {
+  if (!text || typeof text !== "string") return "";
+  if (!text.includes("{{")) return text;
+  if (macroSubstitutionCache.has(text)) {
+    return macroSubstitutionCache.get(text);
+  }
+  let substituted = text;
+  try {
+    if (typeof substituteParams === "function") {
+      substituted = substituteParams(text);
+    }
+  } catch (e) {
+    console.warn("[Macro] \u5B8F\u5C55\u5F00\u6267\u884C\u5F02\u5E38\uFF0C\u56DE\u9000\u4F7F\u7528\u539F\u59CB\u6587\u672C:", e);
+    substituted = text;
+  }
+  if (macroSubstitutionCache.size >= MAX_MACRO_CACHE_ENTRIES) {
+    const firstKey = macroSubstitutionCache.keys().next().value;
+    macroSubstitutionCache.delete(firstKey);
+  }
+  macroSubstitutionCache.set(text, substituted);
+  return substituted;
+}
 function normalizePromptTag(tag) {
   if (!tag || typeof tag !== "string") return "";
-  return tag.trim().replaceAll("\r", "").replaceAll("\n", "").replaceAll("\u300A", "<").replaceAll("\u300B", ">").replace(/，/g, ",").replace(/；/g, ";").replace(/：/g, ":");
+  const substituted = safeSubstituteParams(tag);
+  return substituted.trim().replaceAll("\r", "").replaceAll("\n", "").replaceAll("\u300A", "<").replaceAll("\u300B", ">").replace(/，/g, ",").replace(/；/g, ";").replace(/：/g, ":");
 }
-var REFERENCE_PIXEL_COUNT, SIGMA_MAGIC_NUMBER, SIGMA_MAGIC_NUMBER_V4_5, LOG_RETENTION_MS, MAX_PERSISTED_LOG_SESSIONS, MAX_LOG_STORE_CHARS, LOG_ROLLING_TRIM_TARGET, logPersistenceStatePromise, logWriteQueue, _logInitialized, _pendingLogBuffer, _persistDebounceTimer, LOG_PERSIST_DEBOUNCE_MS, LOG_PERSIST_MAX_WAIT_MS, _persistFirstRequestTime, _expiredLogCleanupRunning, _expiredLogCleanupBudgetRemaining, SerialLockManager, serialLock, _logDomUpdateTimer, _logDomLastUpdate;
+var REFERENCE_PIXEL_COUNT, SIGMA_MAGIC_NUMBER, SIGMA_MAGIC_NUMBER_V4_5, LOG_RETENTION_MS, MAX_PERSISTED_LOG_SESSIONS, MAX_LOG_STORE_CHARS, LOG_ROLLING_TRIM_TARGET, logPersistenceStatePromise, logWriteQueue, _logInitialized, _pendingLogBuffer, _persistDebounceTimer, LOG_PERSIST_DEBOUNCE_MS, LOG_PERSIST_MAX_WAIT_MS, _persistFirstRequestTime, _expiredLogCleanupRunning, _expiredLogCleanupBudgetRemaining, SerialLockManager, serialLock, ComfyUIConcurrencyManager, comfyuiConcurrencyLock, _logDomUpdateTimer, _logDomLastUpdate, MAX_MACRO_CACHE_ENTRIES, macroSubstitutionCache;
 var init_utils = __esm({
   "utils/utils.js"() {
     init_config();
@@ -10350,9 +10275,10 @@ var init_utils = __esm({
        * @param {number} [intervalMs=0] 生图间隔时间（毫秒）
        */
       release(taskId, intervalMs = 0) {
-        if (this.activeTaskId === taskId) {
-          this.activeTaskId = null;
+        if (this.activeTaskId !== taskId) {
+          return;
         }
+        this.activeTaskId = null;
         const safeInterval = Math.max(0, parseInt(intervalMs, 10) || 0);
         if (this.coolingTimer) {
           clearTimeout(this.coolingTimer);
@@ -10414,8 +10340,119 @@ var init_utils = __esm({
       }
     };
     serialLock = new SerialLockManager();
+    ComfyUIConcurrencyManager = class {
+      constructor(maxConcurrency = 10) {
+        this.maxConcurrency = maxConcurrency;
+        this.runningTasks = /* @__PURE__ */ new Set();
+        this.queue = [];
+      }
+      setMaxConcurrency(limit) {
+        const num = parseInt(limit, 10);
+        if (Number.isFinite(num) && num >= 1 && num <= 10) {
+          this.maxConcurrency = num;
+          this._dispatchNext();
+        }
+      }
+      getMaxConcurrency() {
+        return this.maxConcurrency;
+      }
+      acquire(taskId, signal = null) {
+        return new Promise((resolve, reject) => {
+          if (signal?.aborted) {
+            const err = signal.reason instanceof Error ? signal.reason : signal.reason ? new Error(String(signal.reason)) : new Error("\u4EFB\u52A1\u5DF2\u53D6\u6D88");
+            reject(err);
+            return;
+          }
+          const queueItem = {
+            taskId,
+            resolve,
+            reject,
+            signal,
+            isAborted: false
+          };
+          if (signal) {
+            const abortHandler = () => {
+              queueItem.isAborted = true;
+              this.remove(taskId);
+              const reasonErr = signal.reason instanceof Error ? signal.reason : signal.reason ? new Error(String(signal.reason)) : new Error("\u4EFB\u52A1\u5DF2\u53D6\u6D88");
+              reject(reasonErr);
+            };
+            signal.addEventListener("abort", abortHandler, { once: true });
+          }
+          if (this.runningTasks.size < this.maxConcurrency && this.queue.length === 0) {
+            this.runningTasks.add(taskId);
+            this._syncGlobalXiancheng();
+            resolve();
+            return;
+          }
+          this.queue.push(queueItem);
+          this._syncGlobalXiancheng();
+        });
+      }
+      release(taskId) {
+        this.runningTasks.delete(taskId);
+        this._dispatchNext();
+        this._syncGlobalXiancheng();
+      }
+      remove(taskId) {
+        const index = this.queue.findIndex((item) => item.taskId === taskId);
+        if (index !== -1) {
+          this.queue.splice(index, 1);
+        }
+        if (this.runningTasks.has(taskId)) {
+          this.release(taskId);
+        } else {
+          this._syncGlobalXiancheng();
+        }
+      }
+      reset() {
+        while (this.queue.length > 0) {
+          const item = this.queue.shift();
+          try {
+            item.reject(new Error("ComfyUI \u4EFB\u52A1\u961F\u5217\u5DF2\u91CD\u7F6E"));
+          } catch (_) {
+          }
+        }
+        this.runningTasks.clear();
+        this._syncGlobalXiancheng();
+      }
+      _dispatchNext() {
+        while (this.runningTasks.size < this.maxConcurrency && this.queue.length > 0) {
+          const nextItem = this.queue.shift();
+          if (nextItem.isAborted || nextItem.signal && nextItem.signal.aborted) {
+            continue;
+          }
+          this.runningTasks.add(nextItem.taskId);
+          nextItem.resolve();
+          return;
+        }
+      }
+      _syncGlobalXiancheng() {
+        const hasAvailableSlot = this.runningTasks.size < this.maxConcurrency;
+        window.xiancheng = hasAvailableSlot;
+        if (hasAvailableSlot) {
+          window.dispatchEvent(new Event("xianchengReleased"));
+        }
+      }
+      getActiveCount() {
+        return this.runningTasks.size;
+      }
+      getQueueLength() {
+        return this.queue.length;
+      }
+    };
+    comfyuiConcurrencyLock = new ComfyUIConcurrencyManager(10);
     _logDomUpdateTimer = null;
     _logDomLastUpdate = 0;
+    MAX_MACRO_CACHE_ENTRIES = 200;
+    macroSubstitutionCache = /* @__PURE__ */ new Map();
+    if (typeof eventSource !== "undefined" && eventSource.on) {
+      try {
+        eventSource.on("chat_changed", clearMacroSubstitutionCache);
+        eventSource.on("generation_started", clearMacroSubstitutionCache);
+      } catch (_) {
+      }
+    }
   }
 });
 
@@ -16246,6 +16283,11 @@ function removeThinkingText(text) {
   if (result !== beforeCommentRemoval) {
     console.log("[imageInserter] Removed HTML comments, length:", beforeCommentRemoval.length, "-> new length:", result.length);
   }
+  const beforeContentRemoval = result;
+  result = result.replace(/^[\s\S]*?<content>\s*/i, "");
+  if (result !== beforeContentRemoval) {
+    console.log("[imageInserter] Removed text before <content>, length:", beforeContentRemoval.length, "-> new length:", result.length);
+  }
   const beforeOuterRemoval = result;
   result = result.replace(
     /(?:<font[^>]*>\[[^\]]*\]<\/font>\s*)?(?:<Tag_think>[\s\S]*?<\/Tag_think>\s*)?<image>[\s\S]*?<\/image>/g,
@@ -16280,6 +16322,11 @@ function removeThinkingTextOnly(text) {
   result = result.replace(/<!--[\s\S]*?-->/g, "");
   if (result !== beforeCommentRemoval) {
     console.log("[imageInserter] Removed HTML comments, length:", beforeCommentRemoval.length, "-> new length:", result.length);
+  }
+  const beforeContentRemoval = result;
+  result = result.replace(/^[\s\S]*?<content>\s*/i, "");
+  if (result !== beforeContentRemoval) {
+    console.log("[imageInserter] Removed text before <content> only, length:", beforeContentRemoval.length, "-> new length:", result.length);
   }
   return result;
 }
@@ -16949,7 +16996,13 @@ async function insertImagesIntoElement(rootElement, images) {
     if (matchResult) {
       let correctEndIndex = matchResult.endIndex;
       const matchedLine = matchResult.matchedLine;
-      const searchStartOffset = Math.max(thinkingEndOffsetDOM, firstDivEndOffset > 0 ? firstDivEndOffset : 0);
+      let baseOffsetDOM = thinkingEndOffsetDOM;
+      const textAfterThinkingDOM = logicalText.substring(thinkingEndOffsetDOM);
+      const contentMatchDOM = textAfterThinkingDOM.match(/^[\s\S]*?<content>\s*/i);
+      if (contentMatchDOM) {
+        baseOffsetDOM = thinkingEndOffsetDOM + contentMatchDOM[0].length;
+      }
+      const searchStartOffset = Math.max(baseOffsetDOM, firstDivEndOffset > 0 ? firstDivEndOffset : 0);
       let lineIndexInOriginal = logicalText.indexOf(matchedLine, searchStartOffset);
       if (lineIndexInOriginal === -1) {
         lineIndexInOriginal = logicalText.indexOf(matchedLine);
@@ -17372,16 +17425,23 @@ async function saveImageGroup(images, logicalText, el) {
             }
             console.log("[imageInserter] insertOriginalText: thinkingEndOffset =", thinkingEndOffset);
           }
+          let searchStartOffset = thinkingEndOffset;
+          const textAfterThinking = mes.substring(thinkingEndOffset);
+          const contentMatch = textAfterThinking.match(/^[\s\S]*?<content>\s*/i);
+          if (contentMatch) {
+            searchStartOffset = thinkingEndOffset + contentMatch[0].length;
+            console.log("[imageInserter] insertOriginalText: searchStartOffset (with <content>) =", searchStartOffset);
+          }
           const matchResults = [];
           for (const img of allImages) {
             const matchResult = fuzzyMatchLine(mesForMatch, img.regex, 0.5);
             if (matchResult) {
               let correctEndIndex = matchResult.endIndex;
               const matchedLine = matchResult.matchedLine;
-              const lineIndexInOriginal = mes.indexOf(matchedLine, thinkingEndOffset);
+              const lineIndexInOriginal = mes.indexOf(matchedLine, searchStartOffset);
               if (lineIndexInOriginal !== -1) {
                 correctEndIndex = lineIndexInOriginal + matchedLine.length;
-                console.log(`[imageInserter] insertOriginalText: Remapped endIndex: ${matchResult.endIndex} -> ${correctEndIndex} (searchFrom: ${thinkingEndOffset})`);
+                console.log(`[imageInserter] insertOriginalText: Remapped endIndex: ${matchResult.endIndex} -> ${correctEndIndex} (searchFrom: ${searchStartOffset})`);
               } else {
                 const fallbackIndex = mes.indexOf(matchedLine);
                 if (fallbackIndex !== -1) {
@@ -27851,7 +27911,7 @@ function getNovelAIQualityPresetsText(settings3) {
     aqt = "very aesthetic, masterpiece, no text";
   } else if (settings3.AQT_novelai != "" && settings3.novelaimode == "nai-diffusion-4-5-curated") {
     aqt = "very aesthetic, masterpiece, no text, -0.8::feet::, rating:general";
-  } else if (settings3.AQT_novelai != "" && settings3.novelaimode == "nai-diffusion-5-full") {
+  } else if (settings3.AQT_novelai != "" && String(settings3.novelaimode || "").includes("nai-diffusion-5-full")) {
     aqt = "very aesthetic, amazing quality, no text";
   } else if (settings3.AQT_novelai != "" && settings3.novelaimode == "nai-diffusion-5-curated") {
     aqt = "very aesthetic, masterpiece, no text";
@@ -34165,7 +34225,8 @@ function processMultiCharacterPrompt(prompt2) {
     const enabledOutfits = outfitEnablePresetId && defaultCharacterSettings2.outfitEnablePresets?.[outfitEnablePresetId]?.outfits || [];
     const characterOutfits = enabledCharacters.flatMap((charId) => characterPresets[charId]?.outfits || []);
     const allAvailableOutfits = [.../* @__PURE__ */ new Set([...enabledOutfits, ...characterOutfits])];
-    for (let i = 1; i <= 4; i++) {
+    const charIds = getSortedCharacterIds(prompt_data);
+    for (const i of charIds) {
       const promptKey = `Character ${i} Prompt`;
       const ucKey = `Character ${i} UC`;
       if (prompt_data[promptKey]) {
@@ -34407,7 +34468,8 @@ function reconstructPromptString(prompt_data) {
   if (prompt_data["Scene Composition"]) {
     result += `Scene Composition: ${prompt_data["Scene Composition"]};`;
   }
-  for (let i = 1; i <= 4; i++) {
+  const charIds = getSortedCharacterIds(prompt_data);
+  for (const i of charIds) {
     const promptKey = `Character ${i} Prompt`;
     const ucKey = `Character ${i} UC`;
     const centersKey = `Character ${i} centers`;
@@ -39522,11 +39584,11 @@ function showUserDemandPopup2(options = {}) {
     setTimeout(() => textarea.focus(), 100);
   });
 }
-async function handlePromptRequest(el, gestureId) {
-  return processImageLikeRequest(el, gestureId, "image_gen", "\u6B63\u6587\u56FE\u7247\u751F\u6210", LLM_IMAGE_GEN);
+async function handlePromptRequest(el, gestureId, options = {}) {
+  return processImageLikeRequest(el, gestureId, "image_gen", "\u6B63\u6587\u56FE\u7247\u751F\u6210", LLM_IMAGE_GEN, options);
 }
-async function handleVisualMatPrepRequest(el, gestureId) {
-  return processImageLikeRequest(el, gestureId, "visual_mat_prep", "\u89C6\u6750\u51C6\u5907", LLM_VISUAL_MAT_PREP);
+async function handleVisualMatPrepRequest(el, gestureId, options = {}) {
+  return processImageLikeRequest(el, gestureId, "visual_mat_prep", "\u89C6\u6750\u51C6\u5907", LLM_VISUAL_MAT_PREP, options);
 }
 function extractVideosXmlContent(text) {
   if (!text || typeof text !== "string") return "";
@@ -39862,13 +39924,14 @@ async function handleImageToVideoGen(targetEl, imgElement, button, dialogContext
     toastr.error("\u56FE\u751F\u89C6\u9891\u8BF7\u6C42\u5931\u8D25: " + (err.message || err));
   }
 }
-async function processImageLikeRequest(el, gestureId, requestType, title, llmFunction) {
+async function processImageLikeRequest(el, gestureId, requestType, title, llmFunction, options = {}) {
   const mainTimer = debugTimer(`promptReq.${requestType}`, `${title}\u6838\u5FC3\u6D41\u7A0B`);
   debugMilestone(requestType, `\u5F00\u59CB\u5904\u7406${title}\u8BF7\u6C42`);
   debugLog(`promptReq.${requestType}`, "\u8BF7\u6C42\u521D\u59CB\u5316", {
     gestureId,
     \u76EE\u6807\u5143\u7D20: el?.className || el?.tagName,
-    \u529F\u80FD\u8BF4\u660E: `\u5904\u7406\u624B\u52BF\u8BC6\u522B\u540E\u7684${title}\u8BF7\u6C42`
+    \u529F\u80FD\u8BF4\u660E: `\u5904\u7406\u624B\u52BF\u8BC6\u522B\u540E\u7684${title}\u8BF7\u6C42`,
+    \u89E6\u53D1\u6765\u6E90: options?.source || "manual"
   });
   let isDemandEnabled = false;
   let defaultDemand = "";
@@ -39888,6 +39951,14 @@ async function processImageLikeRequest(el, gestureId, requestType, title, llmFun
   } else {
     isDemandEnabled = extension_settings40[extensionName]?.imageGenDemandEnabled ?? false;
     defaultDemand = extension_settings40[extensionName]?.defaultImageDemand || "";
+  }
+  const isAutoTrigger = options?.source === "auto" || options?.isAuto === true || options?.skipDemandPopup === true;
+  if (isAutoTrigger) {
+    debugBranch(requestType, "\u81EA\u52A8\u89E6\u53D1\uFF0C\u8DF3\u8FC7\u7528\u6237\u9700\u6C42\u5F39\u7A97", true, {
+      source: options?.source || "auto",
+      skipDemandPopup: options?.skipDemandPopup
+    });
+    isDemandEnabled = false;
   }
   let userDemand = "";
   let userUploadedImages = [];
@@ -42565,32 +42636,55 @@ var init_gorkVideo = __esm({
 
 // utils/positionEditor.js
 
+function getCharacterTheme(charId) {
+  if (CLASSIC_CHARACTER_THEMES[charId]) {
+    return CLASSIC_CHARACTER_THEMES[charId];
+  }
+  const hue = Math.round(charId * 137.508 % 360);
+  return {
+    name: `\u89D2\u8272 ${charId}`,
+    color: `hsl(${hue}, 85%, 60%)`,
+    bg: `hsla(${hue}, 85%, 60%, 0.2)`,
+    border: `hsl(${hue}, 85%, 72%)`,
+    shadow: `hsla(${hue}, 85%, 60%, 0.5)`
+  };
+}
 async function openPositionEditorDialog({ input, button, doc = document, onApply }) {
   if (!input) return;
   const currentText = input.value || "";
   const activeCharacters = [];
-  for (let i = 1; i <= 4; i++) {
-    const regex = new RegExp(`Character\\s+${i}\\s+Prompt:`, "i");
-    if (regex.test(currentText)) {
-      activeCharacters.push(i);
+  const charRegex = /Character\s+(\d+)\s+Prompt:/gi;
+  let charMatch;
+  while ((charMatch = charRegex.exec(currentText)) !== null) {
+    const id = parseInt(charMatch[1], 10);
+    if (!activeCharacters.includes(id)) {
+      activeCharacters.push(id);
     }
   }
+  activeCharacters.sort((a, b) => a - b);
   if (activeCharacters.length === 0) {
     if (typeof toastr !== "undefined") {
-      toastr.info("\u672A\u68C0\u6D4B\u5230\u5206\u89D2\u8272\u63D0\u793A\u8BCD (Character 1~4 Prompt)\uFF0C\u5982\u9700\u7F16\u8F91\u4F4D\u7F6E\u8BF7\u5148\u5C55\u5F00\u5206\u89D2\u8272\u9884\u8BBE\u3002");
+      toastr.info("\u672A\u68C0\u6D4B\u5230\u5206\u89D2\u8272\u63D0\u793A\u8BCD (Character Prompt)\uFF0C\u5982\u9700\u7F16\u8F91\u4F4D\u7F6E\u8BF7\u5148\u5C55\u5F00\u5206\u89D2\u8272\u9884\u8BBE\u3002");
     } else {
       alert("\u672A\u68C0\u6D4B\u5230\u5206\u89D2\u8272\u63D0\u793A\u8BCD\uFF0C\u5982\u9700\u7F16\u8F91\u4F4D\u7F6E\u8BF7\u5148\u5C55\u5F00\u5206\u89D2\u8272\u9884\u8BBE\u3002");
     }
     return;
   }
   const charCoords = {};
-  const defaultDistribution = {
+  const classicDistribution = {
     1: [0.5],
     2: [0.35, 0.65],
     3: [0.25, 0.5, 0.75],
     4: [0.2, 0.4, 0.6, 0.8]
   };
-  const defaultXs = defaultDistribution[activeCharacters.length] || [0.5, 0.5, 0.5, 0.5];
+  const getInitialX = (index, totalCount) => {
+    if (classicDistribution[totalCount]) {
+      return classicDistribution[totalCount][index] ?? 0.5;
+    }
+    if (totalCount <= 1) return 0.5;
+    const step = 0.72 / (totalCount - 1);
+    return Number((0.14 + index * step).toFixed(3));
+  };
   activeCharacters.forEach((charId, index) => {
     const match = currentText.match(new RegExp(`Character\\s+${charId}\\s+Prompt:[^;\\n]*?(?:\\|\\s*centers:(\\{[^}]+\\}|[^;\\s]+))`, "i"));
     if (match && match[1]) {
@@ -42601,7 +42695,7 @@ async function openPositionEditorDialog({ input, button, doc = document, onApply
       }
     }
     charCoords[charId] = {
-      x: Number((defaultXs[index] || 0.5).toFixed(3)),
+      x: getInitialX(index, activeCharacters.length),
       y: 0.5
     };
   });
@@ -42843,14 +42937,16 @@ async function openPositionEditorDialog({ input, button, doc = document, onApply
     `;
   const charElements = {};
   const cardElements = {};
+  const dotDiameter = activeCharacters.length > 10 ? 26 : activeCharacters.length > 6 ? 30 : 34;
+  const dotFontSize = activeCharacters.length > 10 ? 11 : activeCharacters.length > 6 ? 13 : 15;
   activeCharacters.forEach((charId) => {
-    const theme = CHARACTER_THEMES[charId] || CHARACTER_THEMES[1];
+    const theme = getCharacterTheme(charId);
     const coord = charCoords[charId];
     const dot = doc.createElement("div");
     dot.style.cssText = `
             position: absolute;
-            width: 34px;
-            height: 34px;
+            width: ${dotDiameter}px;
+            height: ${dotDiameter}px;
             border-radius: 50%;
             background: ${theme.color};
             border: 2px solid #ffffff;
@@ -42859,7 +42955,7 @@ async function openPositionEditorDialog({ input, button, doc = document, onApply
             align-items: center;
             justify-content: center;
             font-weight: 700;
-            font-size: 15px;
+            font-size: ${dotFontSize}px;
             color: #ffffff;
             cursor: grab;
             transform: translate(-50%, -50%);
@@ -43125,17 +43221,21 @@ async function openPositionEditorDialog({ input, button, doc = document, onApply
     clampPopupToViewport(dialog, win);
   }
 }
-var CHARACTER_THEMES;
+var CLASSIC_CHARACTER_THEMES;
 var init_positionEditor = __esm({
   "utils/positionEditor.js"() {
     init_utils();
     init_database();
     init_config();
-    CHARACTER_THEMES = {
+    CLASSIC_CHARACTER_THEMES = {
       1: { name: "\u89D2\u8272 1", color: "#3b82f6", bg: "rgba(59, 130, 246, 0.2)", border: "#60a5fa", shadow: "rgba(59, 130, 246, 0.5)" },
       2: { name: "\u89D2\u8272 2", color: "#ec4899", bg: "rgba(236, 72, 153, 0.2)", border: "#f472b6", shadow: "rgba(236, 72, 153, 0.5)" },
       3: { name: "\u89D2\u8272 3", color: "#10b981", bg: "rgba(16, 185, 129, 0.2)", border: "#34d399", shadow: "rgba(16, 185, 129, 0.5)" },
-      4: { name: "\u89D2\u8272 4", color: "#f59e0b", bg: "rgba(245, 158, 11, 0.2)", border: "#fbbf24", shadow: "rgba(245, 158, 11, 0.5)" }
+      4: { name: "\u89D2\u8272 4", color: "#f59e0b", bg: "rgba(245, 158, 11, 0.2)", border: "#fbbf24", shadow: "rgba(245, 158, 11, 0.5)" },
+      5: { name: "\u89D2\u8272 5", color: "#8b5cf6", bg: "rgba(139, 92, 246, 0.2)", border: "#a78bfa", shadow: "rgba(139, 92, 246, 0.5)" },
+      6: { name: "\u89D2\u8272 6", color: "#06b6d4", bg: "rgba(6, 182, 212, 0.2)", border: "#22d3ee", shadow: "rgba(6, 182, 212, 0.5)" },
+      7: { name: "\u89D2\u8272 7", color: "#f97316", bg: "rgba(249, 115, 22, 0.2)", border: "#fb923c", shadow: "rgba(249, 115, 22, 0.5)" },
+      8: { name: "\u89D2\u8272 8", color: "#14b8a6", bg: "rgba(20, 184, 166, 0.2)", border: "#2dd4bf", shadow: "rgba(20, 184, 166, 0.5)" }
     };
   }
 });
@@ -44278,17 +44378,11 @@ function showEditDialog(img, button) {
       let tokens = [];
       if (cleaned.includes("Scene Composition")) {
         const parsed = parsePromptStringWithCoordinates(cleaned);
-        const keys = [
-          "Scene Composition",
-          "Character 1 Prompt",
-          "Character 1 UC",
-          "Character 2 Prompt",
-          "Character 2 UC",
-          "Character 3 Prompt",
-          "Character 3 UC",
-          "Character 4 Prompt",
-          "Character 4 UC"
-        ];
+        const charIds = getSortedCharacterIds(parsed);
+        const keys = ["Scene Composition"];
+        charIds.forEach((id) => {
+          keys.push(`Character ${id} Prompt`, `Character ${id} UC`);
+        });
         keys.forEach((k) => {
           const v = parsed?.[k];
           if (typeof v === "string" && v.trim()) {
@@ -44364,27 +44458,7 @@ function showEditDialog(img, button) {
       let annotated = "";
       const localCleanTagForMatching = (tag) => {
         let clean = tag.replace(/^[\{\[\(\<]+|[\}\]\)\>]+$/g, "").replace(/^\{+|\}+$/g, "").replace(/:[\d.]+$/, "").trim();
-        const novelaiKeywords2 = [
-          "Scene Composition:",
-          "Character 1 Prompt:",
-          "Character 1 UC:",
-          "Character 1 coordinates:",
-          "Character 2 Prompt:",
-          "Character 2 UC:",
-          "Character 2 coordinates:",
-          "Character 3 Prompt:",
-          "Character 3 UC:",
-          "Character 3 coordinates:",
-          "Character 4 Prompt:",
-          "Character 4 UC:",
-          "Character 4 coordinates:"
-        ];
-        for (const kw of novelaiKeywords2) {
-          if (clean.startsWith(kw)) {
-            clean = clean.slice(kw.length).trim();
-            break;
-          }
-        }
+        clean = clean.replace(/^(?:Scene Composition:|Character\s+\d+\s+(?:Prompt|UC|coordinates):)\s*/i, "").trim();
         clean = clean.replace(/\|centers:(?:\{[^}]*\}|[a-zA-Z0-9]+)$/, "").trim();
         return clean;
       };
@@ -44414,29 +44488,13 @@ function showEditDialog(img, button) {
         annotated += mapped + (item.sep === "," ? ", " : item.sep);
       });
       console.log("[\u7FFB\u8BD1\u8C03\u8BD5] annotated:", annotated);
-      const novelaiKeywords = [
-        "Scene Composition:",
-        "Character 1 Prompt:",
-        "Character 1 UC:",
-        "Character 1 coordinates:",
-        "Character 2 Prompt:",
-        "Character 2 UC:",
-        "Character 2 coordinates:",
-        "Character 3 Prompt:",
-        "Character 3 UC:",
-        "Character 3 coordinates:",
-        "Character 4 Prompt:",
-        "Character 4 UC:",
-        "Character 4 coordinates:"
-      ];
-      const hasNovelAIFormat = novelaiKeywords.some((kw) => annotated.includes(kw));
-      if (hasNovelAIFormat) {
-        for (const keyword of novelaiKeywords) {
-          const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-          annotated = annotated.replace(new RegExp(`\\s*${escaped}`, "g"), (match, offset) => offset === 0 ? match : `
+      const rolePattern = /(?:Scene Composition:|Character\s+\d+\s+(?:Prompt|UC|coordinates):)/i;
+      if (rolePattern.test(annotated)) {
+        annotated = annotated.replace(/(?:[ \t\r\n]*)(Scene Composition:|Character\s+\d+\s+(?:Prompt|UC|coordinates):)/gi, (match, p1, offset) => {
+          return offset === 0 ? p1 : `
 
-${keyword}`);
-        }
+${p1}`;
+        });
         annotated = annotated.replace(/^\s+/, "").replace(/\n{3,}/g, "\n\n");
       }
       input.value = annotated;
@@ -44849,30 +44907,14 @@ ${keyword}`);
     const originalValue = input.value;
     let expandedValue = processCharacterPrompt(originalValue);
     let processedValue = expandedValue;
-    const novelaiKeywords = [
-      "Scene Composition:",
-      "Character 1 Prompt:",
-      "Character 1 UC:",
-      "Character 1 coordinates:",
-      "Character 2 Prompt:",
-      "Character 2 UC:",
-      "Character 2 coordinates:",
-      "Character 3 Prompt:",
-      "Character 3 UC:",
-      "Character 3 coordinates:",
-      "Character 4 Prompt:",
-      "Character 4 UC:",
-      "Character 4 coordinates:"
-    ];
-    const hasNovelAIFormat = novelaiKeywords.some((kw) => processedValue.includes(kw));
-    if (hasNovelAIFormat) {
+    const rolePattern = /(?:Scene Composition:|Character\s+\d+\s+(?:Prompt|UC|coordinates):)/i;
+    if (rolePattern.test(processedValue)) {
       processedValue = processedValue.replace(/;\s*/g, ";\n");
-      for (const keyword of novelaiKeywords) {
-        const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        processedValue = processedValue.replace(new RegExp(`\\s*${escaped}`, "g"), (match, offset) => offset === 0 ? match : `
+      processedValue = processedValue.replace(/(?:[ \t\r\n]*)(Scene Composition:|Character\s+\d+\s+(?:Prompt|UC|coordinates):)/gi, (match, p1, offset) => {
+        return offset === 0 ? p1 : `
 
-${keyword}`);
-      }
+${p1}`;
+      });
       processedValue = processedValue.replace(/^\s+/, "").replace(/\n{3,}/g, "\n\n");
     }
     if (processedValue !== originalValue) {
@@ -45025,16 +45067,15 @@ ${keyword}`);
       if (parsed) {
         positiveText = parsed["Scene Composition"] || "";
         negativeText = "";
-        const positiveKeys = ["Character 1 Prompt", "Character 2 Prompt", "Character 3 Prompt", "Character 4 Prompt"];
-        for (const key of positiveKeys) {
-          if (parsed[key] && parsed[key].trim()) {
-            charTokens += await calculateNovelAITokens(parsed[key]);
+        const charIds = getSortedCharacterIds(parsed);
+        for (const id of charIds) {
+          const promptVal = parsed[`Character ${id} Prompt`];
+          if (promptVal && promptVal.trim()) {
+            charTokens += await calculateNovelAITokens(promptVal);
           }
-        }
-        const negativeKeys = ["Character 1 UC", "Character 2 UC", "Character 3 UC", "Character 4 UC"];
-        for (const key of negativeKeys) {
-          if (parsed[key] && parsed[key].trim()) {
-            charNegTokens += await calculateNovelAITokens(parsed[key]);
+          const ucVal = parsed[`Character ${id} UC`];
+          if (ucVal && ucVal.trim()) {
+            charNegTokens += await calculateNovelAITokens(ucVal);
           }
         }
       }
@@ -47791,9 +47832,18 @@ async function generateComfyUIImage({ prompt: link, width: Xwidth, height: Xheig
     type: taskType,
     prompt: link
   });
-  currentTaskId2 = taskId;
+  const abortController = new AbortController();
+  const configuredUrl = (extension_settings49[extensionName]?.comfyuiUrl || "http://localhost:8188").trim();
+  activeComfyuiTasks.set(taskId, {
+    abortController,
+    url: configuredUrl,
+    promptId: null,
+    startTime: Date.now()
+  });
+  const maxConcurrency = Math.max(1, Math.min(10, parseInt(extension_settings49[extensionName]?.comfyui_max_concurrency, 10) || 10));
+  comfyuiConcurrencyLock.setMaxConcurrency(maxConcurrency);
   let lockAcquired = false;
-  await acquireSerialLock(taskId);
+  await acquireComfyUILock(taskId, abortController.signal);
   lockAcquired = true;
   taskQueue.updateStatus(taskId, TaskStatus.RUNNING);
   const startTime = Date.now();
@@ -47841,7 +47891,7 @@ async function generateComfyUIImage({ prompt: link, width: Xwidth, height: Xheig
     addLog("\u8BF7\u586B\u5199ComfyUI\u6A21\u578B\u3002");
     toastr.error("\u8BF7\u586B\u5199ComfyUI\u6A21\u578B\u3002");
     taskQueue.completeTask(taskId, false);
-    currentTaskId2 = null;
+    activeComfyuiTasks.delete(taskId);
     return;
   }
   const url = extension_settings49[extensionName].comfyuiUrl.trim();
@@ -47859,7 +47909,8 @@ async function generateComfyUIImage({ prompt: link, width: Xwidth, height: Xheig
     addLog("\u5206\u89D2\u8272\u6A21\u5F0F: \u89E3\u6790\u5E26\u5750\u6807\u7684\u63D0\u793A\u8BCD\u5B57\u7B26\u4E32\u3002");
     prompt_data = parsePromptStringWithCoordinates(promptForGeneration);
     mainPrompt = prompt_data["Scene Composition"];
-    for (let i = 1; i <= 4; i++) {
+    const charIds = getSortedCharacterIds(prompt_data);
+    for (const i of charIds) {
       if (prompt_data[`Character ${i} Prompt`]) {
         other_prompt = other_prompt + ", " + prompt_data[`Character ${i} Prompt`];
       }
@@ -47870,7 +47921,8 @@ async function generateComfyUIImage({ prompt: link, width: Xwidth, height: Xheig
   }
   let { modifiedPrompt, insertions } = await prompt_replace(mainPrompt, other_prompt);
   if (Divide_roles) {
-    for (let i = 1; i <= 4; i++) {
+    const charIds = getSortedCharacterIds(prompt_data);
+    for (const i of charIds) {
       if (prompt_data[`Character ${i} Prompt`]) {
         modifiedPrompt = modifiedPrompt + " | " + prompt_replace_for_character(prompt_data[`Character ${i} Prompt`], (mainPrompt || "") + " " + (other_prompt || ""));
       }
@@ -47880,7 +47932,7 @@ async function generateComfyUIImage({ prompt: link, width: Xwidth, height: Xheig
   if (!extension_settings49[extensionName].yushe || !extension_settings49[extensionName].yushe[_comfyui_yushe_id]) {
     toastr.error("\u672A\u80FD\u627E\u5230\u6240\u9009\u7684\u56FA\u5B9A\u63D0\u793A\u8BCD\u9884\u8BBE\u3002\u8BF7\u524D\u5F80\u63D2\u4EF6\u8BBE\u7F6E\u4E2D\u65B0\u5EFA\u6216\u9009\u62E9\u4E00\u4E2A\u56FA\u5B9A\u63D0\u793A\u8BCD\u3002", "ComfyUI \u751F\u56FE\u9519\u8BEF");
     taskQueue.completeTask(taskId, false);
-    currentTaskId2 = null;
+    activeComfyuiTasks.delete(taskId);
     throw new Error("\u56FA\u5B9A\u63D0\u793A\u8BCD\u9884\u8BBE\u672A\u914D\u7F6E");
   }
   const _comfyui_preset = extension_settings49[extensionName].yushe[_comfyui_yushe_id];
@@ -48049,7 +48101,8 @@ Scheduler: ${payload.scheduler}
           url,
           prompt: payload
         }),
-        headers: getRequestHeaders(window.token)
+        headers: getRequestHeaders(window.token),
+        signal: abortController.signal
       });
       if (!response.ok) {
         const errorText = await response.text();
@@ -48095,13 +48148,9 @@ Scheduler: ${payload.scheduler}
         toastr.success(`\u2705 ComfyUI \u666E\u901A\u751F\u56FE\u5B8C\u6210\uFF0C\u8017\u65F6 ${duration} \u79D2`);
       }
       addLog(`ComfyUI \u666E\u901A\u751F\u56FE\u5B8C\u6210\uFF0C\u8017\u65F6 ${duration} \u79D2`);
-      currentTaskId2 = null;
       console.log("format", format, "isVideo", isVideo);
       if (String(extension_settings49[extensionName].convertToJpegStorage) === "true" && !isVideo) {
         imageUrl = await convertImageToJpeg(imageUrl);
-      }
-      if (String(extension_settings49[extensionName].compressBoostStorage) === "true") {
-        imageUrl = await compressGeneratedImage(imageUrl);
       }
       let finalFormat = format;
       if (isVideo) {
@@ -48113,7 +48162,8 @@ Scheduler: ${payload.scheduler}
       const response = await fetch(urlObj.href, {
         method: "POST",
         body: payload,
-        headers: getComfyUIHeaders("application/json")
+        headers: getComfyUIHeaders("application/json"),
+        signal: abortController.signal
       });
       if (!response.ok) {
         const errorText = await response.text();
@@ -48122,20 +48172,34 @@ Scheduler: ${payload.scheduler}
       }
       const r = await response.json();
       let id = r.prompt_id;
+      const taskCtx = activeComfyuiTasks.get(taskId);
+      if (taskCtx) {
+        taskCtx.promptId = id;
+      }
       detectMultiGpu(url);
       let ii = 0;
+      let mediaInfo = null;
+      const timeoutMs = (parseInt(extension_settings49[extensionName]?.comfyui_timeout, 10) || 1800) * 1e3;
       while (true) {
         try {
-          if (!taskQueue.isTaskInQueue(taskId)) {
+          if (!taskQueue.isTaskInQueue(taskId) || abortController.signal.aborted) {
             addLog("\u4EFB\u52A1\u5DF2\u88AB\u7528\u6237\u53D6\u6D88\uFF0C\u6B63\u5728\u4E2D\u65AD ComfyUI...");
             try {
+              if (id) {
+                fetch(`${url}/queue`, {
+                  method: "POST",
+                  headers: getComfyUIHeaders("application/json"),
+                  body: JSON.stringify({ delete: [id] })
+                }).catch(() => {
+                });
+              }
               await interruptAll(url, { headers: getComfyUIHeaders() });
             } catch (e) {
               console.warn("[ComfyUI] \u4E2D\u65AD\u8BF7\u6C42\u5931\u8D25:", e);
             }
             throw new Error("\u4EFB\u52A1\u5DF2\u53D6\u6D88");
           }
-          const response2 = await fetchHistory(url, id, { headers: getComfyUIHeaders() });
+          const response2 = await fetchHistory(url, id, { headers: getComfyUIHeaders(), signal: abortController.signal });
           if (!response2.ok) {
             addLog(`\u8F6E\u8BE2\u5386\u53F2\u8BB0\u5F55\u65F6\u51FA\u9519: ${response2.status}`);
             throw new Error(`History request failed: ${response2.status}`);
@@ -48165,10 +48229,38 @@ Scheduler: ${payload.scheduler}
           }
           if (re.hasOwnProperty(id)) {
             let getImageInfoFromOutputs = function(outputs) {
+              if (!outputs || typeof outputs !== "object") return null;
+              const isVideoExt = (fn) => typeof fn === "string" && /\.(mp4|webm|mkv|mov|avi)$/i.test(fn);
               for (const key in outputs) {
                 const value = outputs[key];
-                if (value.images && value.images.length > 0) {
-                  const outputImage = value.images.find((img) => img.type === "output");
+                if (!value) continue;
+                if (Array.isArray(value.gifs) && value.gifs.length > 0) {
+                  const gif = value.gifs[0];
+                  const isVideo2 = gif.format && gif.format.startsWith("video/") || isVideoExt(gif.filename);
+                  return {
+                    filename: gif.filename,
+                    subfolder: gif.subfolder || "",
+                    isVideo: Boolean(isVideo2),
+                    format: gif.format || (isVideo2 ? "video/mp4" : "image/gif")
+                  };
+                }
+                if (Array.isArray(value.images) && value.images.length > 0) {
+                  const videoImg = value.images.find((img) => img.type === "output" && isVideoExt(img.filename));
+                  if (videoImg) {
+                    return {
+                      filename: videoImg.filename,
+                      subfolder: videoImg.subfolder || "",
+                      isVideo: true,
+                      format: videoImg.filename.endsWith(".webm") ? "video/webm" : "video/mp4"
+                    };
+                  }
+                }
+              }
+              for (const key in outputs) {
+                const value = outputs[key];
+                if (!value) continue;
+                if (Array.isArray(value.images) && value.images.length > 0) {
+                  const outputImage = value.images.find((img) => img.type === "output") || value.images[0];
                   if (outputImage) {
                     return {
                       filename: outputImage.filename,
@@ -48177,17 +48269,6 @@ Scheduler: ${payload.scheduler}
                       format: "image"
                     };
                   }
-                  continue;
-                }
-                if (value.gifs && value.gifs.length > 0) {
-                  const gif = value.gifs[0];
-                  const isVideo2 = gif.format && gif.format.startsWith("video/");
-                  return {
-                    filename: gif.filename,
-                    subfolder: gif.subfolder || "",
-                    isVideo: isVideo2,
-                    format: gif.format || "image/gif"
-                  };
                 }
               }
               return null;
@@ -48196,11 +48277,12 @@ Scheduler: ${payload.scheduler}
             if (!imageInfo) {
               throw new Error("\u672A\u80FD\u4ECEAPI\u54CD\u5E94\u4E2D\u627E\u5230\u6587\u4EF6\u540D\u3002");
             }
+            mediaInfo = imageInfo;
             window._lastMediaInfo = imageInfo;
             const mediaType = imageInfo.isVideo ? "\u89C6\u9891" : "\u56FE\u7247";
             addLog(`${mediaType}\u751F\u6210\u6210\u529F (direct comfyui)\u3002`);
             let fileurl = `${url}/view?filename=${imageInfo.filename}&subfolder=${encodeURIComponent(imageInfo.subfolder)}&type=output`;
-            const imageResponse = await fetch(fileurl, { headers: getComfyUIHeaders() });
+            const imageResponse = await fetch(fileurl, { headers: getComfyUIHeaders(), signal: abortController.signal });
             if (!imageResponse.ok) {
               throw new Error(`\u83B7\u53D6\u56FE\u7247\u5931\u8D25,\u72B6\u6001\u7801: ${imageResponse.status}`);
             }
@@ -48208,11 +48290,13 @@ Scheduler: ${payload.scheduler}
             if (imageInfo.isVideo) {
               let correctedMimeType = "video/mp4";
               if (imageInfo.format) {
-                if (imageInfo.format.includes("webm")) {
+                if (imageInfo.format.includes("webm") || imageInfo.filename && imageInfo.filename.toLowerCase().endsWith(".webm")) {
                   correctedMimeType = "video/webm";
-                } else if (imageInfo.format.includes("mp4") || imageInfo.format.includes("h264")) {
+                } else if (imageInfo.format.includes("mp4") || imageInfo.format.includes("h264") || imageInfo.filename && imageInfo.filename.toLowerCase().endsWith(".mp4")) {
                   correctedMimeType = "video/mp4";
                 }
+              } else if (imageInfo.filename && imageInfo.filename.toLowerCase().endsWith(".webm")) {
+                correctedMimeType = "video/webm";
               }
               const arrayBuffer = await blob.arrayBuffer();
               blob = new Blob([arrayBuffer], { type: correctedMimeType });
@@ -48225,6 +48309,7 @@ Scheduler: ${payload.scheduler}
                   console.warn("[ComfyUI] faststart \u5904\u7406\u8DF3\u8FC7/\u5931\u8D25:", err);
                 }
               }
+              mediaInfo.format = correctedMimeType;
               window._lastMediaInfo.format = correctedMimeType;
             }
             imageUrl = await new Promise((resolve, reject) => {
@@ -48238,16 +48323,15 @@ Scheduler: ${payload.scheduler}
                 imageUrl = await convertImageToJpeg(imageUrl);
               }
             }
-            if (String(extension_settings49[extensionName].compressBoostStorage) === "true") {
-              imageUrl = await compressGeneratedImage(imageUrl);
-            }
             break;
           }
           await sleep(1e3);
           ii++;
-          if (ii > 1e3) {
-            addLog("\u8F6E\u8BE2\u8D85\u65F6\uFF081000\u6B21\uFF09\uFF0C\u670D\u52A1\u5668\u53EF\u80FD\u5DF2\u65AD\u5F00\u8FDE\u63A5\u3002");
-            throw new Error("ComfyUI \u670D\u52A1\u5668\u8D85\u65F6\u3002");
+          const elapsed = Date.now() - startTime;
+          if (elapsed > timeoutMs || ii > Math.ceil(timeoutMs / 1e3)) {
+            const minutes = Math.round(timeoutMs / 6e4);
+            addLog(`ComfyUI \u8F6E\u8BE2\u8D85\u65F6\uFF08\u5DF2\u7B49\u5F85 ${(elapsed / 1e3).toFixed(0)} \u79D2 / ${minutes} \u5206\u949F\uFF09\uFF0C\u670D\u52A1\u5668\u53EF\u80FD\u4ECD\u5728\u6392\u961F\u6216\u5DF2\u65AD\u5F00\u8FDE\u63A5\u3002`);
+            throw new Error(`ComfyUI \u670D\u52A1\u5668\u8D85\u65F6\uFF08\u5DF2\u8D85\u8FC7 ${minutes} \u5206\u949F\uFF09\u3002`);
           }
         } catch (error) {
           addLog(`\u8F6E\u8BE2\u65F6\u53D1\u751F\u5F02\u5E38: ${error}`);
@@ -48257,34 +48341,33 @@ Scheduler: ${payload.scheduler}
       if (!imageUrl) {
         throw new Error("\u672A\u80FD\u751F\u6210\u56FE\u7247 URL\u3002");
       }
-      const isVideo = window._lastMediaInfo?.isVideo || false;
-      const mediaFormat = window._lastMediaInfo?.format || "image";
+      const isVideo = mediaInfo?.isVideo ?? (window._lastMediaInfo?.isVideo || false);
+      const mediaFormat = mediaInfo?.format || window._lastMediaInfo?.format || "image";
       const duration = ((Date.now() - startTime) / 1e3).toFixed(1);
       addLog(`\u5A92\u4F53 (${isVideo ? "\u89C6\u9891" : "\u56FE\u7247"}) \u5DF2\u6210\u529F\u83B7\u53D6\u5E76\u683C\u5F0F\u5316\u4E3A data URL (\u8017\u65F6 ${duration} \u79D2)\u3002`);
       taskQueue.completeTask(taskId, true);
       if (!isPluginToastDisabled()) {
         toastr.success(`\u2705 ${taskTypeName}\u5B8C\u6210\uFF0C\u8017\u65F6 ${duration} \u79D2`);
       }
-      currentTaskId2 = null;
       return { image: imageUrl, change: change_ || "", isVideo, format: mediaFormat, genParams: _comfy_gen_params };
     }
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : String(error);
+    const isAborted = rawMessage === "\u4EFB\u52A1\u5DF2\u53D6\u6D88" || abortController.signal.aborted || !taskQueue.isTaskInQueue(taskId);
     const propagatedMessage = rawMessage === "Failed to fetch" || rawMessage === "Load failed" ? `ComfyUI \u8BF7\u6C42\u5931\u8D25\uFF0C\u53EF\u80FD\u662F\u670D\u52A1\u4E0D\u53EF\u8FBE\u3001\u8DE8\u57DF\u3001\u4EE3\u7406\u5F02\u5E38\u6216\u8FD4\u56DE\u4E86\u65E0\u6548\u54CD\u5E94: ${rawMessage}` : rawMessage;
-    if (rawMessage === "\u4EFB\u52A1\u5DF2\u53D6\u6D88") {
+    if (isAborted) {
       toastr.info(`\u5DF2\u53D6\u6D88 ${taskTypeName}`);
     } else {
       taskQueue.completeTask(taskId, false);
       toastr.error(`${taskTypeName}\u5931\u8D25: ${propagatedMessage}`);
     }
-    currentTaskId2 = null;
     addLog(`[ComfyUI \u9519\u8BEF] ${propagatedMessage}`);
     console.error("Error generating media in ComfyUI:", error);
     throw new Error(propagatedMessage);
   } finally {
+    activeComfyuiTasks.delete(taskId);
     if (lockAcquired) {
-      const interval = Math.max(0, parseInt(extension_settings49[extensionName]?.imageGenInterval, 10) || 0);
-      releaseSerialLock(taskId, interval);
+      releaseComfyUILock(taskId);
     }
   }
 }
@@ -48364,7 +48447,7 @@ async function replaceWithcomfyui() {
     }
   }
 }
-var currentTaskId2, handleComfyuiCancel;
+var activeComfyuiTasks, handleComfyuiCancel;
 var init_comfyui = __esm({
   "utils/comfyui.js"() {
     init_utils();
@@ -48378,17 +48461,54 @@ var init_comfyui = __esm({
     init_imageGenStats();
     init_worker();
     init_comfyuiAdapter();
-    currentTaskId2 = null;
+    activeComfyuiTasks = /* @__PURE__ */ new Map();
     handleComfyuiCancel = async ({ taskId } = {}) => {
-      if (taskId && taskId === currentTaskId2) {
-        console.log("[ComfyUI] \u6536\u5230\u53D6\u6D88\u4E8B\u4EF6\uFF0C\u6B63\u5728\u5411\u670D\u52A1\u5668\u53D1\u9001\u4E2D\u65AD\u8BF7\u6C42:", taskId);
-        const url = (extension_settings49[extensionName]?.comfyuiUrl || "http://localhost:8188").trim();
+      const url = (extension_settings49[extensionName]?.comfyuiUrl || "http://localhost:8188").trim();
+      if (taskId) {
+        const ctx = activeComfyuiTasks.get(taskId);
+        if (ctx) {
+          console.log("[ComfyUI] \u6536\u5230\u5355\u4E2A\u4EFB\u52A1\u53D6\u6D88\u4E8B\u4EF6:", taskId);
+          ctx.abortController.abort();
+          cancelComfyUILock(taskId);
+          if (ctx.promptId && url) {
+            fetch(`${url}/queue`, {
+              method: "POST",
+              headers: getComfyUIHeaders("application/json"),
+              body: JSON.stringify({ delete: [ctx.promptId] })
+            }).catch(() => {
+            });
+          }
+          if (url) {
+            try {
+              await interruptAll(url);
+            } catch (_) {
+            }
+          }
+          activeComfyuiTasks.delete(taskId);
+        } else {
+          cancelComfyUILock(taskId);
+        }
+      } else {
+        console.log("[ComfyUI] \u6536\u5230\u5168\u5C40\u53D6\u6D88\u4E8B\u4EF6\uFF0C\u6B63\u5728\u4E2D\u6B62\u6240\u6709\u6D3B\u52A8\u4EFB\u52A1");
+        for (const [tId, ctx] of activeComfyuiTasks.entries()) {
+          ctx.abortController.abort();
+          cancelComfyUILock(tId);
+          if (ctx.promptId && url) {
+            fetch(`${url}/queue`, {
+              method: "POST",
+              headers: getComfyUIHeaders("application/json"),
+              body: JSON.stringify({ delete: [ctx.promptId] })
+            }).catch(() => {
+            });
+          }
+        }
         if (url) {
           try {
             await interruptAll(url);
           } catch (_) {
           }
         }
+        activeComfyuiTasks.clear();
       }
     };
   }
@@ -48399,7 +48519,6 @@ var init_comfyui = __esm({
 
 function getDirectHeaders(contentType = null, auth = null) {
   const headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "*/*"
   };
   if (contentType) {
@@ -48605,7 +48724,7 @@ async function generateBananaImage({ prompt: prompt2, width, height, change, ret
     type: TaskType.BANANA,
     prompt: prompt2
   });
-  currentTaskId3 = taskId;
+  currentTaskId2 = taskId;
   currentAbortController = new AbortController();
   taskQueue.updateStatus(taskId, TaskStatus.RUNNING);
   const startTime = Date.now();
@@ -48729,7 +48848,7 @@ async function generateBananaImage({ prompt: prompt2, width, height, change, ret
             if (!isPluginToastDisabled()) {
               toastr.success(`\u2705 Banana \u89C6\u9891\u751F\u6210\u5B8C\u6210\uFF0C\u8017\u65F6 ${duration} \u79D2`);
             }
-            currentTaskId3 = null;
+            currentTaskId2 = null;
             const changeClean = change.replaceAll("{\u89C6\u9891}", "");
             return { image: videoDataUrl, change: changeClean || prompt2, isVideo: true, format: "video/mp4", originalUrl: videoUrl, genParams: _videoGenParams };
           } catch (fetchError) {
@@ -48746,7 +48865,7 @@ async function generateBananaImage({ prompt: prompt2, width, height, change, ret
       } else {
         taskQueue.completeTask(taskId, false);
       }
-      currentTaskId3 = null;
+      currentTaskId2 = null;
       throw error;
     }
   }
@@ -48792,7 +48911,8 @@ async function generateBananaImage({ prompt: prompt2, width, height, change, ret
     addLog("\u5206\u89D2\u8272\u6A21\u5F0F: \u89E3\u6790\u5E26\u5750\u6807\u7684\u63D0\u793A\u8BCD\u5B57\u7B26\u4E32\u3002");
     prompt_data = parsePromptStringWithCoordinates(prompt2);
     mainPrompt = prompt_data["Scene Composition"];
-    for (let i = 1; i <= 4; i++) {
+    const charIds = getSortedCharacterIds(prompt_data);
+    for (const i of charIds) {
       if (prompt_data[`Character ${i} Prompt`]) {
         other_prompt = other_prompt + ", " + prompt_data[`Character ${i} Prompt`];
       }
@@ -48803,7 +48923,8 @@ async function generateBananaImage({ prompt: prompt2, width, height, change, ret
   }
   let { modifiedPrompt, insertions } = await prompt_replace_banana(mainPrompt, other_prompt);
   if (Divide_roles) {
-    for (let i = 1; i <= 4; i++) {
+    const charIds = getSortedCharacterIds(prompt_data);
+    for (const i of charIds) {
       if (prompt_data[`Character ${i} Prompt`]) {
         modifiedPrompt = modifiedPrompt + " | " + prompt_replace_banana_for_character(prompt_data[`Character ${i} Prompt`], (mainPrompt || "") + " " + (other_prompt || ""));
       }
@@ -48938,9 +49059,9 @@ async function generateBananaImage({ prompt: prompt2, width, height, change, ret
         throw new Error(`Grok \u54CD\u5E94\u7F3A\u5C11\u56FE\u7247\u6570\u636E (data[0]/images)\uFF0C\u539F\u59CB\u54CD\u5E94: ${JSON.stringify(grokResult).slice(0, 500)}`);
       }
       let imageUrl = "";
-      const rawB64 = item.b64_json || item.base64;
-      if (rawB64) {
-        imageUrl = rawB64.startsWith("data:image") ? rawB64 : `data:image/png;base64,${rawB64}`;
+      const rawB642 = item.b64_json || item.base64;
+      if (rawB642) {
+        imageUrl = rawB642.startsWith("data:image") ? rawB642 : `data:image/png;base64,${rawB642}`;
         addLog("[Banana] Grok \u6A21\u5F0F\uFF1A\u4ECE b64_json/base64 \u63D0\u53D6\u5230\u56FE\u7247");
       } else if (item.url) {
         addLog(`[Banana] Grok \u6A21\u5F0F\uFF1A\u4E0B\u8F7D\u56FE\u7247 URL ${item.url}`);
@@ -48959,20 +49080,29 @@ async function generateBananaImage({ prompt: prompt2, width, height, change, ret
       if (!imageUrl) {
         throw new Error("Grok \u54CD\u5E94\u672A\u5305\u542B\u56FE\u7247\uFF08b64_json/url \u5747\u4E3A\u7A7A\uFF09");
       }
-      if (String(extension_settings50[extensionName].convertToJpegStorage) === "true") {
+      const rawUrl = item.url || "";
+      const isVideo = Boolean(
+        imageUrl && imageUrl.startsWith("data:video/") || typeof rawB642 === "string" && (rawB642.startsWith("data:video/") || rawB642.startsWith("AAAA")) || rawUrl && /\.(mp4|webm|mkv|mov)(\?.*)?$/i.test(rawUrl)
+      );
+      const format = isVideo ? imageUrl.includes("webm") || rawUrl.includes("webm") ? "video/webm" : "video/mp4" : "image/png";
+      if (!isVideo && String(extension_settings50[extensionName].convertToJpegStorage) === "true") {
         imageUrl = await convertImageToJpeg(imageUrl);
       }
-      if (String(extension_settings50[extensionName].compressBoostStorage) === "true") {
-        imageUrl = await compressGeneratedImage(imageUrl);
-      }
       const duration = ((Date.now() - startTime) / 1e3).toFixed(1);
-      addLog(`[Banana] Grok \u6A21\u5F0F\uFF1A\u56FE\u7247\u751F\u6210\u6210\u529F (\u8017\u65F6 ${duration} \u79D2)`);
+      addLog(`[Banana] Grok \u6A21\u5F0F\uFF1A${isVideo ? "\u89C6\u9891" : "\u56FE\u7247"}\u751F\u6210\u6210\u529F (\u8017\u65F6 ${duration} \u79D2)`);
       taskQueue.completeTask(taskId, true);
       if (!isPluginToastDisabled()) {
-        toastr.success(`\u2705 Grok \u751F\u56FE\u5B8C\u6210\uFF0C\u8017\u65F6 ${duration} \u79D2`);
+        toastr.success(isVideo ? `\u2705 Grok \u89C6\u9891\u751F\u6210\u5B8C\u6210\uFF0C\u8017\u65F6 ${duration} \u79D2` : `\u2705 Grok \u751F\u56FE\u5B8C\u6210\uFF0C\u8017\u65F6 ${duration} \u79D2`);
       }
-      currentTaskId3 = null;
-      return { image: imageUrl, change: change_ || "", genParams: _banana_gen_params };
+      currentTaskId2 = null;
+      return {
+        image: imageUrl,
+        change: change_ || "",
+        isVideo,
+        format,
+        originalUrl: rawUrl,
+        genParams: _banana_gen_params
+      };
     } catch (error) {
       addLog(`[Banana] Grok \u6A21\u5F0F\u9519\u8BEF: ${error.message}`);
       console.error("[Banana] Grok mode error:", error);
@@ -48981,7 +49111,7 @@ async function generateBananaImage({ prompt: prompt2, width, height, change, ret
       } else {
         addLog("[Banana] Grok \u6A21\u5F0F\u751F\u6210\u88AB\u53D6\u6D88\u3002");
       }
-      currentTaskId3 = null;
+      currentTaskId2 = null;
       throw error;
     }
   }
@@ -49209,7 +49339,7 @@ async function generateBananaImage({ prompt: prompt2, width, height, change, ret
             if (!isPluginToastDisabled()) {
               toastr.success(`\u2705 Banana \u89C6\u9891\u751F\u6210\u5B8C\u6210\uFF0C\u8017\u65F6 ${duration2} \u79D2`);
             }
-            currentTaskId3 = null;
+            currentTaskId2 = null;
             return { image: videoDataUrl, change: change_ || "", isVideo: true, format: "video/mp4", originalUrl: videoUrl, genParams: _banana_gen_params };
           } catch (fetchError) {
             addLog(`[Banana] Failed to download video: ${fetchError.message}`);
@@ -49243,16 +49373,16 @@ async function generateBananaImage({ prompt: prompt2, width, height, change, ret
         const markdownImageRegex = /!\[.*?\]\(((?:https?:\/\/|data:image\/[^;]+;base64,)[^\s\)]+)\)/;
         const match = content.match(markdownImageRegex);
         if (match && match[1]) {
-          const mdImageData = match[1];
-          if (mdImageData.startsWith("data:image/")) {
+          const mdImageData2 = match[1];
+          if (mdImageData2.startsWith("data:image/")) {
             addLog("[Banana] Detected Markdown embedded base64 image.");
-            imageUrl = mdImageData;
+            imageUrl = mdImageData2;
             addLog("[Banana] Successfully extracted base64 image from Markdown.");
           } else {
             addLog("[Banana] Detected Markdown image URL, extracting...");
-            addLog(`[Banana] Markdown image URL: ${mdImageData}`);
+            addLog(`[Banana] Markdown image URL: ${mdImageData2}`);
             try {
-              const imageResponse = await fetch(mdImageData, { headers: getDirectHeaders() });
+              const imageResponse = await fetch(mdImageData2, { headers: getDirectHeaders() });
               if (!imageResponse.ok) {
                 throw new Error(`Failed to fetch image: ${imageResponse.status}`);
               }
@@ -49264,16 +49394,16 @@ async function generateBananaImage({ prompt: prompt2, width, height, change, ret
                 reader.readAsDataURL(imageBlob);
               });
               imageUrl = base64Data;
-              if (String(extension_settings50[extensionName].convertToJpegStorage) === "true") {
+              const isMdVideo = Boolean(
+                base64Data && base64Data.startsWith("data:video/") || typeof mdImageData2 === "string" && /\.(mp4|webm|mkv|mov)(\?.*)?$/i.test(mdImageData2)
+              );
+              if (!isMdVideo && String(extension_settings50[extensionName].convertToJpegStorage) === "true") {
                 imageUrl = await convertImageToJpeg(imageUrl);
-              }
-              if (String(extension_settings50[extensionName].compressBoostStorage) === "true") {
-                imageUrl = await compressGeneratedImage(imageUrl);
               }
               addLog("[Banana] Successfully converted Markdown image to base64.");
             } catch (fetchError) {
               addLog(`[Banana] Failed to fetch Markdown image: ${fetchError.message}`);
-              imageUrl = mdImageData;
+              imageUrl = mdImageData2;
               addLog("[Banana] Using direct URL as fallback.");
             }
           }
@@ -49285,14 +49415,26 @@ async function generateBananaImage({ prompt: prompt2, width, height, change, ret
     if (!imageUrl) {
       throw new Error("API response did not contain image in OpenAI format");
     }
+    const isVideo = Boolean(
+      imageUrl && imageUrl.startsWith("data:video/") || typeof rawB64 === "string" && (rawB64.startsWith("data:video/") || rawB64.startsWith("AAAA")) || typeof mdImageData === "string" && /\.(mp4|webm|mkv|mov)(\?.*)?$/i.test(mdImageData)
+    );
+    const format = isVideo ? imageUrl.includes("webm") || typeof mdImageData === "string" && mdImageData.includes("webm") ? "video/webm" : "video/mp4" : "image/png";
+    const originalUrl = typeof mdImageData === "string" ? mdImageData : "";
     const duration = ((Date.now() - startTime) / 1e3).toFixed(1);
-    addLog(`[Banana] Image generated successfully (\u8017\u65F6 ${duration} \u79D2).`);
+    addLog(`[Banana] ${isVideo ? "Video" : "Image"} generated successfully (\u8017\u65F6 ${duration} \u79D2).`);
     taskQueue.completeTask(taskId, true);
     if (!isPluginToastDisabled()) {
       toastr.success(isGrok ? `\u2705 Grok \u751F\u56FE\u5B8C\u6210\uFF0C\u8017\u65F6 ${duration} \u79D2` : `\u2705 Banana \u751F\u56FE\u5B8C\u6210\uFF0C\u8017\u65F6 ${duration} \u79D2`);
     }
-    currentTaskId3 = null;
-    return { image: imageUrl, change: change_ || "", genParams: _banana_gen_params };
+    currentTaskId2 = null;
+    return {
+      image: imageUrl,
+      change: change_ || "",
+      isVideo,
+      format,
+      originalUrl,
+      genParams: _banana_gen_params
+    };
   } catch (error) {
     addLog(`[Banana] Fetch error: ${error.message}`);
     console.error("[Banana] Fetch error:", error);
@@ -49301,7 +49443,7 @@ async function generateBananaImage({ prompt: prompt2, width, height, change, ret
     } else {
       taskQueue.completeTask(taskId, false);
     }
-    currentTaskId3 = null;
+    currentTaskId2 = null;
     throw error;
   }
 }
@@ -49443,7 +49585,7 @@ async function bananaGenerate(requestData) {
 function handleCancelBananaTask(data) {
   const { taskId } = data;
   addLog(`[Banana] \u6536\u5230\u53D6\u6D88\u4EFB\u52A1\u4E8B\u4EF6 (TaskID: ${taskId})`);
-  if (currentTaskId3 === taskId && currentRequestId) {
+  if (currentTaskId2 === taskId && currentRequestId) {
     addLog(`[Banana] \u53D6\u6D88\u5F53\u524D\u4EFB\u52A1\uFF0C\u53D1\u9001\u5931\u8D25\u54CD\u5E94 (ID: ${currentRequestId})`);
     recordImageGeneration("banana", false);
     eventSource22.emit(EventType.GENERATE_IMAGE_RESPONSE, {
@@ -49463,7 +49605,7 @@ function handleCancelBananaTask(data) {
       currentAbortController = null;
       addLog(`[Banana] \u5DF2\u89E6\u53D1 AbortController \u5F7B\u5E95\u4E2D\u65AD\u8BF7\u6C42`);
     }
-    currentTaskId3 = null;
+    currentTaskId2 = null;
     currentRequestId = null;
     currentPrompt = null;
   }
@@ -49489,7 +49631,7 @@ async function replaceWithBanana() {
     }
   }
 }
-var currentTaskId3, currentRequestId, currentPrompt, currentAbortController;
+var currentTaskId2, currentRequestId, currentPrompt, currentAbortController;
 var init_banana = __esm({
   "utils/banana.js"() {
     init_config();
@@ -49502,7 +49644,7 @@ var init_banana = __esm({
     init_taskQueue();
     init_comfyui();
     init_imageGenStats();
-    currentTaskId3 = null;
+    currentTaskId2 = null;
     currentRequestId = null;
     currentPrompt = null;
     currentAbortController = null;
@@ -49759,7 +49901,7 @@ async function generateRunningHubImage({ prompt: link, width: Xwidth, height: Xh
     type: taskType,
     prompt: link
   });
-  currentTaskId4 = taskId;
+  currentTaskId3 = taskId;
   const startTime = Date.now();
   if (!isPluginToastDisabled()) {
     toastr.info(`\u{1F3A8} \u5DF2\u53D1\u8D77 ${taskTypeName} \u8BF7\u6C42...`);
@@ -49817,12 +49959,12 @@ async function generateRunningHubImage({ prompt: link, width: Xwidth, height: Xh
   const workflowId = targetWorkflowId;
   if (!rawApiKey) {
     taskQueue.completeTask(taskId, false);
-    currentTaskId4 = null;
+    currentTaskId3 = null;
     throw new Error("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u586B\u5199 RunningHub API Key");
   }
   if (!workflowId) {
     taskQueue.completeTask(taskId, false);
-    currentTaskId4 = null;
+    currentTaskId3 = null;
     throw new Error(`\u5F53\u524D\u3010${workflowCategoryName}\u3011\u9009\u4E2D\u7684\u9884\u8BBE "${targetWorkerid}" \u5C1A\u672A\u914D\u7F6E\u5DE5\u4F5C\u6D41 ID\uFF0C\u8BF7\u5728\u5DE5\u4F5C\u6D41\u8BBE\u7F6E\u4E2D\u586B\u5199`);
   }
   addLog(`\u5F00\u59CB RunningHub \u751F\u56FE\u6D41\u7A0B\u3002\u5DE5\u4F5C\u6D41\u5206\u7C7B: \u3010${workflowCategoryName}\u3011\uFF0C\u5DE5\u4F5C\u6D41 ID: ${workflowId}`);
@@ -49842,7 +49984,8 @@ async function generateRunningHubImage({ prompt: link, width: Xwidth, height: Xh
     addLog("\u5206\u89D2\u8272\u6A21\u5F0F: \u89E3\u6790\u5E26\u5750\u6807\u7684\u63D0\u793A\u8BCD\u5B57\u7B26\u4E32\u3002");
     prompt_data = parsePromptStringWithCoordinates(promptForGeneration);
     mainPrompt = prompt_data["Scene Composition"];
-    for (let i = 1; i <= 4; i++) {
+    const charIds = getSortedCharacterIds(prompt_data);
+    for (const i of charIds) {
       if (prompt_data[`Character ${i} Prompt`]) {
         other_prompt = other_prompt + ", " + prompt_data[`Character ${i} Prompt`];
       }
@@ -49853,7 +49996,8 @@ async function generateRunningHubImage({ prompt: link, width: Xwidth, height: Xh
   }
   let { modifiedPrompt, insertions } = await prompt_replace(mainPrompt, other_prompt);
   if (Divide_roles) {
-    for (let i = 1; i <= 4; i++) {
+    const charIds = getSortedCharacterIds(prompt_data);
+    for (const i of charIds) {
       if (prompt_data[`Character ${i} Prompt`]) {
         modifiedPrompt = modifiedPrompt + " | " + prompt_replace_for_character(prompt_data[`Character ${i} Prompt`], (mainPrompt || "") + " " + (other_prompt || ""));
       }
@@ -50103,9 +50247,6 @@ async function generateRunningHubImage({ prompt: link, width: Xwidth, height: Xh
     if (String(settings3.convertToJpegStorage) === "true" && !isVideo) {
       finalImageData = await convertImageToJpeg(finalImageData);
     }
-    if (String(settings3.compressBoostStorage) === "true") {
-      finalImageData = await compressGeneratedImage(finalImageData);
-    }
     const duration = ((Date.now() - startTime) / 1e3).toFixed(1);
     taskQueue.completeTask(taskId, true);
     const rhDetailParts = [];
@@ -50122,7 +50263,7 @@ async function generateRunningHubImage({ prompt: link, width: Xwidth, height: Xh
         recordKeyConsumption(apiKey, rhConsumeCoins);
       }
     }
-    currentTaskId4 = null;
+    currentTaskId3 = null;
     return {
       image: finalImageData,
       change: change_ || "",
@@ -50140,7 +50281,7 @@ async function generateRunningHubImage({ prompt: link, width: Xwidth, height: Xh
       recordImageGeneration("runninghub", false);
       toastr.error(`RunningHub \u751F\u56FE\u5931\u8D25: ${rawMessage}`);
     }
-    currentTaskId4 = null;
+    currentTaskId3 = null;
     addLog(`[RunningHub \u9519\u8BEF] ${rawMessage}`);
     console.error("[RunningHub \u9519\u8BEF]", err);
     throw err;
@@ -50244,7 +50385,7 @@ async function replaceWithRunningHub() {
     }
   }
 }
-var currentTaskId4;
+var currentTaskId3;
 var init_runninghub = __esm({
   "utils/runninghub.js"() {
     init_utils();
@@ -50259,7 +50400,7 @@ var init_runninghub = __esm({
     init_runninghubKeyManager();
     init_runninghubVideo();
     init_runninghubScheduler();
-    currentTaskId4 = null;
+    currentTaskId3 = null;
   }
 });
 
@@ -51505,6 +51646,7 @@ function unregisterActiveComfyUIVideoTask(taskId) {
   activeComfyUIVideoTasks.delete(taskId);
 }
 async function abortComfyUIVideoTask(taskId) {
+  cancelComfyUILock(taskId);
   const taskCtx = activeComfyUIVideoTasks.get(taskId);
   if (!taskCtx) return;
   console.log(`[ComfyUIVideo] \u89E6\u53D1\u4EFB\u52A1\u4E2D\u65AD: ${taskId}`);
@@ -51514,6 +51656,14 @@ async function abortComfyUIVideoTask(taskId) {
     } catch (e) {
       console.warn("[ComfyUIVideo] abortController.abort \u5931\u8D25:", e);
     }
+  }
+  if (taskCtx.promptId && taskCtx.url) {
+    fetch(`${taskCtx.url}/queue`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ delete: [taskCtx.promptId] })
+    }).catch(() => {
+    });
   }
   if (taskCtx.url) {
     try {
@@ -52228,17 +52378,7 @@ async function generateComfyUIRefVideo({ prompt: rawPrompt, width: Xwidth, heigh
       steps: settings3.comfyui_val_steps,
       duration: settings3.comfyui_val_duration
     });
-    while (!window.xiancheng) {
-      if (!taskQueue.isTaskInQueue(taskId) || abortController.signal.aborted) {
-        addLog("[ComfyUIVideo] \u4EFB\u52A1\u5DF2\u88AB\u7528\u6237\u53D6\u6D88");
-        throw new Error("\u4EFB\u52A1\u5DF2\u53D6\u6D88");
-      }
-      await sleep(1e3);
-    }
-    if (!taskQueue.isTaskInQueue(taskId) || abortController.signal.aborted) {
-      throw new Error("\u4EFB\u52A1\u5DF2\u53D6\u6D88");
-    }
-    window.xiancheng = false;
+    await acquireComfyUILock(taskId, abortController.signal);
     lockAcquired = true;
     taskQueue.updateStatus(taskId, "running");
     const clientId = "533ef3a3-39c0-4e39-9ced-37d290f371f8";
@@ -52301,8 +52441,10 @@ async function generateComfyUIRefVideo({ prompt: rawPrompt, width: Xwidth, heigh
         }
         const outputs = promptHistory.outputs || {};
         let foundFile = null;
+        const isVideoExt = (fn) => typeof fn === "string" && /\.(mp4|webm|mkv|mov|avi)$/i.test(fn);
         for (const key in outputs) {
           const val = outputs[key];
+          if (!val) continue;
           if (val.gifs && val.gifs.length > 0) {
             const gif = val.gifs[0];
             foundFile = {
@@ -52314,14 +52456,32 @@ async function generateComfyUIRefVideo({ prompt: rawPrompt, width: Xwidth, heigh
             break;
           }
           if (val.images && val.images.length > 0) {
-            const outImg = val.images.find((img) => img.type === "output") || val.images[0];
-            foundFile = {
-              filename: outImg.filename,
-              subfolder: outImg.subfolder || "",
-              isVideo: false,
-              format: "image/png"
-            };
-            break;
+            const videoImg = val.images.find((img) => img.type === "output" && isVideoExt(img.filename));
+            if (videoImg) {
+              foundFile = {
+                filename: videoImg.filename,
+                subfolder: videoImg.subfolder || "",
+                isVideo: true,
+                format: videoImg.filename.endsWith(".webm") ? "video/webm" : "video/mp4"
+              };
+              break;
+            }
+          }
+        }
+        if (!foundFile) {
+          for (const key in outputs) {
+            const val = outputs[key];
+            if (!val) continue;
+            if (val.images && val.images.length > 0) {
+              const outImg = val.images.find((img) => img.type === "output") || val.images[0];
+              foundFile = {
+                filename: outImg.filename,
+                subfolder: outImg.subfolder || "",
+                isVideo: false,
+                format: "image/png"
+              };
+              break;
+            }
           }
         }
         if (foundFile) {
@@ -52354,8 +52514,11 @@ async function generateComfyUIRefVideo({ prompt: rawPrompt, width: Xwidth, heigh
           break;
         }
       }
-      if (attempts > 1200) {
-        throw new Error("ComfyUI \u89C6\u9891\u751F\u6210\u8D85\u65F6 (20\u5206\u949F)");
+      const timeoutMs = (parseInt(settings3.comfyui_timeout, 10) || 1800) * 1e3;
+      const elapsed = Date.now() - startTime;
+      if (elapsed > timeoutMs || attempts > Math.ceil(timeoutMs / 1e3)) {
+        const minutes = Math.round(timeoutMs / 6e4);
+        throw new Error(`ComfyUI \u89C6\u9891\u751F\u6210\u8D85\u65F6\uFF08\u5DF2\u8D85\u8FC7 ${minutes} \u5206\u949F\uFF09`);
       }
     }
     const duration = ((Date.now() - startTime) / 1e3).toFixed(1);
@@ -52371,9 +52534,6 @@ async function generateComfyUIRefVideo({ prompt: rawPrompt, width: Xwidth, heigh
       genParams: _comfy_gen_params
     };
   } catch (err) {
-    if (lockAcquired) {
-      window.xiancheng = true;
-    }
     const isAborted = err.message === "\u4EFB\u52A1\u5DF2\u53D6\u6D88" || abortController.signal.aborted || !taskQueue.isTaskInQueue(taskId);
     const rawMessage = err instanceof Error ? err.message : String(err);
     if (isAborted) {
@@ -52391,9 +52551,7 @@ async function generateComfyUIRefVideo({ prompt: rawPrompt, width: Xwidth, heigh
   } finally {
     unregisterActiveComfyUIVideoTask(taskId);
     if (lockAcquired) {
-      setTimeout(() => {
-        window.xiancheng = true;
-      }, settings3.imageGenInterval || 1e3);
+      releaseComfyUILock(taskId);
     }
   }
 }
@@ -52513,8 +52671,10 @@ async function executeComfyUIVideoDirectTest({
       }
       const outputs = promptHistory.outputs || {};
       let foundFile = null;
+      const isVideoExt = (fn) => typeof fn === "string" && /\.(mp4|webm|mkv|mov|avi)$/i.test(fn);
       for (const key in outputs) {
         const val = outputs[key];
+        if (!val) continue;
         if (val.gifs && val.gifs.length > 0) {
           const gif = val.gifs[0];
           foundFile = {
@@ -52526,14 +52686,32 @@ async function executeComfyUIVideoDirectTest({
           break;
         }
         if (val.images && val.images.length > 0) {
-          const outImg = val.images.find((img) => img.type === "output") || val.images[0];
-          foundFile = {
-            filename: outImg.filename,
-            subfolder: outImg.subfolder || "",
-            isVideo: false,
-            format: "image/png"
-          };
-          break;
+          const videoImg = val.images.find((img) => img.type === "output" && isVideoExt(img.filename));
+          if (videoImg) {
+            foundFile = {
+              filename: videoImg.filename,
+              subfolder: videoImg.subfolder || "",
+              isVideo: true,
+              format: videoImg.filename.endsWith(".webm") ? "video/webm" : "video/mp4"
+            };
+            break;
+          }
+        }
+      }
+      if (!foundFile) {
+        for (const key in outputs) {
+          const val = outputs[key];
+          if (!val) continue;
+          if (val.images && val.images.length > 0) {
+            const outImg = val.images.find((img) => img.type === "output") || val.images[0];
+            foundFile = {
+              filename: outImg.filename,
+              subfolder: outImg.subfolder || "",
+              isVideo: false,
+              format: "image/png"
+            };
+            break;
+          }
         }
       }
       if (foundFile) {
@@ -52711,13 +52889,20 @@ function createAndShowImage(container, imageUrl, alt, button, change, isVideo = 
           media.src = originalUrl || imageUrl;
         });
       } else if (imageUrl.startsWith("http://") || imageUrl.startsWith("https://") || imageUrl.startsWith("/") || imageUrl.startsWith(".")) {
-        fetch(imageUrl).then((res) => {
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return res.blob();
-        }).then((rawBlob) => fixMp4Faststart(rawBlob)).then((blob) => applyBlob(blob)).catch((e) => {
-          console.warn("[video] \u7F51\u7EDC URL faststart \u9884\u62C9\u53D6\u5931\u8D25\uFF0C\u76F4\u63A5\u8D4B\u503C:", e);
-          media.src = originalUrl || imageUrl;
-        });
+        media.src = imageUrl;
+        const onDirectErr = () => {
+          media.removeEventListener("error", onDirectErr);
+          if (media.src !== imageUrl && !media.src.endsWith(imageUrl)) return;
+          console.log("[video] \u76F4\u94FE\u539F\u751F\u6D41\u64AD\u653E\u5931\u8D25\uFF0C\u5C1D\u8BD5\u964D\u7EA7\u62C9\u53D6 Blob \u4FEE\u590D:", imageUrl);
+          fetch(imageUrl).then((res) => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.blob();
+          }).then((rawBlob) => fixMp4Faststart(rawBlob)).then((blob) => applyBlob(blob)).catch((e) => {
+            console.warn("[video] \u964D\u7EA7\u62C9\u53D6\u5931\u8D25\uFF0C\u56DE\u9000\u539F\u59CB URL:", e);
+            if (originalUrl) media.src = originalUrl;
+          });
+        };
+        media.addEventListener("error", onDirectErr, { once: true });
       } else {
         media.src = imageUrl;
       }
@@ -53248,6 +53433,13 @@ function createAndShowImage(container, imageUrl, alt, button, change, isVideo = 
       showControls();
       if (hideTimer2) clearTimeout(hideTimer2);
     };
+    media2.onended = () => {
+      if (media2.loop) {
+        media2.currentTime = 0;
+        media2.play().catch(() => {
+        });
+      }
+    };
     div2.addEventListener("mouseenter", resetHideTimer);
     div2.addEventListener("mousemove", resetHideTimer);
     div2.addEventListener("touchstart", resetHideTimer, { passive: true });
@@ -53540,6 +53732,7 @@ var init_generation = __esm({
           if (alreadyGenerating) {
             addLog(`[VideoGen] \u89C6\u9891\u751F\u6210\u8BF7\u6C42\u5DF2\u5728\u8FDB\u884C\u4E2D\uFF0C\u7B49\u5F85\u54CD\u5E94: ${link}`);
             button.setAttribute("data-loading", "true");
+            button.dataset.loadingStartedAt = String(Date.now());
             button.textContent = "\u89C6\u9891\u751F\u6210\u4E2D...";
             const videoResponseHandler = (responseData) => {
               if (responseData.id !== requestId) return;
@@ -53549,6 +53742,7 @@ var init_generation = __esm({
             return;
           }
           button.setAttribute("data-loading", "true");
+          button.dataset.loadingStartedAt = String(Date.now());
           button.textContent = "\u89C6\u9891\u751F\u6210\u4E2D...";
           startGenerating(link);
           const videoPromise = isRh ? Promise.resolve().then(() => (init_runninghubVideo(), runninghubVideo_exports)).then((m) => m.generateRunningHubRefVideo) : Promise.resolve().then(() => (init_comfyuiVideo(), comfyuiVideo_exports)).then((m) => m.generateComfyUIRefVideo);
@@ -53676,58 +53870,70 @@ var init_generation = __esm({
         const imageResponseHandler = (responseData) => {
           if (responseData.id !== requestId) return;
           console.log("Image response:", responseData);
-          untrackImageResponseHandler(requestId, imageResponseHandler);
-          addLog(`\u56FE\u50CF\u54CD\u5E94\u76D1\u542C\u5668\u5DF2\u9500\u6BC1 (ID: ${requestId})`);
-          const { success, imageData, error, prompt: prompt2, change: change2, isVideo, originalUrl, video: video2, activeMode: activeMode2 } = responseData;
-          if (prompt2) stopGenerating(prompt2);
-          const docs2 = [document, ...Array.from(document.querySelectorAll("iframe")).map((f) => f.contentDocument).filter(Boolean)];
-          if (!success) {
-            addLog(`\u56FE\u50CF\u751F\u6210\u5931\u8D25 (ID: ${requestId}): ${error}`);
-            toastr.error(`\u751F\u6210\u5931\u8D25: ${error || "\u672A\u77E5\u9519\u8BEF"}`);
-          }
-          let totalMatchedSpans = 0;
-          docs2.forEach((doc) => {
-            const spans = doc.querySelectorAll(`span[data-request-id="${requestId}"]`);
-            const buttons = doc.querySelectorAll(`button[data-request-id="${requestId}"]`);
-            if (success && spans.length > 0) {
-              totalMatchedSpans += spans.length;
-              addLog(`${isVideo ? "\u89C6\u9891" : "\u56FE\u50CF"}\u751F\u6210\u6210\u529F (ID: ${requestId}), targeting ${spans.length} element(s).`);
-              spans.forEach((span) => {
-                const associatedButton = span.previousElementSibling;
-                const finalVideo = video2 || (associatedButton ? associatedButton.dataset.video : "");
-                const finalActiveMode = activeMode2 || (associatedButton ? associatedButton.dataset.activeMode : "");
-                if (associatedButton && associatedButton.matches(`button[data-request-id="${requestId}"]`)) {
-                  createAndShowImage(span, imageData, "Generated Image", associatedButton, change2, isVideo, originalUrl || "", finalVideo, finalActiveMode);
-                } else {
-                  createAndShowImage(span, imageData, "Generated Image", null, change2, isVideo, originalUrl || "", finalVideo, finalActiveMode);
-                }
-              });
+          try {
+            untrackImageResponseHandler(requestId, imageResponseHandler);
+            addLog(`\u56FE\u50CF\u54CD\u5E94\u76D1\u542C\u5668\u5DF2\u9500\u6BC1 (ID: ${requestId})`);
+            const { success, imageData, error, prompt: prompt2, change: change2, isVideo, originalUrl, video: video2, activeMode: activeMode2 } = responseData;
+            if (prompt2) stopGenerating(prompt2);
+            else stopGenerating(link);
+            const docs2 = [document, ...Array.from(document.querySelectorAll("iframe")).map((f) => f.contentDocument).filter(Boolean)];
+            if (!success) {
+              addLog(`\u56FE\u50CF\u751F\u6210\u5931\u8D25 (ID: ${requestId}): ${error}`);
+              toastr.error(`\u751F\u6210\u5931\u8D25: ${error || "\u672A\u77E5\u9519\u8BEF"}`);
             }
-            buttons.forEach((b) => {
-              b.removeAttribute("data-loading");
-              if (success && extension_settings54[extensionName].dbclike == "true") {
-                b.style.setProperty("display", "none", "important");
-              } else {
-                b.disabled = false;
-                const bMode = b.dataset.activeMode || (isVideo ? "video" : "image");
-                b.textContent = bMode === "video" ? "\u751F\u6210\u89C6\u9891" : "\u751F\u6210\u56FE\u7247";
+            let totalMatchedSpans = 0;
+            docs2.forEach((doc) => {
+              const spans = doc.querySelectorAll(`span[data-request-id="${requestId}"]`);
+              if (success && spans.length > 0) {
+                totalMatchedSpans += spans.length;
+                addLog(`${isVideo ? "\u89C6\u9891" : "\u56FE\u50CF"}\u751F\u6210\u6210\u529F (ID: ${requestId}), targeting ${spans.length} element(s).`);
+                spans.forEach((span) => {
+                  const associatedButton = span.previousElementSibling;
+                  const finalVideo = video2 || (associatedButton ? associatedButton.dataset.video : "");
+                  const finalActiveMode = activeMode2 || (associatedButton ? associatedButton.dataset.activeMode : "");
+                  if (associatedButton && associatedButton.matches(`button[data-request-id="${requestId}"]`)) {
+                    createAndShowImage(span, imageData, "Generated Image", associatedButton, change2, isVideo, originalUrl || "", finalVideo, finalActiveMode);
+                  } else {
+                    createAndShowImage(span, imageData, "Generated Image", null, change2, isVideo, originalUrl || "", finalVideo, finalActiveMode);
+                  }
+                });
               }
             });
-          });
-          if (success && totalMatchedSpans === 0) {
-            setTimeout(() => {
-              Promise.resolve().then(() => (init_chatProcessor(), chatProcessor_exports)).then(({ processMesTextElements: processMesTextElements2, processIframes: processIframes2 }) => {
-                processMesTextElements2();
-                processIframes2();
-              }).catch(() => {
+            if (success && totalMatchedSpans === 0) {
+              setTimeout(() => {
+                Promise.resolve().then(() => (init_chatProcessor(), chatProcessor_exports)).then(({ processMesTextElements: processMesTextElements2, processIframes: processIframes2 }) => {
+                  processMesTextElements2();
+                  processIframes2();
+                }).catch(() => {
+                });
+              }, 80);
+            }
+          } catch (err) {
+            console.error("[generation] imageResponseHandler \u5904\u7406\u5F02\u5E38:", err);
+          } finally {
+            stopGenerating(link);
+            const docs2 = [document, ...Array.from(document.querySelectorAll("iframe")).map((f) => f.contentDocument).filter(Boolean)];
+            docs2.forEach((doc) => {
+              const buttons = doc.querySelectorAll(`button[data-request-id="${requestId}"]`);
+              buttons.forEach((b) => {
+                b.removeAttribute("data-loading");
+                delete b.dataset.loadingStartedAt;
+                if (responseData && responseData.success && extension_settings54[extensionName].dbclike == "true") {
+                  b.style.setProperty("display", "none", "important");
+                } else {
+                  b.disabled = false;
+                  const bMode = b.dataset.activeMode || (responseData && responseData.isVideo ? "video" : "image");
+                  b.textContent = bMode === "video" ? "\u751F\u6210\u89C6\u9891" : "\u751F\u6210\u56FE\u7247";
+                }
               });
-            }, 80);
+            });
           }
         };
         trackImageResponseHandler(requestId, imageResponseHandler);
         addLog(`\u56FE\u50CF\u54CD\u5E94\u76D1\u542C\u5668\u5DF2\u521B\u5EFA (ID: ${requestId})`);
         if (!alreadyGenerating) {
           button.setAttribute("data-loading", "true");
+          button.dataset.loadingStartedAt = String(Date.now());
           button.textContent = isVideoMode ? "\u89C6\u9891\u751F\u6210\u4E2D..." : "\u52A0\u8F7D\u4E2D...";
           startGenerating(link);
           const buttonChange = isVideoMode ? video || button.dataset.videoPrompt || (/asset_manifest\s*:/i.test(link) ? link : "") : change || link;
@@ -54228,21 +54434,14 @@ function isButtonEligibleForAutoClick(button) {
     const createdAt = Number(button.dataset.createdAt || 0);
     const triggerStartTime = Number(window.zidongdianjiStartTime || 0);
     const now = Date.now();
-    if (triggerStartTime > 0 && now - triggerStartTime > 15e3) {
+    if (triggerStartTime <= 0 || now - triggerStartTime > 15e3) {
       return false;
     }
-    const isFreshButton = createdAt > 0 && now - createdAt <= 6e4;
-    if (!isFreshButton) {
-      const mesContainer = button.closest?.(".mes[mesid]");
-      if (mesContainer) {
-        const allMes = document.querySelectorAll("#chat .mes[mesid]");
-        if (allMes.length > 0) {
-          const mesIndex = Array.prototype.indexOf.call(allMes, mesContainer);
-          if (mesIndex !== -1 && mesIndex < allMes.length - 2) {
-            return false;
-          }
-        }
-      }
+    if (createdAt <= 0 || now - createdAt > 6e4) {
+      return false;
+    }
+    if (createdAt < triggerStartTime - 15e3) {
+      return false;
     }
   }
   return true;
@@ -54363,9 +54562,23 @@ async function findAndReplaceInElement(rootElement, imageAlt = "Generated Image"
   }
   const loadingButton = rootElement.querySelector('button.image-tag-button[data-loading="true"]');
   if (loadingButton) {
-    console.log("[iframe] Element has loading button, skipping processing");
-    notifyAutoClick(true);
-    return;
+    const startedAt = Number(loadingButton.dataset.loadingStartedAt || 0);
+    const btnLink = loadingButton.dataset.link || loadingButton.dataset.imageTag;
+    const generating = btnLink ? isGenerating(btnLink) : false;
+    const maxTimeoutMs = Math.max(18e5, (parseInt(settings3?.comfyui_timeout, 10) || 1800) * 1e3);
+    const isStale = !generating && startedAt > 0 && Date.now() - startedAt > 1e4 || startedAt > 0 && Date.now() - startedAt > maxTimeoutMs;
+    if (isStale) {
+      console.warn("[iframe] \u68C0\u6D4B\u5230\u9648\u65E7 loading \u6B7B\u9501\u6309\u94AE\uFF0C\u81EA\u52A8\u590D\u4F4D\u81EA\u6108:", btnLink);
+      loadingButton.removeAttribute("data-loading");
+      delete loadingButton.dataset.loadingStartedAt;
+      loadingButton.disabled = false;
+      const bMode = loadingButton.dataset.activeMode || "image";
+      loadingButton.textContent = bMode === "video" ? "\u751F\u6210\u89C6\u9891" : "\u751F\u6210\u56FE\u7247";
+    } else {
+      console.log("[iframe] Element has loading button, skipping processing");
+      notifyAutoClick(true);
+      return;
+    }
   }
   if (!settings3.startTag || !settings3.endTag) {
     console.warn("[iframe] startTag or endTag is empty, skipping placeholder processing");
@@ -55772,98 +55985,71 @@ function showImagePreview(img, button, autoFullscreen = false) {
       isVideo: entry.isVideo || false,
       genParams: entry.genParams || null,
       date: entry.date || 0,
-      originalUrl: entry.originalUrl || ""
+      originalUrl: entry.originalUrl || "",
+      path: entry.path || "",
+      thumbnail_path: entry.thumbnail_path || "",
+      thumbnail_uuid: entry.thumbnail_uuid || "",
+      source: entry.source || "",
+      uuid: entry.uuid || ""
     }));
-    const blobPromises = merged.images.map(async (imageEntry) => {
-      const isVideo = imageEntry.isVideo || false;
-      let rawBlob = null;
-      if (imageEntry.source === "server" && imageEntry.path) {
-        try {
-          const response = await fetch(imageEntry.path);
-          if (response.ok) {
-            rawBlob = await response.blob();
-          }
-        } catch (error) {
-          console.error("Failed to fetch media blob:", error);
-        }
-      } else if (imageEntry.source === "db" && imageEntry.uuid) {
-        const imageData = await dbs.storeReadOnly(imageEntry.uuid);
-        if (imageData && imageData.data) {
-          const mimeType = isVideo ? "video/mp4" : "image/png";
-          rawBlob = new Blob([imageData.data], { type: mimeType });
-        }
-      }
-      if (rawBlob && isVideo) {
-        try {
-          return await fixMp4Faststart(rawBlob);
-        } catch (e) {
-          console.warn("[imagePreview] fixMp4Faststart \u5931\u8D25\uFF0C\u56DE\u9000\u4F7F\u7528\u539F\u59CB Blob:", e);
-          return rawBlob;
-        }
-      }
-      return rawBlob;
-    });
-    const allBlobs = await Promise.all(blobPromises);
-    const validIndices = [];
-    images = allBlobs.filter((b, i) => {
-      if (b !== null) {
-        validIndices.push(i);
-        return true;
-      }
-      return false;
-    });
-    mediaInfos = validIndices.map((i) => mediaInfos[i]);
-    thumbnailContainer.querySelectorAll("img").forEach((thumb) => {
-      if (thumb.src && thumb.src.startsWith("blob:")) {
-        window.top["URL"].revokeObjectURL(thumb.src);
-      }
-    });
-    thumbnailContainer.innerHTML = "";
-    const filteredMergedImages = validIndices.map((i) => merged.images[i]);
-    const thumbnailPromises = filteredMergedImages.map(async (imageEntry, index) => {
-      const isVideo = imageEntry.isVideo || false;
-      if (isVideo) {
-        if (imageEntry.source === "server" && imageEntry.thumbnail_path) {
-          try {
-            const response = await fetch(imageEntry.thumbnail_path);
-            if (response.ok) {
-              return await response.blob();
+    images = new Array(merged.images.length).fill(null);
+    let newIndex = currentIndex;
+    if (newIndex >= images.length) {
+      newIndex = Math.max(0, images.length - 1);
+    }
+    updateLargeImage(newIndex);
+    (async () => {
+      const thumbnailPromises = merged.images.map(async (imageEntry, index) => {
+        const isVideo = imageEntry.isVideo || false;
+        if (isVideo) {
+          if (imageEntry.source === "server" && imageEntry.thumbnail_path) {
+            try {
+              const response = await fetch(imageEntry.thumbnail_path);
+              if (response.ok) return await response.blob();
+            } catch (_) {
             }
-          } catch (error) {
-            console.warn("[iframe] Failed to fetch video thumbnail from server:", error);
           }
+          if (imageEntry.thumbnail_uuid) {
+            try {
+              const tb = await dbs.getImageThumbnailBlobByUUID(imageEntry.thumbnail_uuid);
+              if (tb) return tb;
+            } catch (_) {
+            }
+          }
+          return null;
         }
-        if (imageEntry.thumbnail_uuid) {
-          const thumbnailBlob = await dbs.getImageThumbnailBlobByUUID(imageEntry.thumbnail_uuid);
-          if (thumbnailBlob) {
-            return thumbnailBlob;
-          }
+        if (imageEntry.source === "server" && imageEntry.path) {
+          return imageEntry.path;
         }
         return null;
-      }
-      return images[index];
-    });
-    const thumbnailBlobs = await Promise.all(thumbnailPromises);
-    thumbnailBlobs.forEach((thumbnailBlob, index) => {
-      const thumb = doc.createElement("img");
-      if (thumbnailBlob) {
-        thumb.src = window.top["URL"].createObjectURL(thumbnailBlob);
-      } else {
-        thumb.src = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCIgdmlld0JveD0iMCAwIDEyOCAxMjgiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjEyOCIgaGVpZ2h0PSIxMjgiIGZpbGw9IiMxYTFhMmUiLz48cG9seWdvbiBwb2ludHM9IjUwLDQwIDUwLDg4IDkwLDY0IiBmaWxsPSJyZ2JhKDI1NSwyNTUsMjU1LDAuNSkiLz48dGV4dCB4PSI2NCIgeT0iMTEwIiBmb250LWZhbWlseT0iQXJpYWwiIGZvbnQtc2l6ZT0iMTIiIGZpbGw9InJnYmEoMjU1LDI1NSwyNTUsMC41KSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+VklERU88L3RleHQ+PC9zdmc+";
-        thumb.alt = "Video";
-      }
-      thumb.className = "st-chatu8-preview-thumbnail";
-      thumb.dataset.index = String(index);
-      thumb.onclick = () => updateLargeImage(index);
-      thumbnailContainer.appendChild(thumb);
-    });
+      });
+      const thumbnailResults = await Promise.all(thumbnailPromises);
+      thumbnailContainer.innerHTML = "";
+      thumbnailResults.forEach((res, index) => {
+        const thumb = doc.createElement("img");
+        if (res instanceof Blob) {
+          thumb.src = (window.top["URL"] || URL).createObjectURL(res);
+        } else if (typeof res === "string" && res) {
+          thumb.src = res;
+        } else {
+          thumb.src = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCIgdmlld0JveD0iMCAwIDEyOCAxMjgiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjEyOCIgaGVpZ2h0PSIxMjgiIGZpbGw9IiMxYTFhMmUiLz48cG9seWdvbiBwb2ludHM9IjUwLDQwIDUwLDg4IDkwLDY0IiBmaWxsPSJyZ2JhKDI1NSwyNTUsMjU1LDAuNSkiLz48dGV4dCB4PSI2NCIgeT0iMTEwIiBmb250LWZhbWlseT0iQXJpYWwiIGZvbnQtc2l6ZT0iMTIiIGZpbGw9InJnYmEoMjU1LDI1NSwyNTUsMC41KSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+VklERU88L3RleHQ+PC9zdmc+";
+          thumb.alt = "Media";
+        }
+        thumb.className = "st-chatu8-preview-thumbnail";
+        thumb.dataset.index = String(index);
+        thumb.onclick = () => updateLargeImage(index);
+        thumbnailContainer.appendChild(thumb);
+      });
+      const thumbs = thumbnailContainer.querySelectorAll(".st-chatu8-preview-thumbnail");
+      thumbs.forEach((t, i) => t.classList.toggle("active", i === currentIndex));
+    })();
     if (images.length > 0) {
-      let newIndex = currentIndex;
-      if (newIndex >= images.length) {
-        newIndex = images.length - 1;
+      let newIndex2 = currentIndex;
+      if (newIndex2 >= images.length) {
+        newIndex2 = images.length - 1;
       }
-      updateLargeImage(newIndex);
-      const [newImgSrc, change, , isVideoNew, origUrl] = await getItemImg(tag, newIndex);
+      updateLargeImage(newIndex2);
+      const [newImgSrc, change, , isVideoNew, origUrl] = await getItemImg(tag, newIndex2);
       if (newImgSrc) {
         const newIsVideo = isVideoNew || false;
         const originalIsVideo = img.tagName === "VIDEO";
@@ -55897,16 +56083,17 @@ function showImagePreview(img, button, autoFullscreen = false) {
             overflow: hidden;
             box-sizing: border-box;
         `;
-    if (index === null || index < 0 || index >= images.length) return slot;
-    const blob = images[index];
-    if (!blob) return slot;
+    if (index === null || index < 0 || index >= mediaInfos.length) return slot;
     const isVideo = !!(mediaInfos[index] && mediaInfos[index].isVideo);
     const info = mediaInfos[index] || {};
+    const blob = images[index];
     let blobUrl = "";
-    try {
-      blobUrl = (window.top["URL"] || URL).createObjectURL(blob);
-    } catch (_) {
-      blobUrl = URL.createObjectURL(blob);
+    if (blob) {
+      try {
+        blobUrl = (window.top["URL"] || URL).createObjectURL(blob);
+      } catch (_) {
+        blobUrl = URL.createObjectURL(blob);
+      }
     }
     let el;
     if (isVideo) {
@@ -55929,10 +56116,40 @@ function showImagePreview(img, button, autoFullscreen = false) {
       el.setAttribute("webkit-playsinline", "true");
       el.setAttribute("x5-playsinline", "true");
       el.setAttribute("x5-video-player-type", "h5");
-      el.setAttribute("preload", isCurrent ? "metadata" : "none");
+      el.setAttribute("preload", isCurrent ? "auto" : "none");
+      el.onended = () => {
+        if (el.loop) {
+          el.currentTime = 0;
+          el.play().catch(() => {
+          });
+        }
+      };
       if (info.verifiedSrc) {
         el.src = info.verifiedSrc;
         el.dataset.blobUrl = info.verifiedSrc;
+      } else if (info.path) {
+        el.src = info.path;
+      } else if (info.originalUrl) {
+        el.src = info.originalUrl;
+      } else if (blobUrl) {
+        el.src = blobUrl;
+        el.dataset.blobUrl = blobUrl;
+      } else if (info.source === "db" && info.uuid) {
+        dbs.storeReadOnly(info.uuid).then((imageData) => {
+          if (imageData && imageData.data) {
+            const rawBlob = new Blob([imageData.data], { type: "video/mp4" });
+            fixMp4Faststart(rawBlob).then((fixedBlob) => {
+              images[index] = fixedBlob;
+              const bUrl = (window.top["URL"] || URL).createObjectURL(fixedBlob);
+              el.dataset.blobUrl = bUrl;
+              el.src = bUrl;
+            }).catch(() => {
+              const bUrl = (window.top["URL"] || URL).createObjectURL(rawBlob);
+              el.dataset.blobUrl = bUrl;
+              el.src = bUrl;
+            });
+          }
+        }).catch((e) => console.warn("[imagePreview] \u8BFB\u53D6 DB \u89C6\u9891\u5931\u8D25:", e));
       } else {
         getItemImg(currentTag, index).then(([dataUrl, , , , origUrl]) => {
           if (dataUrl) {
@@ -55959,6 +56176,24 @@ function showImagePreview(img, button, autoFullscreen = false) {
           }
           return;
         }
+        if (info.path && el.src !== info.path) {
+          console.log("[iframe] \u5C1D\u8BD5\u56DE\u9000\u81F3\u670D\u52A1\u7AEF\u76F4\u94FE\u8DEF\u5F84:", info.path);
+          el.src = info.path;
+          try {
+            el.load();
+          } catch (_) {
+          }
+          return;
+        }
+        if (blobUrl && el.src !== blobUrl) {
+          console.log("[iframe] \u5C1D\u8BD5\u56DE\u9000\u81F3\u672C\u5730 BlobURL:", blobUrl);
+          el.src = blobUrl;
+          try {
+            el.load();
+          } catch (_) {
+          }
+          return;
+        }
         const fallback = doc.createElement("div");
         fallback.style.cssText = `
                     display: flex;
@@ -55972,7 +56207,7 @@ function showImagePreview(img, button, autoFullscreen = false) {
                     color: #fff;
                     text-align: center;
                 `;
-        const dlUrl = el.dataset.blobUrl || blobUrl || info.originalUrl || "";
+        const dlUrl = el.dataset.blobUrl || blobUrl || info.path || info.originalUrl || "";
         fallback.innerHTML = `
                     <div style="font-size: 64px; margin-bottom: 15px;">\u{1F3AC}</div>
                     <div style="margin-bottom: 15px; opacity: 0.8;">\u89C6\u9891\u5728\u5F53\u524D\u6D4F\u89C8\u5668\u4E2D\u65E0\u6CD5\u76F4\u63A5\u89E3\u7801</div>
@@ -55988,8 +56223,24 @@ function showImagePreview(img, button, autoFullscreen = false) {
       };
     } else {
       el = doc.createElement("img");
-      el.src = blobUrl;
       el.draggable = false;
+      if (blobUrl) {
+        el.src = blobUrl;
+      } else if (info.path) {
+        el.src = info.path;
+      } else if (info.source === "db" && info.uuid) {
+        dbs.storeReadOnly(info.uuid).then((imageData) => {
+          if (imageData && imageData.data) {
+            const imgBlob = new Blob([imageData.data], { type: "image/png" });
+            images[index] = imgBlob;
+            el.src = (window.top["URL"] || URL).createObjectURL(imgBlob);
+          }
+        }).catch((e) => console.warn("[imagePreview] \u8BFB\u53D6 DB \u56FE\u7247\u5931\u8D25:", e));
+      } else {
+        getItemImg(currentTag, index).then(([dataUrl]) => {
+          if (dataUrl) el.src = dataUrl;
+        }).catch((e) => console.warn("[imagePreview] \u83B7\u53D6\u56FE\u7247\u6570\u636E\u5931\u8D25:", e));
+      }
     }
     el.className = "st-chatu8-preview-large-image";
     el.style.cssText = `
@@ -56141,89 +56392,61 @@ function showImagePreview(img, button, autoFullscreen = false) {
       genParams: entry.genParams || null,
       date: entry.date || 0,
       originalUrl: entry.originalUrl || "",
+      path: entry.path || "",
+      thumbnail_path: entry.thumbnail_path || "",
+      thumbnail_uuid: entry.thumbnail_uuid || "",
+      source: entry.source || "",
+      uuid: entry.uuid || "",
       verifiedSrc: idx === merged.currentIndex && verifiedInitialSrc ? verifiedInitialSrc : ""
     }));
-    const blobPromises = merged.images.map(async (imageEntry) => {
-      const isVideo = imageEntry.isVideo || false;
-      let rawBlob = null;
-      if (imageEntry.source === "server" && imageEntry.path) {
-        try {
-          const response = await fetch(imageEntry.path);
-          if (response.ok) {
-            rawBlob = await response.blob();
-          }
-        } catch (error) {
-          console.error("Failed to fetch media blob:", error);
-        }
-      } else if (imageEntry.source === "db" && imageEntry.uuid) {
-        const imageData = await dbs.storeReadOnly(imageEntry.uuid);
-        if (imageData && imageData.data) {
-          const mimeType = isVideo ? "video/mp4" : "image/png";
-          rawBlob = new Blob([imageData.data], { type: mimeType });
-        }
-      }
-      if (rawBlob && isVideo) {
-        try {
-          return await fixMp4Faststart(rawBlob);
-        } catch (e) {
-          console.warn("[imagePreview] fixMp4Faststart \u5931\u8D25\uFF0C\u56DE\u9000\u4F7F\u7528\u539F\u59CB Blob:", e);
-          return rawBlob;
-        }
-      }
-      return rawBlob;
-    });
-    const allBlobs = await Promise.all(blobPromises);
-    const validIndices = [];
-    images = allBlobs.filter((b, i) => {
-      if (b !== null) {
-        validIndices.push(i);
-        return true;
-      }
-      return false;
-    });
-    mediaInfos = validIndices.map((i) => mediaInfos[i]);
-    if (images.length > 0) {
-      const filteredMergedImages = validIndices.map((i) => merged.images[i]);
-      const thumbnailPromises = filteredMergedImages.map(async (imageEntry, index) => {
+    images = new Array(merged.images.length).fill(null);
+    const targetIndex = merged.currentIndex >= 0 && merged.currentIndex < merged.images.length ? merged.currentIndex : 0;
+    updateLargeImage(targetIndex);
+    (async () => {
+      const thumbnailPromises = merged.images.map(async (imageEntry, index) => {
         const isVideo = imageEntry.isVideo || false;
         if (isVideo) {
           if (imageEntry.source === "server" && imageEntry.thumbnail_path) {
             try {
               const response = await fetch(imageEntry.thumbnail_path);
-              if (response.ok) {
-                return await response.blob();
-              }
-            } catch (error) {
-              console.warn("[iframe] Failed to fetch video thumbnail from server:", error);
+              if (response.ok) return await response.blob();
+            } catch (_) {
             }
           }
           if (imageEntry.thumbnail_uuid) {
-            const thumbnailBlob = await dbs.getImageThumbnailBlobByUUID(imageEntry.thumbnail_uuid);
-            if (thumbnailBlob) {
-              return thumbnailBlob;
+            try {
+              const tb = await dbs.getImageThumbnailBlobByUUID(imageEntry.thumbnail_uuid);
+              if (tb) return tb;
+            } catch (_) {
             }
           }
-          console.warn("[iframe] No thumbnail available for video, index:", index);
           return null;
         }
-        return images[index];
+        if (imageEntry.source === "server" && imageEntry.path) {
+          return imageEntry.path;
+        }
+        return null;
       });
-      const thumbnailBlobs = await Promise.all(thumbnailPromises);
-      thumbnailBlobs.forEach((thumbnailBlob, index) => {
+      const thumbnailResults = await Promise.all(thumbnailPromises);
+      thumbnailContainer.innerHTML = "";
+      thumbnailResults.forEach((res, index) => {
         const thumb = doc.createElement("img");
-        if (thumbnailBlob) {
-          thumb.src = window.top["URL"].createObjectURL(thumbnailBlob);
+        if (res instanceof Blob) {
+          thumb.src = (window.top["URL"] || URL).createObjectURL(res);
+        } else if (typeof res === "string" && res) {
+          thumb.src = res;
         } else {
           thumb.src = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCIgdmlld0JveD0iMCAwIDEyOCAxMjgiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjEyOCIgaGVpZ2h0PSIxMjgiIGZpbGw9IiMxYTFhMmUiLz48cG9seWdvbiBwb2ludHM9IjUwLDQwIDUwLDg4IDkwLDY0IiBmaWxsPSJyZ2JhKDI1NSwyNTUsMjU1LDAuNSkiLz48dGV4dCB4PSI2NCIgeT0iMTEwIiBmb250LWZhbWlseT0iQXJpYWwiIGZvbnQtc2l6ZT0iMTIiIGZpbGw9InJnYmEoMjU1LDI1NSwyNTUsMC41KSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+VklERU88L3RleHQ+PC9zdmc+";
-          thumb.alt = "Video";
+          thumb.alt = "Media";
         }
         thumb.className = "st-chatu8-preview-thumbnail";
         thumb.dataset.index = String(index);
         thumb.onclick = () => updateLargeImage(index);
         thumbnailContainer.appendChild(thumb);
       });
-      updateLargeImage(merged.currentIndex);
-    }
+      const thumbs = thumbnailContainer.querySelectorAll(".st-chatu8-preview-thumbnail");
+      thumbs.forEach((t, i) => t.classList.toggle("active", i === currentIndex));
+    })();
   })();
 }
 var init_imagePreview = __esm({
@@ -61970,7 +62193,13 @@ function loadEdgePingFromSettings() {
   if (!extension_settings98[extensionName]) return false;
   const cache = extension_settings98[extensionName].edgePingCache;
   if (!cache || !cache.servers || !cache.pingTime) return false;
-  availableEdgeServers = cache.servers.map((s) => ({ name: s.name, url: s.url, latency: s.latency }));
+  const validUrls = new Set(EDGE_TTS_CONFIG.proxyServers.map((s) => s.url));
+  const validServers = cache.servers.filter((s) => validUrls.has(s.url));
+  if (validServers.length === 0) {
+    log("\u{1F4C2} \u7F13\u5B58\u7684 Edge \u670D\u52A1\u5668\u5DF2\u4E0D\u5728\u5F53\u524D\u914D\u7F6E\u5217\u8868\u4E2D\uFF0C\u5C06\u91CD\u65B0\u68C0\u6D4B\u65B0\u8282\u70B9");
+    return false;
+  }
+  availableEdgeServers = validServers.map((s) => ({ name: s.name, url: s.url, latency: s.latency }));
   edgeServerIndex = 0;
   lastEdgePingResult = cache.pingResult;
   lastEdgePingTime = cache.pingTime;
@@ -62259,7 +62488,7 @@ async function pingEdgeServers(force = false) {
             const testUrl = `${server.url}?t=test&v=zh-CN-XiaoxiaoNeural&r=0&p=0&vol=100`;
             const resp = await fetch(testUrl, {
               signal: controller.signal,
-              headers: { "User-Agent": "TTS-Client/1.0", "Accept": "audio/*" }
+              headers: { "Accept": "audio/*" }
             });
             clearTimeout(timeout);
             if (resp.ok) {
@@ -62336,7 +62565,7 @@ async function requestEdgeTTS(text, segIdx, requestParams) {
     try {
       const resp = await fetch(url, {
         signal: controller.signal,
-        headers: { "User-Agent": "TTS-Client/1.0", "Accept": "audio/*" }
+        headers: { "Accept": "audio/*" }
       });
       clearTimeout(timeout);
       if (!resp.ok) {
@@ -62375,7 +62604,7 @@ async function requestEdgeTTS(text, segIdx, requestParams) {
         try {
           const resp = await fetch(url, {
             signal: controller.signal,
-            headers: { "User-Agent": "TTS-Client/1.0", "Accept": "audio/*" }
+            headers: { "Accept": "audio/*" }
           });
           clearTimeout(timeout);
           if (resp.ok) {
@@ -62849,13 +63078,8 @@ var init_tts = __esm({
     currentEngine = "qwen";
     EDGE_TTS_CONFIG = {
       proxyServers: [
-        { name: "\u4E2D\u56FD", url: "http://t.leftsite.cn/tts" },
-        { name: "\u4E2D\u56FD\u5317\u4EAC", url: "http://60.205.243.148:8080/tts" },
-        { name: "\u65B0\u52A0\u5761", url: "http://5.45.99.149:8075/tts" },
-        { name: "\u7532\u9AA8\u6587\u9996\u5C14", url: "http://193.122.107.44:9090/tts" },
-        { name: "\u7F8E\u56FD\u65E7\u91D1\u5C71", url: "http://104.214.168.83:8080/tts" },
-        { name: "\u7F8E\u56FD\u7EBD\u7EA6", url: "http://74.48.40.244:8010/tts" },
-        { name: "\u963F\u91CC\u4E91\u4E1C\u5357\u4E9A", url: "http://47.79.92.215:18080/tts" }
+        { name: "Cloudflare\u4E13\u5C5E", url: "https://edge.damoshen123.workers.dev/tts" },
+        { name: "\u65B0\u52A0\u5761\u5907\u7528", url: "http://5.45.99.149:8075/tts" }
       ],
       voice: "zh-CN-XiaoxiaoNeural",
       style: "general",
@@ -64857,8 +65081,12 @@ var init_novelaiSettingsModule = __esm({
 \u25A0 \u6A21\u578B\u4E0E\u91C7\u6837\u5668\u914D\u7F6E
 
 \u8BBE\u7F6E\u6A21\u578B\uFF1A
-<SystemQuery>{"type": "write", "path": "novelaimode", "value": "nai-diffusion-4-5-curated"}</SystemQuery>
-\u53EF\u9009\u503C\uFF1Anai-diffusion-3 / nai-diffusion-4-full / nai-diffusion-4-curated-preview / nai-diffusion-4-5-curated / nai-diffusion-4-5-full
+<SystemQuery>{"type": "write", "path": "novelaimode", "value": "nai-diffusion-5-full"}</SystemQuery>
+\u53EF\u9009\u503C\uFF1Anai-diffusion-3 / nai-diffusion-4-full / nai-diffusion-4-curated-preview / nai-diffusion-4-5-curated / nai-diffusion-4-5-full / nai-diffusion-5-curated / nai-diffusion-5-full
+
+\u8BBE\u7F6E V5 Full \u8D28\u91CF\u4E0E\u7B97\u529B\u6863\u4F4D\uFF08Effort\uFF09\uFF1A
+<SystemQuery>{"type": "write", "path": "novelai_v5_effort", "value": "high"}</SystemQuery>
+\u53EF\u9009\u503C\uFF1Ahigh\uFF08\u9AD8\u8D28\u91CF\xB723\u6B65\u539F\u7248\uFF09/ medium\uFF08\u7701\u6D41\xB714\u6B65\u84B8\u998F\u7248\uFF0C\u7701\u7EA642%\u7B97\u529B\uFF09
 
 \u8BBE\u7F6E\u91C7\u6837\u65B9\u6CD5\uFF1A
 <SystemQuery>{"type": "write", "path": "novelai_sampler", "value": "k_euler"}</SystemQuery>
@@ -65228,7 +65456,7 @@ var init_novelaiSettingsModule = __esm({
 \u25A0 API \u8FDE\u63A5\u95EE\u9898
 - API Key \u65E0\u6548\uFF1A\u786E\u8BA4 novelaiApi \u683C\u5F0F\u6B63\u786E\uFF08pst- \u5F00\u5934\uFF09\uFF0C\u68C0\u67E5\u662F\u5426\u8FC7\u671F\u6216\u4F59\u989D\u4E0D\u8DB3
 - \u65E0\u6CD5\u8FDE\u63A5\u5B98\u7F51\uFF1A\u68C0\u67E5\u7F51\u7EDC\u8FDE\u63A5\uFF0C\u6D4F\u89C8\u5668\u662F\u5426\u5F00\u542F\u7684vpn\uFF08\u68AF\u5B50/\u9B54\u6CD5\uFF09\uFF0C\u5982\u679C\u662Fjiuguan\u5BA2\u6237\u7AEF\u90A3\u4E48\u5982\u679C\u662F\u7535\u8111\uFF0C\u9700\u8981vpn\u5F00\u542Ftun\uFF08\u865A\u62DF\u7F51\u5361\uFF09\u6A21\u5F0F\uFF0C\u6216\u8005\u5728\u9152\u9986\u7684\u914D\u7F6E\u91CC\u8BBE\u7F6E\u4EE3\u7406\u3002
-- \u955C\u50CF\u7AD9\u65E0\u6CD5\u4F7F\u7528\uFF1A\u786E\u8BA4 novelaiOtherSite \u5730\u5740\u6B63\u786E\uFF0C\u5305\u542B\u5B8C\u6574\u7684 URL\uFF0C\u4EC5\u652F\u6301\u955C\u50CF\u7AD9\uFF0C\u5982\u679C\u662F\u5176\u4ED6\u7684\u7B2C\u4E09\u653E\u63A5\u53E3\u4E0D\u540C\u53EF\u80FD\u65E0\u6CD5\u652F\u6301\u3002
+- \u955C\u50CF\u7AD9/\u7B2C\u4E09\u65B9\u4E2D\u8F6C\u65E0\u6CD5\u4F7F\u7528\uFF1A\u786E\u8BA4 novelaiOtherSite \u5730\u5740\u6B63\u786E\uFF08\u652F\u6301\u5B98\u65B9\u53CD\u4EE3\u6839\u5730\u5740\u4E0E\u5355 Endpoint \u5B8C\u6574\u751F\u56FE\u5730\u5740\uFF0C\u63D2\u4EF6\u5185\u7F6E\u5931\u8D25\u81EA\u52A8\u56DE\u9000\uFF09\u3002\u6CE8\u610F\u5BA2\u6237\u7AEF\u9700\u9009\u62E9\u6D4F\u89C8\u5668\u6A21\u5F0F\u3002
 - 429\u62A5\u9519\uFF1A\u662F\u5176\u4ED6\u4EBA\u5728\u540C\u65F6\u4F7F\u7528\u62A5\u9519\u4E86\u3002
 
 \u25A0 \u6A21\u578B\u9009\u62E9\u95EE\u9898
@@ -80318,7 +80546,6 @@ function isSettingTrue2(val) {
 }
 function getDirectHeaders2(contentType = null, auth = null) {
   const headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "*/*",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     "Cache-Control": "no-cache",
@@ -80332,7 +80559,7 @@ function getDirectHeaders2(contentType = null, auth = null) {
   }
   return headers;
 }
-var currentTaskId5 = null;
+var currentTaskId4 = null;
 async function generateSDImage({ prompt: link, width: Xwidth, height: Xheight, change, extraNegativePrompt }) {
   clearLog();
   const taskId = taskQueue.addTask({
@@ -80340,7 +80567,7 @@ async function generateSDImage({ prompt: link, width: Xwidth, height: Xheight, c
     type: TaskType.SD,
     prompt: link
   });
-  currentTaskId5 = taskId;
+  currentTaskId4 = taskId;
   let lockAcquired = false;
   await acquireSerialLock(taskId);
   lockAcquired = true;
@@ -80397,7 +80624,8 @@ async function generateSDImage({ prompt: link, width: Xwidth, height: Xheight, c
     addLog("\u5206\u89D2\u8272\u6A21\u5F0F: \u89E3\u6790\u5E26\u5750\u6807\u7684\u63D0\u793A\u8BCD\u5B57\u7B26\u4E32\u3002");
     prompt_data = parsePromptStringWithCoordinates(promptForGeneration);
     mainPrompt = prompt_data["Scene Composition"];
-    for (let i = 1; i <= 4; i++) {
+    const charIds = getSortedCharacterIds(prompt_data);
+    for (const i of charIds) {
       if (prompt_data[`Character ${i} Prompt`]) {
         other_prompt = other_prompt + ", " + prompt_data[`Character ${i} Prompt`];
       }
@@ -80408,7 +80636,8 @@ async function generateSDImage({ prompt: link, width: Xwidth, height: Xheight, c
   }
   let { modifiedPrompt, insertions } = await prompt_replace(mainPrompt, other_prompt);
   if (Divide_roles) {
-    for (let i = 1; i <= 4; i++) {
+    const charIds = getSortedCharacterIds(prompt_data);
+    for (const i of charIds) {
       if (prompt_data[`Character ${i} Prompt`]) {
         modifiedPrompt = modifiedPrompt + ", " + prompt_replace_for_character(prompt_data[`Character ${i} Prompt`], (mainPrompt || "") + " " + (other_prompt || ""));
       }
@@ -80418,7 +80647,7 @@ async function generateSDImage({ prompt: link, width: Xwidth, height: Xheight, c
   if (!extension_settings58[extensionName].yushe || !extension_settings58[extensionName].yushe[_sd_yushe_id]) {
     toastr.error("\u672A\u80FD\u627E\u5230\u6240\u9009\u7684\u56FA\u5B9A\u63D0\u793A\u8BCD\u9884\u8BBE\u3002\u8BF7\u524D\u5F80\u63D2\u4EF6\u8BBE\u7F6E\u4E2D\u65B0\u5EFA\u6216\u9009\u62E9\u4E00\u4E2A\u56FA\u5B9A\u63D0\u793A\u8BCD\u3002", "SD \u751F\u56FE\u9519\u8BEF");
     taskQueue.completeTask(taskId, false);
-    currentTaskId5 = null;
+    currentTaskId4 = null;
     throw new Error("\u56FA\u5B9A\u63D0\u793A\u8BCD\u9884\u8BBE\u672A\u914D\u7F6E");
   }
   const _sd_preset = extension_settings58[extensionName].yushe[_sd_yushe_id];
@@ -80496,7 +80725,7 @@ async function generateSDImage({ prompt: link, width: Xwidth, height: Xheight, c
   } catch (error) {
     addLog(`\u83B7\u53D6\u6216\u8005\u5207\u6362\u6A21\u578B\u5931\u8D25: ${error.message}\u3002\u8BF7\u68C0\u67E5sdwebui\u662F\u5426\u6B63\u5E38\u542F\u52A8\uFF0C\u5E76\u68C0\u67E5\u6A21\u578B\u662F\u5426\u6B63\u786E\u3002`);
     taskQueue.completeTask(taskId, false);
-    currentTaskId5 = null;
+    currentTaskId4 = null;
     throw new Error(`\u83B7\u53D6\u6216\u8005\u5207\u6362\u6A21\u578B\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5sdwebui\u662F\u5426\u6B63\u5E38\u542F\u52A8\uFF0C\u5E76\u68C0\u67E5\u6A21\u578B\u662F\u5426\u6B63\u786E\u3002`);
   }
   let seed = -1;
@@ -80623,12 +80852,9 @@ async function generateSDImage({ prompt: link, width: Xwidth, height: Xheight, c
       if (!isPluginToastDisabled()) {
         toastr.success(`\u2705 SD \u751F\u56FE\u5B8C\u6210\uFF0C\u8017\u65F6 ${duration} \u79D2`);
       }
-      currentTaskId5 = null;
+      currentTaskId4 = null;
       if (String(extension_settings58[extensionName].convertToJpegStorage) === "true") {
         imageUrl = await convertImageToJpeg(imageUrl);
-      }
-      if (String(extension_settings58[extensionName].compressBoostStorage) === "true") {
-        imageUrl = await compressGeneratedImage(imageUrl);
       }
       return { image: imageUrl, change: change || "", genParams: _sd_gen_params };
     } else {
@@ -80656,12 +80882,9 @@ async function generateSDImage({ prompt: link, width: Xwidth, height: Xheight, c
       if (!isPluginToastDisabled()) {
         toastr.success(`\u2705 SD \u751F\u56FE\u5B8C\u6210\uFF0C\u8017\u65F6 ${duration} \u79D2`);
       }
-      currentTaskId5 = null;
+      currentTaskId4 = null;
       if (String(extension_settings58[extensionName].convertToJpegStorage) === "true") {
         imageUrl = await convertImageToJpeg(imageUrl);
-      }
-      if (String(extension_settings58[extensionName].compressBoostStorage) === "true") {
-        imageUrl = await compressGeneratedImage(imageUrl);
       }
       return { image: imageUrl, change: change_ || "", genParams: _sd_gen_params };
     }
@@ -80670,7 +80893,7 @@ async function generateSDImage({ prompt: link, width: Xwidth, height: Xheight, c
     } else {
       taskQueue.completeTask(taskId, false);
     }
-    currentTaskId5 = null;
+    currentTaskId4 = null;
     addLog(`sd\u8BF7\u6C42\u751F\u56FE\u9519\u8BEF: ${error.message}`);
     console.error("Error generating image:", error);
     throw error;
@@ -83957,6 +84180,7 @@ function initVibeGroupEditor(settingsModal) {
 
 // utils/novelai.js
 init_genParams();
+var NOVELAI_TIMEOUT_SECONDS = 300;
 function isSettingTrue3(val) {
   return val === true || val === "true";
 }
@@ -83971,7 +84195,6 @@ function normalizeNovelAIOtherSiteUrl(value) {
 }
 function getDirectHeaders3(contentType = null, auth = null) {
   const headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "*/*"
   };
   if (contentType) {
@@ -83981,6 +84204,160 @@ function getDirectHeaders3(contentType = null, auth = null) {
     headers["Authorization"] = auth;
   }
   return headers;
+}
+var workingNovelAIUrlCache = /* @__PURE__ */ new Map();
+function clearNovelAIUrlCache() {
+  workingNovelAIUrlCache.clear();
+}
+function evictNovelAIUrlCache(rawOtherSite, endpointPath = "/ai/generate-image") {
+  if (!rawOtherSite) return;
+  const normalizedPath = endpointPath.startsWith("/") ? endpointPath : `/${endpointPath}`;
+  workingNovelAIUrlCache.delete(`${rawOtherSite}|${normalizedPath}`);
+}
+function getNovelAICandidateUrls(endpointPath = "/ai/generate-image") {
+  const settings3 = extension_settings62[extensionName];
+  if (settings3.novelaisite === "\u5B98\u7F51") {
+    return {
+      candidates: [`https://image.novelai.net${endpointPath}`],
+      rawOtherSite: ""
+    };
+  }
+  const otherSite = normalizeNovelAIOtherSiteUrl(settings3.novelaiOtherSite);
+  if (!otherSite) {
+    throw new Error("\u5DF2\u9009\u62E9\u7B2C\u4E09\u65B9\u7AD9\u70B9\uFF0C\u4F46\u672A\u586B\u5199 novelaiOtherSite \u5730\u5740");
+  }
+  const normalizedPath = endpointPath.startsWith("/") ? endpointPath : `/${endpointPath}`;
+  const pathKeyword = endpointPath.replace(/^\/+/, "");
+  const cacheKey = `${otherSite}|${normalizedPath}`;
+  const cachedUrl = workingNovelAIUrlCache.get(cacheKey);
+  const candidates = [];
+  if (otherSite.includes(pathKeyword) || otherSite.endsWith(normalizedPath)) {
+    candidates.push(otherSite);
+  } else {
+    const joinedUrl = `${otherSite}${normalizedPath}`;
+    candidates.push(joinedUrl);
+    if (otherSite !== joinedUrl) {
+      candidates.push(otherSite);
+    }
+  }
+  if (cachedUrl && candidates.includes(cachedUrl)) {
+    return {
+      candidates: [cachedUrl, ...candidates.filter((u) => u !== cachedUrl)],
+      rawOtherSite: otherSite
+    };
+  }
+  return {
+    candidates,
+    rawOtherSite: otherSite
+  };
+}
+async function postNovelAIWithFallback({
+  candidates,
+  rawOtherSite = "",
+  endpointPath = "/ai/generate-image",
+  headers,
+  body,
+  signal,
+  logPrefix = "[NovelAI]"
+}) {
+  let lastError = null;
+  let lastResponse = null;
+  let lastErrorText = "";
+  for (let i = 0; i < candidates.length; i++) {
+    const currentUrl = candidates[i];
+    const isLast = i === candidates.length - 1;
+    const nextUrl = !isLast ? candidates[i + 1] : null;
+    addLog(`${logPrefix} \u5C1D\u8BD5\u8BF7\u6C42\u7AEF\u70B9: ${currentUrl}`);
+    let response = null;
+    try {
+      response = await fetch(currentUrl, {
+        method: "POST",
+        headers,
+        body,
+        signal
+      });
+    } catch (networkError) {
+      if (signal && signal.aborted) {
+        throw networkError;
+      }
+      if (isLast) {
+        addLog(`${logPrefix} \u7F51\u7EDC\u9519\u8BEF: ${networkError.message}\u3002\u5C06\u57281\u79D2\u540E\u91CD\u8BD5...`);
+        await sleep(1e3);
+        try {
+          response = await fetch(currentUrl, {
+            method: "POST",
+            headers,
+            body,
+            signal
+          });
+        } catch (retryError) {
+          lastError = retryError;
+          continue;
+        }
+      } else {
+        addLog(`${logPrefix} \u7AEF\u70B9\u7F51\u7EDC\u8BF7\u6C42\u5931\u8D25 (${networkError.message})\uFF0C\u56DE\u9000\u5C1D\u8BD5\u5019\u9009\u7AEF\u70B9: ${nextUrl}`);
+        lastError = networkError;
+        continue;
+      }
+    }
+    if (response && response.ok) {
+      const contentType = (response.headers.get("content-type") || "").toLowerCase();
+      if (contentType.includes("text/html") && !isLast) {
+        addLog(`${logPrefix} \u7AEF\u70B9 ${currentUrl} \u8FD4\u56DE\u4E86 HTML (HTTP 200)\uFF0C\u7591\u4F3C\u672A\u5339\u914D\u7684\u8DEF\u7531\u9875\u9762\uFF0C\u56DE\u9000\u5C1D\u8BD5\u5019\u9009\u7AEF\u70B9: ${nextUrl}`);
+        continue;
+      }
+      response._verifiedCandidateUrl = currentUrl;
+      return response;
+    }
+    if (response) {
+      lastResponse = response;
+      try {
+        lastErrorText = await response.text();
+      } catch (e) {
+        lastErrorText = "";
+      }
+      if (!isLast) {
+        addLog(`${logPrefix} \u7AEF\u70B9 ${currentUrl} \u8FD4\u56DE HTTP ${response.status}\uFF0C\u56DE\u9000\u5C1D\u8BD5\u5019\u9009\u7AEF\u70B9: ${nextUrl}`);
+        continue;
+      }
+    }
+  }
+  if (lastResponse) {
+    let userFriendlyError = `\u8BF7\u6C42\u5931\u8D25, \u72B6\u6001\u7801: ${lastResponse.status}, \u9519\u8BEF\u4FE1\u606F: ${lastErrorText}`;
+    switch (lastResponse.status) {
+      case 400:
+        try {
+          const errorJson = JSON.parse(lastErrorText);
+          if (errorJson.message) {
+            userFriendlyError = `\u8BF7\u6C42\u9A8C\u8BC1\u5931\u8D25: ${errorJson.message}`;
+            addLog(`${logPrefix} [API \u9519\u8BEF] 400 \u9A8C\u8BC1\u9519\u8BEF: ${errorJson.message}`);
+          }
+        } catch (e) {
+          userFriendlyError = `\u8BF7\u6C42\u9A8C\u8BC1\u5931\u8D25: ${lastErrorText}`;
+          addLog(`${logPrefix} [API \u9519\u8BEF] 400 \u9A8C\u8BC1\u9519\u8BEF: ${lastErrorText}`);
+        }
+        break;
+      case 401:
+        userFriendlyError = "API Key \u9519\u8BEF\u6216\u65E0\u6548\uFF0C\u8BF7\u68C0\u67E5 API Key\u3002";
+        addLog(`${logPrefix} [API \u9519\u8BEF] 401 \u8BA4\u8BC1\u5931\u8D25`);
+        break;
+      case 402:
+        userFriendlyError = "\u9700\u8981\u6709\u6548\u8BA2\u9605\u624D\u80FD\u8BBF\u95EE\u6B64\u7AEF\u70B9\u3002";
+        addLog(`${logPrefix} [API \u9519\u8BEF] 402 \u9700\u8981\u8BA2\u9605`);
+        break;
+      case 405:
+        userFriendlyError = `\u7AEF\u70B9\u4E0D\u652F\u6301 POST \u8BF7\u6C42 (405 Method Not Allowed): ${lastErrorText || "\u8BF7\u68C0\u67E5\u662F\u5426\u4E3A\u5355 Endpoint \u6216\u8DEF\u5F84\u914D\u7F6E"}`;
+        addLog(`${logPrefix} [API \u9519\u8BEF] 405 Method Not Allowed`);
+        break;
+      default:
+        addLog(`${logPrefix} [API \u9519\u8BEF] ${lastResponse.status}: ${lastErrorText}`);
+    }
+    throw new Error(userFriendlyError);
+  }
+  if (lastError) {
+    throw lastError;
+  }
+  throw new Error(`${logPrefix} \u672A\u80FD\u83B7\u5F97\u6709\u6548\u54CD\u5E94`);
 }
 var activeAbortControllers = /* @__PURE__ */ new Map();
 var currentCloudQueueInfo = null;
@@ -84013,6 +84390,12 @@ function cleanNovelAIPayload(payload, modelVersion) {
     }
     if (cleanedPayload.sampler === "ddim_v3") {
       cleanedPayload.sampler = "k_euler_ancestral";
+    }
+    if (modelVersion.includes("medium")) {
+      delete cleanedPayload.cfg_rescale;
+      cleanedPayload.steps = 14;
+      cleanedPayload.sampler = "k_euler_ancestral";
+      addLog("[PayloadClean] \u5DF2\u9488\u5BF9 NAI5 Medium \u6863\u4F4D\u6E05\u7406 cfg_rescale \u5E76\u9501\u5B9A\u6B65\u6570 14\u3001\u91C7\u6837\u5668 Euler Ancestral");
     }
     addLog("[PayloadClean] \u5DF2\u9488\u5BF9 NAI5 \u6A21\u578B\u6E05\u7406\u7279\u5B9A\u4E0D\u652F\u6301\u7684\u53C2\u6570 (\u5305\u542B noise_schedule)");
   }
@@ -84378,32 +84761,155 @@ async function applyCharacterReferenceGroup(preset_data) {
     toastr.error("\u6240\u6709\u89D2\u8272\u53C2\u8003\u5904\u7406\u5931\u8D25\uFF0C\u5C06\u4E0D\u4F7F\u7528\u89D2\u8272\u53C2\u8003", "\u89D2\u8272\u53C2\u8003");
   }
 }
-function unzipFile(arrayBuffer) {
+async function unzipFile(inputData) {
   addLog("\u5F00\u59CB\u89E3\u538B ZIP \u6587\u4EF6...");
   const JSZipConstructor = window.stChatu8JSZip || window.JSZip;
   if (!JSZipConstructor || typeof JSZipConstructor.loadAsync !== "function") {
     const error = new Error("JSZip \u4E0D\u53EF\u7528\uFF0C\u65E0\u6CD5\u89E3\u538B ZIP \u6587\u4EF6");
     addLog(error.message);
-    return Promise.reject(error);
+    throw error;
   }
-  return new Promise((resolve, reject) => {
-    JSZipConstructor.loadAsync(arrayBuffer).then(function(zip) {
-      addLog("ZIP \u6587\u4EF6\u52A0\u8F7D\u6210\u529F");
-      zip.forEach(function(relativePath, zipEntry) {
-        addLog(`\u5728 ZIP \u4E2D\u627E\u5230\u6587\u4EF6: ${zipEntry.name}`);
-        zipEntry.async("base64").then(function(base64String) {
-          addLog(`\u6587\u4EF6 ${zipEntry.name} \u89E3\u538B\u4E3A Base64\uFF0C\u5927\u5C0F: ${base64String.length}`);
-          resolve(base64String);
-        }).catch((err) => {
-          addLog(`\u89E3\u538B\u6587\u4EF6 ${zipEntry.name} \u5931\u8D25: ${err.message}`);
-          reject(err);
-        });
-      });
-    }).catch((err) => {
-      addLog(`\u52A0\u8F7D ZIP \u6587\u4EF6\u5931\u8D25: ${err.message}`);
-      reject(err);
-    });
-  });
+  if (!inputData) {
+    throw new Error("\u89E3\u538B\u6570\u636E\u4E3A\u7A7A");
+  }
+  const extractJsonError = (parsed, rawText) => {
+    const errMsg = parsed.message || parsed.error?.message || parsed.error || parsed.msg || parsed.detail;
+    if (errMsg) {
+      return `API\u8FD4\u56DE\u9519\u8BEF: ${typeof errMsg === "object" ? JSON.stringify(errMsg) : errMsg}`;
+    }
+    return `API\u54CD\u5E94\u4E3AJSON\u4F46\u672A\u5305\u542B\u6709\u6548\u56FE\u50CF\u6570\u636E: ${rawText.substring(0, 150)}`;
+  };
+  if (typeof inputData === "string") {
+    const trimmed = inputData.trim();
+    if (trimmed.startsWith("data:image/")) {
+      const commaIdx = trimmed.indexOf(",");
+      return commaIdx !== -1 ? trimmed.substring(commaIdx + 1) : trimmed;
+    }
+    if (trimmed.startsWith("iVBORw0KGgo")) {
+      return trimmed;
+    }
+    if (trimmed.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed.images && parsed.images[0]) return parsed.images[0];
+        if (parsed.image) return parsed.image;
+        throw new Error(extractJsonError(parsed, trimmed));
+      } catch (jsonErr) {
+        if (jsonErr.message.startsWith("API")) throw jsonErr;
+      }
+    }
+    if (trimmed.startsWith("<") && (trimmed.toLowerCase().includes("<!doctype") || trimmed.toLowerCase().includes("<html"))) {
+      const titleMatch = trimmed.match(/<title[^>]*>([^<]+)<\/title>/i);
+      const htmlHint = titleMatch ? ` (\u9875\u9762\u6807\u9898: ${titleMatch[1].trim()})` : "";
+      throw new Error(`\u7AEF\u70B9\u8FD4\u56DE\u4E86HTML\u9875\u9762\u800C\u975E\u56FE\u50CF\u538B\u7F29\u5305${htmlHint}\u3002\u8BF7\u68C0\u67E5API\u5730\u5740\u3001\u53CD\u4EE3\u8DEF\u7531\u914D\u7F6E\u6216\u662F\u5426\u88AB\u62E6\u622A\u3002`);
+    }
+  }
+  let uint8Data = null;
+  if (inputData instanceof Uint8Array) {
+    uint8Data = new Uint8Array(inputData.buffer, inputData.byteOffset, inputData.byteLength);
+  } else if (inputData instanceof ArrayBuffer || Object.prototype.toString.call(inputData) === "[object ArrayBuffer]") {
+    uint8Data = new Uint8Array(inputData);
+  } else if (typeof Blob !== "undefined" && inputData instanceof Blob) {
+    const ab = await inputData.arrayBuffer();
+    uint8Data = new Uint8Array(ab);
+  }
+  let zipPayload = inputData;
+  let loadOptions = {};
+  if (uint8Data) {
+    const isZipBinary = uint8Data.length >= 2 && uint8Data[0] === 80 && uint8Data[1] === 75;
+    const isPngBinary = uint8Data.length >= 4 && uint8Data[0] === 137 && uint8Data[1] === 80 && uint8Data[2] === 78 && uint8Data[3] === 71;
+    if (isPngBinary) {
+      addLog("\u68C0\u6D4B\u5230\u8FD4\u56DE\u5185\u5BB9\u4E3A\u539F\u59CB PNG \u4E8C\u8FDB\u5236\uFF0C\u76F4\u63A5\u8F6C\u6362\u4E3A Base64");
+      return uint8ArrayToBase642(uint8Data);
+    }
+    if (isZipBinary) {
+      zipPayload = uint8Data;
+    } else {
+      let text = "";
+      try {
+        text = new TextDecoder().decode(uint8Data).trim();
+      } catch (_) {
+        text = "";
+      }
+      if (text.startsWith("UEsDB")) {
+        zipPayload = text;
+        loadOptions = { base64: true };
+      } else if (text.startsWith("iVBORw0KGgo") || text.startsWith("data:image/")) {
+        const commaIdx = text.indexOf(",");
+        return commaIdx !== -1 ? text.substring(commaIdx + 1) : text;
+      } else if (text.startsWith("{")) {
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed.images && parsed.images[0]) return parsed.images[0];
+          if (parsed.image) return parsed.image;
+          throw new Error(extractJsonError(parsed, text));
+        } catch (parseErr) {
+          if (parseErr.message.startsWith("API")) throw parseErr;
+          throw new Error(`API\u8FD4\u56DE\u65E0\u6548JSON\u54CD\u5E94: ${text.substring(0, 150)}`);
+        }
+      } else if (text.startsWith("<") && (text.toLowerCase().includes("<!doctype") || text.toLowerCase().includes("<html"))) {
+        const titleMatch = text.match(/<title[^>]*>([^<]+)<\/title>/i);
+        const htmlHint = titleMatch ? ` (\u9875\u9762\u6807\u9898: ${titleMatch[1].trim()})` : "";
+        throw new Error(`\u7AEF\u70B9\u8FD4\u56DE\u4E86HTML\u9875\u9762\u800C\u975E\u56FE\u50CF\u538B\u7F29\u5305${htmlHint}\u3002\u8BF7\u68C0\u67E5API\u5730\u5740\u3001\u53CD\u4EE3\u8DEF\u7531\u914D\u7F6E\u6216\u662F\u5426\u88AB\u62E6\u622A\u3002`);
+      } else if (text.length > 0 && text.length < 500) {
+        throw new Error(`\u7AEF\u70B9\u8FD4\u56DE\u975E\u9884\u671F\u6587\u672C\u54CD\u5E94: ${text}`);
+      } else {
+        const magicBytes = Array.from(uint8Data.slice(0, 4)).map((b) => "0x" + b.toString(16).padStart(2, "0")).join(", ");
+        throw new Error(`\u8FD4\u56DE\u6570\u636E\u4E0D\u662F\u5408\u6CD5\u7684ZIP\u538B\u7F29\u5305\u6216\u56FE\u7247\u6587\u4EF6\uFF08\u524D\u5BFC\u5B57\u8282: [${magicBytes}]\uFF09`);
+      }
+    }
+  } else if (typeof inputData === "string") {
+    const trimmed = inputData.trim();
+    if (trimmed.startsWith("UEsDB")) {
+      zipPayload = trimmed;
+      loadOptions = { base64: true };
+    } else {
+      throw new Error(`\u8F93\u5165\u5B57\u7B26\u4E32\u4E0D\u662F\u5408\u6CD5\u7684 Base64 ZIP \u6570\u636E`);
+    }
+  }
+  try {
+    const zip = await JSZipConstructor.loadAsync(zipPayload, loadOptions);
+    addLog("ZIP \u6587\u4EF6\u52A0\u8F7D\u6210\u529F");
+    let targetEntry = null;
+    const allFileNames = Object.keys(zip.files);
+    for (const fname of allFileNames) {
+      const entry = zip.files[fname];
+      if (entry && !entry.dir) {
+        const lower = fname.toLowerCase();
+        if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp")) {
+          targetEntry = entry;
+          break;
+        }
+      }
+    }
+    if (!targetEntry) {
+      for (const fname of allFileNames) {
+        const entry = zip.files[fname];
+        if (entry && !entry.dir) {
+          targetEntry = entry;
+          break;
+        }
+      }
+    }
+    if (!targetEntry) {
+      throw new Error("ZIP \u538B\u7F29\u5305\u4E2D\u672A\u627E\u5230\u4EFB\u4F55\u6709\u6548\u56FE\u50CF\u6587\u4EF6");
+    }
+    addLog(`\u5728 ZIP \u4E2D\u63D0\u53D6\u6587\u4EF6: ${targetEntry.name}`);
+    const base64String = await targetEntry.async("base64");
+    addLog(`\u6587\u4EF6 ${targetEntry.name} \u89E3\u538B\u4E3A Base64\uFF0C\u5927\u5C0F: ${base64String.length}`);
+    return base64String;
+  } catch (err) {
+    addLog(`\u52A0\u8F7D/\u89E3\u538B ZIP \u6587\u4EF6\u5931\u8D25: ${err.message}`);
+    throw err;
+  }
+}
+function uint8ArrayToBase642(uint8Array) {
+  let binary = "";
+  const len = uint8Array.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(uint8Array[i]);
+  }
+  return btoa(binary);
 }
 async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheight, change, extraNegativePrompt }) {
   clearLog();
@@ -84415,7 +84921,7 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
   const abortController = new AbortController();
   activeAbortControllers.set(taskId, abortController);
   let timeoutId = null;
-  const resetGenerationTimeout = (sec = 120) => {
+  const resetGenerationTimeout = (sec = NOVELAI_TIMEOUT_SECONDS) => {
     if (timeoutId) clearTimeout(timeoutId);
     timeoutId = setTimeout(() => {
       try {
@@ -84429,7 +84935,7 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
   await acquireSerialLock(taskId, abortController.signal);
   lockAcquired = true;
   taskQueue.updateStatus(taskId, TaskStatus.RUNNING);
-  resetGenerationTimeout(120);
+  resetGenerationTimeout(NOVELAI_TIMEOUT_SECONDS);
   const startTime = Date.now();
   if (!isPluginToastDisabled()) {
     toastr.info("\u{1F3A8} \u5DF2\u53D1\u8D77 NovelAI \u751F\u56FE\u8BF7\u6C42...");
@@ -84513,7 +85019,8 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
     addLog("\u5206\u89D2\u8272\u6A21\u5F0F: \u89E3\u6790\u5E26\u5750\u6807\u7684\u63D0\u793A\u8BCD\u5B57\u7B26\u4E32\u3002");
     prompt_data = parsePromptStringWithCoordinates(promptForGeneration);
     mainPrompt = prompt_data["Scene Composition"];
-    for (let i = 1; i <= 4; i++) {
+    const charIds = getSortedCharacterIds(prompt_data);
+    for (const i of charIds) {
       if (prompt_data[`Character ${i} coordinates`]) {
         const isAiDefaultCoords2 = extension_settings62[extensionName].AI_use_coords === true || extension_settings62[extensionName].AI_use_coords === "true";
         if (isAiDefaultCoords2) {
@@ -84528,10 +85035,10 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
     addLog("\u6807\u51C6\u6A21\u5F0F: \u4F7F\u7528\u8BF7\u6C42\u4E2D\u7684 prompt\u3002");
     mainPrompt = deduplicateTags(promptForGeneration);
   }
-  console.log("11111111" + JSON.stringify(prompt_data[`Character 1 coordinates`]));
   let { modifiedPrompt, insertions } = await prompt_replace(mainPrompt, other_prompt);
   if (Divide_roles && extension_settings62[extensionName].client == "jiuguan") {
-    for (let i = 1; i <= 4; i++) {
+    const charIds = getSortedCharacterIds(prompt_data);
+    for (const i of charIds) {
       if (prompt_data[`Character ${i} Prompt`]) {
         modifiedPrompt = modifiedPrompt + " | " + prompt_replace_for_character(prompt_data[`Character ${i} Prompt`], (mainPrompt || "") + " " + (other_prompt || ""));
       }
@@ -84676,26 +85183,27 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
   };
   if (extension_settings62[extensionName].novelaimode !== "nai-diffusion-3") {
     if (Divide_roles) {
-      for (let i = 1; i <= 4; i++) {
+      const charIds = getSortedCharacterIds(prompt_data);
+      for (const i of charIds) {
         if (prompt_data[`Character ${i} Prompt`]) {
           prompt_data[`Character ${i} Prompt`] = await prompt_replace_for_character(prompt_data[`Character ${i} Prompt`], (mainPrompt || "") + " " + (other_prompt || ""));
           prompt_data[`Character ${i} Prompt`] = prompt_data[`Character ${i} Prompt`].replace(/1boy/gi, "boy").replace(/1girl/gi, "girl");
         }
       }
       let characterPrompts = [];
-      for (let i = 1; i <= 4; i++) {
+      for (const i of charIds) {
         if (prompt_data[`Character ${i} Prompt`]) {
           characterPrompts.push({ enabled: true, prompt: prompt_data[`Character ${i} Prompt`], center: prompt_data[`Character ${i} coordinates`], uc: prompt_data[`Character ${i} UC`] ? prompt_data[`Character ${i} UC`] : "" });
         }
       }
       let v4_negative_prompt = { caption: { base_caption: negative_prompt, char_captions: [] }, legacy_uc: false };
-      for (let i = 1; i <= 4; i++) {
+      for (const i of charIds) {
         if (prompt_data[`Character ${i} Prompt`]) {
           v4_negative_prompt.caption.char_captions.push({ char_caption: prompt_data[`Character ${i} UC`] ? prompt_data[`Character ${i} UC`] : "", centers: [prompt_data[`Character ${i} coordinates`]] });
         }
       }
       let v4_prompt = { caption: { base_caption: prompt2, char_captions: [] }, use_coords, use_order: true };
-      for (let i = 1; i <= 4; i++) {
+      for (const i of charIds) {
         if (prompt_data[`Character ${i} Prompt`]) {
           v4_prompt.caption.char_captions.push({ char_caption: prompt_data[`Character ${i} Prompt`], centers: [prompt_data[`Character ${i} coordinates`]] });
         }
@@ -84882,9 +85390,15 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
     }
   }
   addLog("[Payload] \u5F00\u59CB\u6E05\u7406\u548C\u9A8C\u8BC1 payload...");
-  preset_data = cleanNovelAIPayload(preset_data, extension_settings62[extensionName].novelaimode);
+  const baseModel = extension_settings62[extensionName].novelaimode;
+  const isMediumEffort = baseModel === "nai-diffusion-5-full" && extension_settings62[extensionName].novelai_v5_effort === "medium";
+  const actualModel = isMediumEffort ? "nai-diffusion-5-full-medium" : baseModel;
+  if (isMediumEffort) {
+    addLog("[NovelAI] \u68C0\u6D4B\u5230\u542F\u7528 V5 Full Medium \u8D28\u91CF/\u7B97\u529B\u6863\u4F4D\uFF0C\u5207\u6362\u4E3A nai-diffusion-5-full-medium\uFF08\u9501\u5B9A 14 \u6B65\uFF09");
+  }
+  preset_data = cleanNovelAIPayload(preset_data, actualModel);
   try {
-    validateNovelAIPayload(preset_data, extension_settings62[extensionName].novelaimode);
+    validateNovelAIPayload(preset_data, actualModel);
   } catch (validationError) {
     addLog(`[\u9A8C\u8BC1\u5931\u8D25] ${validationError.message}`);
     toastr.error(`Payload \u9A8C\u8BC1\u5931\u8D25: ${validationError.message}`, "NovelAI \u751F\u6210\u9519\u8BEF");
@@ -84894,7 +85408,8 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
   }
   const payload = preset_data;
   _nai_gen_params = buildGenParams("NovelAI", {
-    model: extension_settings62[extensionName].novelaimode,
+    model: actualModel,
+    effort: isMediumEffort ? "medium" : "high",
     yushe: _nai_yushe_id,
     yusheRandom: isSettingTrue3(extension_settings62[extensionName].randomYushe),
     promptReplaceId: extension_settings62[extensionName].prompt_replace_id,
@@ -84915,7 +85430,6 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
   if (extension_settings62[extensionName].client != "jiuguan") {
     addLog(`\u6700\u7EC8\u751F\u56FE\u53C2\u6570 (payload): ${JSON.stringify(loggablePayload, null, 2)}`);
   }
-  let urlObj = new URL("https://image.novelai.net/ai/generate-image");
   if (extension_settings62[extensionName].novelaisite != "\u5B98\u7F51") {
     if (extension_settings62[extensionName].client == "jiuguan") {
       taskQueue.completeTask(taskId, false);
@@ -84926,7 +85440,6 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
       taskQueue.completeTask(taskId, false);
       throw new Error("\u5DF2\u9009\u62E9\u7B2C\u4E09\u65B9\u7AD9\u70B9\uFF0C\u4F46\u672A\u586B\u5199 novelaiOtherSite \u5730\u5740");
     }
-    urlObj = otherSite.includes("generate-image") ? new URL(otherSite) : new URL(`${otherSite}/ai/generate-image`);
   }
   try {
     let re = "";
@@ -84950,7 +85463,7 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
         throw error;
       }
     }
-    resetGenerationTimeout(120);
+    resetGenerationTimeout(NOVELAI_TIMEOUT_SECONDS);
     if (extension_settings62[extensionName].client == "jiuguan") {
       const read = await fetch("/api/secrets/read", {
         method: "POST",
@@ -84991,8 +85504,8 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
           console.warn(`Could not parse JSON from /api/secrets/write. Response was: "${responseText}". Continuing without rotating key.`);
         }
       }
-      const tavernAIPayload = { prompt: prompt2, model: extension_settings62[extensionName].novelaimode, sampler: preset_data.sampler, scheduler: preset_data.noise_schedule, steps: preset_data.steps, scale: preset_data.scale, width: preset_data.width, height: preset_data.height, negative_prompt: preset_data.negative_prompt, decrisper: preset_data.dynamic_thresholding, variety_boost: preset_data.skip_cfg_above_sigma, sm: preset_data.sm, sm_dyn: preset_data.sm_dyn, seed: preset_data.seed };
-      if (extension_settings62[extensionName].novelaimode.includes("nai-diffusion-5")) {
+      const tavernAIPayload = { prompt: prompt2, model: actualModel, sampler: preset_data.sampler, scheduler: preset_data.noise_schedule, steps: preset_data.steps, scale: preset_data.scale, width: preset_data.width, height: preset_data.height, negative_prompt: preset_data.negative_prompt, decrisper: preset_data.dynamic_thresholding, variety_boost: preset_data.skip_cfg_above_sigma, sm: preset_data.sm, sm_dyn: preset_data.sm_dyn, seed: preset_data.seed };
+      if (actualModel.includes("nai-diffusion-5")) {
         tavernAIPayload.tag_hint_uc_preset = preset_data.tag_hint_uc_preset;
         tavernAIPayload.tag_hint_qt = preset_data.tag_hint_qt;
         tavernAIPayload.straight_alpha = preset_data.straight_alpha;
@@ -85014,50 +85527,30 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
       }
     } else {
       const Authorization = "Bearer " + access_token;
-      let data11 = { "input": prompt2, "model": extension_settings62[extensionName].novelaimode, "action": "generate", "parameters": payload, "use_new_shared_trial": true };
+      let data11 = { "input": prompt2, "model": actualModel, "action": "generate", "parameters": payload, "use_new_shared_trial": true };
       console.log("data11:", data11);
-      let response;
-      try {
-        response = await fetch(urlObj.href, { method: "POST", headers: getDirectHeaders3("application/json", Authorization), body: JSON.stringify(data11), signal: abortController.signal });
-      } catch (networkError) {
-        if (abortController.signal.aborted) {
-          throw networkError;
-        }
-        addLog(`\u8BF7\u6C42\u9047\u5230\u7F51\u7EDC\u9519\u8BEF: ${networkError.message}\u3002\u5C06\u57281\u79D2\u540E\u91CD\u8BD5...`);
-        await sleep(1e3);
-        response = await fetch(urlObj.href, { method: "POST", headers: getDirectHeaders3("application/json", Authorization), body: JSON.stringify(data11), signal: abortController.signal });
-      }
-      if (!response.ok) {
-        const mess = await response.text();
-        let userFriendlyError = `\u8BF7\u6C42\u5931\u8D25, \u72B6\u6001\u7801: ${response.status}, \u9519\u8BEF\u4FE1\u606F: ${mess}`;
-        switch (response.status) {
-          case 400:
-            try {
-              const errorJson = JSON.parse(mess);
-              if (errorJson.message) {
-                userFriendlyError = `\u8BF7\u6C42\u9A8C\u8BC1\u5931\u8D25: ${errorJson.message}`;
-                addLog(`[API \u9519\u8BEF] 400 \u9A8C\u8BC1\u9519\u8BEF: ${errorJson.message}`);
-              }
-            } catch (e) {
-              userFriendlyError = `\u8BF7\u6C42\u9A8C\u8BC1\u5931\u8D25: ${mess}`;
-              addLog(`[API \u9519\u8BEF] 400 \u9A8C\u8BC1\u9519\u8BEF: ${mess}`);
-            }
-            break;
-          case 401:
-            userFriendlyError = "API Key \u9519\u8BEF\u6216\u65E0\u6548\uFF0C\u8BF7\u68C0\u67E5 API Key\u3002";
-            addLog("[API \u9519\u8BEF] 401 \u8BA4\u8BC1\u5931\u8D25");
-            break;
-          case 402:
-            userFriendlyError = "\u9700\u8981\u6709\u6548\u8BA2\u9605\u624D\u80FD\u8BBF\u95EE\u6B64\u7AEF\u70B9\u3002";
-            addLog("[API \u9519\u8BEF] 402 \u9700\u8981\u8BA2\u9605");
-            break;
-          default:
-            addLog(`[API \u9519\u8BEF] ${response.status}: ${mess}`);
-        }
-        throw new Error(userFriendlyError);
-      }
+      const { candidates, rawOtherSite } = getNovelAICandidateUrls("/ai/generate-image");
+      const response = await postNovelAIWithFallback({
+        candidates,
+        rawOtherSite,
+        endpointPath: "/ai/generate-image",
+        headers: getDirectHeaders3("application/json", Authorization),
+        body: JSON.stringify(data11),
+        signal: abortController.signal,
+        logPrefix: "[NovelAI]"
+      });
       const data123 = await response.arrayBuffer();
-      re = await unzipFile(data123);
+      try {
+        re = await unzipFile(data123);
+      } catch (unzipErr) {
+        if (rawOtherSite) {
+          evictNovelAIUrlCache(rawOtherSite, "/ai/generate-image");
+        }
+        throw unzipErr;
+      }
+      if (rawOtherSite && response._verifiedCandidateUrl) {
+        workingNovelAIUrlCache.set(`${rawOtherSite}|/ai/generate-image`, response._verifiedCandidateUrl);
+      }
     }
     if (!re) {
       throw new Error("\u672A\u80FD\u4ECEAPI\u54CD\u5E94\u4E2D\u63D0\u53D6\u56FE\u50CF\u6570\u636E\u3002");
@@ -85072,11 +85565,12 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
     if (String(extension_settings62[extensionName].convertToJpegStorage) === "true") {
       imageUrl = await convertImageToJpeg(imageUrl);
     }
-    if (String(extension_settings62[extensionName].compressBoostStorage) === "true") {
-      imageUrl = await compressGeneratedImage(imageUrl);
-    }
     return { image: imageUrl, change: change_ || "", genParams: _nai_gen_params };
   } catch (error) {
+    if (extension_settings62[extensionName].novelaisite !== "\u5B98\u7F51") {
+      const otherSite = normalizeNovelAIOtherSiteUrl(extension_settings62[extensionName].novelaiOtherSite);
+      evictNovelAIUrlCache(otherSite, "/ai/generate-image");
+    }
     isTaskAborted = error.name === "AbortError" || error.message === "\u4EFB\u52A1\u5DF2\u53D6\u6D88" || abortController.signal.aborted || error.message?.includes("\u8D85\u65F6");
     if (isTaskAborted) {
       addLog(`[NovelAI] \u4EFB\u52A1\u5DF2\u88AB\u7528\u6237\u53D6\u6D88\u6216\u8D85\u65F6: ${error.message}`);
@@ -85153,7 +85647,7 @@ async function generateNovelAIInpaint({ prompt: link, width: Xwidth, height: Xhe
   const abortController = new AbortController();
   activeAbortControllers.set(taskId, abortController);
   let timeoutId = null;
-  const resetInpaintTimeout = (sec = 120) => {
+  const resetInpaintTimeout = (sec = NOVELAI_TIMEOUT_SECONDS) => {
     if (timeoutId) clearTimeout(timeoutId);
     timeoutId = setTimeout(() => {
       try {
@@ -85167,7 +85661,7 @@ async function generateNovelAIInpaint({ prompt: link, width: Xwidth, height: Xhe
   await acquireSerialLock(taskId, abortController.signal);
   lockAcquired = true;
   taskQueue.updateStatus(taskId, TaskStatus.RUNNING);
-  resetInpaintTimeout(120);
+  resetInpaintTimeout(NOVELAI_TIMEOUT_SECONDS);
   const inpaintStartTime = Date.now();
   if (!isPluginToastDisabled()) {
     toastr.info("\u{1F3A8} \u5DF2\u53D1\u8D77 NovelAI \u5C40\u90E8\u91CD\u7ED8\u8BF7\u6C42...");
@@ -85189,16 +85683,29 @@ async function generateNovelAIInpaint({ prompt: link, width: Xwidth, height: Xhe
     const imgHeight = Number(window.novelaiInpaintHeight) || Number(Xheight) || Number(extension_settings62[extensionName].novelai_height) || 1024;
     addLog(`[NovelAI Inpaint] \u56FE\u50CF\u5C3A\u5BF8: ${imgWidth}x${imgHeight}`);
     const seed = extension_settings62[extensionName].novelai_seed === "0" || extension_settings62[extensionName].novelai_seed === "" || extension_settings62[extensionName].novelai_seed === "-1" ? generateRandomSeed() : Number(extension_settings62[extensionName].novelai_seed);
+    const baseMode = extension_settings62[extensionName].novelaimode || "";
+    let inpaintModel = "nai-diffusion-4-5-curated-inpainting";
+    let inpaintSteps = Number(extension_settings62[extensionName].novelai_steps) || 28;
+    let inpaintSampler = extension_settings62[extensionName].novelai_sampler || "k_euler_ancestral";
+    if (baseMode === "nai-diffusion-5-full") {
+      if (extension_settings62[extensionName].novelai_v5_effort === "medium") {
+        inpaintModel = "nai-diffusion-5-full-medium-inpainting";
+        inpaintSteps = 14;
+        inpaintSampler = "k_euler_ancestral";
+      } else {
+        inpaintModel = "nai-diffusion-5-full-inpainting";
+      }
+    }
     const payload = {
       "action": "infill",
       "input": inpaintPrompt,
-      "model": "nai-diffusion-4-5-curated-inpainting",
+      "model": inpaintModel,
       "parameters": {
         "width": imgWidth,
         "height": imgHeight,
         "scale": Number(extension_settings62[extensionName].nai3Scale) || 5,
-        "sampler": extension_settings62[extensionName].novelai_sampler || "k_euler_ancestral",
-        "steps": Number(extension_settings62[extensionName].novelai_steps) || 28,
+        "sampler": inpaintSampler,
+        "steps": inpaintSteps,
         "seed": seed,
         "n_samples": 1,
         "image": imageBase64,
@@ -85282,58 +85789,36 @@ async function generateNovelAIInpaint({ prompt: link, width: Xwidth, height: Xhe
         throw error;
       }
     }
-    resetInpaintTimeout(120);
-    let urlObj = new URL("https://image.novelai.net/ai/generate-image");
-    if (extension_settings62[extensionName].novelaisite != "\u5B98\u7F51") {
-      if (extension_settings62[extensionName].client == "jiuguan") {
-        throw new Error("\u9152\u9986\u7AEF\u4E0D\u652F\u6301\u81EA\u5B9A\u4E49\u7AD9\u70B9\u7684\u5C40\u90E8\u91CD\u7ED8\uFF01");
-      }
-      const otherSite = normalizeNovelAIOtherSiteUrl(extension_settings62[extensionName].novelaiOtherSite);
-      if (!otherSite) {
-        throw new Error("\u5DF2\u9009\u62E9\u7B2C\u4E09\u65B9\u7AD9\u70B9\uFF0C\u4F46\u672A\u586B\u5199 novelaiOtherSite \u5730\u5740");
-      }
-      urlObj = otherSite.includes("generate-image") ? new URL(otherSite) : new URL(`${otherSite}/ai/generate-image`);
+    resetInpaintTimeout(NOVELAI_TIMEOUT_SECONDS);
+    if (extension_settings62[extensionName].novelaisite != "\u5B98\u7F51" && extension_settings62[extensionName].client == "jiuguan") {
+      throw new Error("\u9152\u9986\u7AEF\u4E0D\u652F\u6301\u81EA\u5B9A\u4E49\u7AD9\u70B9\u7684\u5C40\u90E8\u91CD\u7ED8\uFF01");
     }
-    addLog(`[NovelAI Inpaint] \u8BF7\u6C42 URL: ${urlObj.toString()}`);
     const Authorization = "Bearer " + access_token;
+    const { candidates, rawOtherSite } = getNovelAICandidateUrls("/ai/generate-image");
     addLog("[NovelAI Inpaint] \u6B63\u5728\u53D1\u9001\u8BF7\u6C42\u5230 NovelAI API...");
-    let response;
-    try {
-      response = await fetch(urlObj.href, {
-        method: "POST",
-        headers: getDirectHeaders3("application/json", Authorization),
-        body: JSON.stringify(payload),
-        signal: abortController.signal
-      });
-    } catch (networkError) {
-      if (abortController.signal.aborted) {
-        throw networkError;
-      }
-      addLog(`[NovelAI Inpaint] \u8BF7\u6C42\u9047\u5230\u7F51\u7EDC\u9519\u8BEF: ${networkError.message}\u3002\u5C06\u57281\u79D2\u540E\u91CD\u8BD5...`);
-      await sleep(1e3);
-      response = await fetch(urlObj.href, {
-        method: "POST",
-        headers: getDirectHeaders3("application/json", Authorization),
-        body: JSON.stringify(payload),
-        signal: abortController.signal
-      });
-    }
-    if (!response.ok) {
-      const errorText = await response.text();
-      let userFriendlyError = `\u8BF7\u6C42\u5931\u8D25, \u72B6\u6001\u7801: ${response.status}, \u9519\u8BEF\u4FE1\u606F: ${errorText}`;
-      switch (response.status) {
-        case 401:
-          userFriendlyError = "API Key \u9519\u8BEF\u6216\u65E0\u6548\uFF0C\u8BF7\u68C0\u67E5 API Key\u3002";
-          break;
-        case 402:
-          userFriendlyError = "\u9700\u8981\u6709\u6548\u8BA2\u9605\u624D\u80FD\u8BBF\u95EE\u6B64\u7AEF\u70B9\u3002";
-          break;
-      }
-      throw new Error(userFriendlyError);
-    }
+    const response = await postNovelAIWithFallback({
+      candidates,
+      rawOtherSite,
+      endpointPath: "/ai/generate-image",
+      headers: getDirectHeaders3("application/json", Authorization),
+      body: JSON.stringify(payload),
+      signal: abortController.signal,
+      logPrefix: "[NovelAI Inpaint]"
+    });
     addLog("[NovelAI Inpaint] \u6B63\u5728\u89E3\u538B\u8FD4\u56DE\u7684 ZIP \u6587\u4EF6...");
     const arrayBuffer = await response.arrayBuffer();
-    const imageBase64Result = await unzipFile(arrayBuffer);
+    let imageBase64Result;
+    try {
+      imageBase64Result = await unzipFile(arrayBuffer);
+    } catch (unzipErr) {
+      if (rawOtherSite) {
+        evictNovelAIUrlCache(rawOtherSite, "/ai/generate-image");
+      }
+      throw unzipErr;
+    }
+    if (rawOtherSite && response._verifiedCandidateUrl) {
+      workingNovelAIUrlCache.set(`${rawOtherSite}|/ai/generate-image`, response._verifiedCandidateUrl);
+    }
     if (!imageBase64Result) {
       throw new Error("\u672A\u80FD\u4ECEAPI\u54CD\u5E94\u4E2D\u63D0\u53D6\u56FE\u50CF\u6570\u636E");
     }
@@ -85347,12 +85832,13 @@ async function generateNovelAIInpaint({ prompt: link, width: Xwidth, height: Xhe
     if (String(extension_settings62[extensionName].convertToJpegStorage) === "true") {
       imageUrl = await convertImageToJpeg(imageUrl);
     }
-    if (String(extension_settings62[extensionName].compressBoostStorage) === "true") {
-      imageUrl = await compressGeneratedImage(imageUrl);
-    }
     addLog(`[NovelAI Inpaint] \u5C40\u90E8\u91CD\u7ED8\u5B8C\u6210 (\u8017\u65F6 ${inpaintDuration} \u79D2)\uFF01`);
     return { image: imageUrl, change: change || "", genParams: _inpaint_gen_params };
   } catch (error) {
+    if (extension_settings62[extensionName].novelaisite !== "\u5B98\u7F51") {
+      const otherSite = normalizeNovelAIOtherSiteUrl(extension_settings62[extensionName].novelaiOtherSite);
+      evictNovelAIUrlCache(otherSite, "/ai/generate-image");
+    }
     isTaskAborted = error.name === "AbortError" || error.message === "\u4EFB\u52A1\u5DF2\u53D6\u6D88" || abortController.signal.aborted || error.message?.includes("\u8D85\u65F6");
     if (isTaskAborted) {
       addLog(`[NovelAI Inpaint] \u8BF7\u6C42\u5DF2\u88AB\u7528\u6237\u53D6\u6D88\u6216\u8D85\u65F6: ${error.message}`);
@@ -87303,12 +87789,12 @@ function renderSummary(stats) {
   if (stats.total.fail > 0) {
     items.push({ val: stats.total.fail, label: "\u5931\u8D25\u6B21\u6570", color: "#ef5350" });
   }
-  let html = '<div style="display:flex; gap:12px; flex-wrap:wrap; padding:8px 12px; background:rgba(255,255,255,0.05); border-radius:6px;">';
+  let html = '<div class="ch-gen-summary-grid">';
   for (const item of items) {
-    html += `<div style="text-align:center; min-width:48px;">`;
-    html += `<div style="font-size:18px; font-weight:bold; color:${item.color};">${item.val}`;
-    if (item.unit) html += `<span style="font-size:11px; margin-left:1px;">${item.unit}</span>`;
-    html += `</div><div style="font-size:10px; opacity:0.55; margin-top:1px;">${item.label}</div></div>`;
+    html += `<div class="ch-stat-card">`;
+    html += `<div class="ch-stat-card-val" style="color:${item.color};">${item.val}`;
+    if (item.unit) html += `<span class="ch-stat-card-unit">${item.unit}</span>`;
+    html += `</div><div class="ch-stat-card-lbl">${item.label}</div></div>`;
   }
   html += "</div>";
   el.innerHTML = html;
@@ -87316,13 +87802,13 @@ function renderSummary(stats) {
 function renderLegend() {
   const el = document.getElementById("ch-gen-legend");
   if (!el) return;
-  let html = '<div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">';
-  html += `<span style="display:flex; align-items:center; gap:4px; font-size:11px; opacity:0.75;">`;
-  html += `<svg width="14" height="8" style="flex-shrink:0;"><line x1="0" y1="4" x2="14" y2="4" stroke="rgba(255,255,255,0.85)" stroke-width="2.4" stroke-linecap="round"/></svg>`;
+  let html = '<div class="ch-gen-legend-container">';
+  html += `<span class="ch-gen-legend-item">`;
+  html += `<svg width="16" height="8" style="flex-shrink:0;"><line x1="0" y1="4" x2="16" y2="4" stroke="rgba(255,255,255,0.85)" stroke-width="2.6" stroke-linecap="round"/></svg>`;
   html += `\u603B\u8BA1</span>`;
   for (const [, meta] of Object.entries(BACKEND_LABELS)) {
-    html += `<span style="display:flex; align-items:center; gap:4px; font-size:11px; opacity:0.75;">`;
-    html += `<svg width="14" height="8" style="flex-shrink:0;"><line x1="0" y1="4" x2="14" y2="4" stroke="${meta.color}" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+    html += `<span class="ch-gen-legend-item">`;
+    html += `<svg width="16" height="8" style="flex-shrink:0;"><line x1="0" y1="4" x2="16" y2="4" stroke="${meta.color}" stroke-width="2" stroke-linecap="round"/></svg>`;
     html += `${meta.icon} ${meta.name}</span>`;
   }
   html += "</div>";
@@ -87339,9 +87825,29 @@ function buildLinePath(values, xOf, yOf) {
   }
   return d;
 }
+var _chartResizeObserver = null;
 function renderChart(period) {
   const el = document.getElementById("ch-gen-chart");
   if (!el) return;
+  if (!_chartResizeObserver && typeof ResizeObserver !== "undefined") {
+    let resizeTimer = null;
+    let lastWidth = el.clientWidth;
+    _chartResizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const currentWidth = entry.contentRect.width;
+        if (currentWidth > 0 && Math.abs(currentWidth - lastWidth) > 15) {
+          lastWidth = currentWidth;
+          clearTimeout(resizeTimer);
+          resizeTimer = setTimeout(() => {
+            renderChart(_currentPeriod);
+          }, 120);
+        }
+      }
+    });
+    if (el.parentElement) {
+      _chartResizeObserver.observe(el.parentElement);
+    }
+  }
   document.querySelectorAll(".ch-period-btn").forEach((btn) => {
     const active = btn.dataset.period === period;
     btn.style.background = active ? "rgba(79,195,247,0.18)" : "transparent";
@@ -87354,26 +87860,40 @@ function renderChart(period) {
   const buckets = aggregateBuckets(stats, period);
   const totals = buckets.map((b) => Object.values(b.data).reduce((s, v) => s + v, 0));
   if (buckets.length === 0 || totals.every((t) => t === 0)) {
-    el.innerHTML = '<div style="text-align:center; opacity:0.5; padding:24px 0; font-size:13px;">\u6682\u65E0\u6570\u636E</div>';
+    el.innerHTML = '<div style="text-align:center; opacity:0.5; padding:28px 0; font-size:13px;">\u6682\u65E0\u6570\u636E</div>';
     return;
   }
   const maxVal = Math.max(...totals, 1);
   const n = buckets.length;
-  const SW = 560, SH = 170;
-  const PL = 36, PR = 10, PT = 12, PB = 30;
+  const containerWidth = el.clientWidth > 50 ? el.clientWidth : window.innerWidth < 768 ? Math.max(300, window.innerWidth - 40) : 560;
+  const isMobile3 = containerWidth <= 520 || window.innerWidth <= 768;
+  const SW = Math.max(300, Math.round(containerWidth));
+  const SH = isMobile3 ? 210 : 180;
+  const PL = isMobile3 ? 36 : 40;
+  const PR = isMobile3 ? 26 : 32;
+  const PT = isMobile3 ? 20 : 16;
+  const PB = isMobile3 ? 32 : 30;
   const pw = SW - PL - PR;
   const ph = SH - PT - PB;
   const xOf = (i) => PL + (n <= 1 ? pw / 2 : i / (n - 1) * pw);
   const yOf = (v) => PT + ph - v / maxVal * ph;
   const baseY = (PT + ph).toFixed(1);
-  const TOTAL_COLOR = "rgba(255,255,255,0.85)";
+  const fSizeY = isMobile3 ? 11 : 10;
+  const fSizeX = isMobile3 ? 11 : 10;
+  const fSizePeak = isMobile3 ? 12 : 11;
+  const fSizeRight = isMobile3 ? 11 : 10;
+  const totalLineWidth = isMobile3 ? 2.8 : 2.4;
+  const backendLineWidth = isMobile3 ? 2 : 1.6;
+  const totalDotR = isMobile3 ? 3.8 : 3;
+  const backendDotR = isMobile3 ? 3 : 2.4;
+  const TOTAL_COLOR = "rgba(255,255,255,0.9)";
   const series = [
-    { key: "total", name: "\u603B\u8BA1", color: TOTAL_COLOR, values: totals, width: 2.4, isTotal: true }
+    { key: "total", name: "\u603B\u8BA1", color: TOTAL_COLOR, values: totals, width: totalLineWidth, isTotal: true }
   ];
   for (const [backend, meta] of Object.entries(BACKEND_LABELS)) {
     const values = buckets.map((b) => b.data[backend] || 0);
     if (values.some((v) => v > 0)) {
-      series.push({ key: backend, name: meta.name, color: meta.color, values, width: 1.6, isTotal: false });
+      series.push({ key: backend, name: meta.name, color: meta.color, values, width: backendLineWidth, isTotal: false });
     }
   }
   const GRID_COUNT = 4;
@@ -87383,36 +87903,37 @@ function renderChart(period) {
     const val = Math.round(maxVal * (1 - g / GRID_COUNT));
     gridSvg += `<line x1="${PL}" y1="${y.toFixed(1)}" x2="${SW - PR}" y2="${y.toFixed(1)}" stroke="currentColor" stroke-opacity="${g === GRID_COUNT ? "0.2" : "0.08"}" stroke-width="1" stroke-dasharray="${g === GRID_COUNT ? "none" : "3,3"}"/>`;
     if (val >= 0) {
-      gridSvg += `<text x="${PL - 4}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" style="fill:currentColor; opacity:0.45;" font-size="9">${val}</text>`;
+      gridSvg += `<text x="${PL - 6}" y="${(y + 4).toFixed(1)}" text-anchor="end" style="fill:currentColor; opacity:0.6;" font-size="${fSizeY}" font-weight="500">${val}</text>`;
     }
   }
-  const showEvery = n > 20 ? Math.ceil(n / 10) : n > 10 ? 2 : 1;
+  const showEvery = isMobile3 ? n > 15 ? Math.ceil(n / 6) : n > 7 ? 2 : 1 : n > 20 ? Math.ceil(n / 10) : n > 10 ? 2 : 1;
   let xLabelsSvg = "";
   for (let i = 0; i < n; i++) {
     if (i % showEvery !== 0 && i !== n - 1) continue;
-    xLabelsSvg += `<text x="${xOf(i).toFixed(1)}" y="${SH - 5}" text-anchor="middle" style="fill:currentColor; opacity:0.45;" font-size="9">${buckets[i].label}</text>`;
+    xLabelsSvg += `<text x="${xOf(i).toFixed(1)}" y="${SH - 6}" text-anchor="middle" style="fill:currentColor; opacity:0.6;" font-size="${fSizeX}">${buckets[i].label}</text>`;
   }
   const totalLinePath = buildLinePath(totals, xOf, yOf);
   const totalAreaPath = `${totalLinePath} L ${xOf(n - 1).toFixed(1)} ${baseY} L ${xOf(0).toFixed(1)} ${baseY} Z`;
   const GRAD_ID = "chGenGrad";
   const gradDef = `<linearGradient id="${GRAD_ID}" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="${TOTAL_COLOR}" stop-opacity="0.18"/>
+      <stop offset="0%" stop-color="${TOTAL_COLOR}" stop-opacity="0.22"/>
       <stop offset="100%" stop-color="${TOTAL_COLOR}" stop-opacity="0.01"/>
     </linearGradient>`;
   const backendSeriesSvg = series.filter((s) => !s.isTotal).map((s) => {
     const lp = buildLinePath(s.values, xOf, yOf);
     if (!lp) return "";
-    return `<path d="${lp}" fill="none" stroke="${s.color}" stroke-width="${s.width}" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.85"/>`;
+    return `<path d="${lp}" fill="none" stroke="${s.color}" stroke-width="${s.width}" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.9"/>`;
   }).join("\n  ");
   let dotsSvg = "";
-  if (n <= 31) {
+  const maxVisibleDots = isMobile3 ? 20 : 31;
+  if (n <= maxVisibleDots) {
     for (const s of series) {
       for (let i = 0; i < n; i++) {
         const v = s.values[i];
         if (v === 0) continue;
         const tip = `${s.name} | ${buckets[i].bucketKey}: ${v}\u5F20`;
-        const r = s.isTotal ? 3 : 2.5;
-        dotsSvg += `<circle cx="${xOf(i).toFixed(1)}" cy="${yOf(v).toFixed(1)}" r="${r}" fill="${s.color}" stroke="rgba(0,0,0,0.35)" stroke-width="1"><title>${tip}</title></circle>`;
+        const r = s.isTotal ? totalDotR : backendDotR;
+        dotsSvg += `<circle cx="${xOf(i).toFixed(1)}" cy="${yOf(v).toFixed(1)}" r="${r}" fill="${s.color}" stroke="rgba(0,0,0,0.4)" stroke-width="1.2"><title>${tip}</title></circle>`;
       }
     }
   }
@@ -87420,8 +87941,8 @@ function renderChart(period) {
   let peakSvg = "";
   if (totals[maxIdx] > 0) {
     const px = xOf(maxIdx), py = yOf(totals[maxIdx]);
-    const lblX = Math.min(Math.max(px, PL + 14), SW - PR - 14);
-    peakSvg = `<text x="${lblX.toFixed(1)}" y="${(py - 7).toFixed(1)}" text-anchor="middle" fill="${TOTAL_COLOR}" font-size="10" font-weight="bold" opacity="0.9">${totals[maxIdx]}</text>`;
+    const lblX = Math.min(Math.max(px, PL + 16), SW - PR - 16);
+    peakSvg = `<text x="${lblX.toFixed(1)}" y="${(py - 8).toFixed(1)}" text-anchor="middle" fill="${TOTAL_COLOR}" font-size="${fSizePeak}" font-weight="bold" opacity="0.95">${totals[maxIdx]}</text>`;
   }
   let rightLabelsSvg = "";
   const labeledSeries = [...series].reverse();
@@ -87431,17 +87952,17 @@ function renderChart(period) {
     if (lastVal === 0) continue;
     let ly = yOf(lastVal) + 4;
     for (const uy of usedY) {
-      if (Math.abs(ly - uy) < 11) ly = uy + 11;
+      if (Math.abs(ly - uy) < 13) ly = uy + 13;
     }
     usedY.push(ly);
-    rightLabelsSvg += `<text x="${(SW - PR + 3).toFixed(1)}" y="${ly.toFixed(1)}" fill="${s.color}" font-size="9" font-weight="bold" opacity="0.9">${lastVal}</text>`;
+    rightLabelsSvg += `<text x="${(SW - PR + 4).toFixed(1)}" y="${ly.toFixed(1)}" fill="${s.color}" font-size="${fSizeRight}" font-weight="bold" opacity="0.95">${lastVal}</text>`;
   }
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${SW} ${SH}" style="width:100%; height:auto; display:block; overflow:visible;">
   <defs>${gradDef}</defs>
   ${gridSvg}
   <path d="${totalAreaPath}" fill="url(#${GRAD_ID})"/>
   ${backendSeriesSvg}
-  <path d="${totalLinePath}" fill="none" stroke="${TOTAL_COLOR}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="${totalLinePath}" fill="none" stroke="${TOTAL_COLOR}" stroke-width="${totalLineWidth}" stroke-linecap="round" stroke-linejoin="round"/>
   ${peakSvg}
   ${dotsSvg}
   ${xLabelsSvg}
@@ -87456,22 +87977,24 @@ function renderBackends(stats) {
   for (const [, data] of Object.entries(stats.backends)) {
     if (data.success > maxSuccess) maxSuccess = data.success;
   }
-  let html = '<div style="display:flex; flex-direction:column; gap:5px;">';
+  let html = '<div class="ch-backend-list">';
   for (const [backend, meta] of Object.entries(BACKEND_LABELS)) {
     const data = stats.backends[backend] || { success: 0, fail: 0 };
     if (data.success + data.fail === 0) continue;
     const pct = maxSuccess > 0 ? data.success / maxSuccess * 100 : 0;
-    html += `<div style="display:flex; align-items:center; gap:8px;">`;
-    html += `<span style="width:120px; font-size:12px; white-space:nowrap;">${meta.icon} ${meta.name}</span>`;
-    html += `<div style="flex:1; height:14px; background:rgba(128,128,128,0.15); border-radius:7px; overflow:hidden;">`;
-    html += `<div style="height:100%; width:${pct}%; background:${meta.color}; border-radius:7px; transition:width 0.3s;"></div></div>`;
-    html += `<span style="width:76px; text-align:right; font-size:12px;"><strong>${data.success}</strong>`;
-    if (data.fail > 0) html += ` <span style="color:#ef5350; font-size:11px;">(${data.fail}\u2717)</span>`;
-    html += "</span></div>";
+    html += `<div class="ch-backend-item">`;
+    html += `<div class="ch-backend-header">`;
+    html += `<span class="ch-backend-title">${meta.icon} ${meta.name}</span>`;
+    html += `<span class="ch-backend-value"><strong>${data.success}</strong>`;
+    if (data.fail > 0) html += ` <span style="color:#ef5350; font-size:12px;">(${data.fail}\u2717)</span>`;
+    html += `</span></div>`;
+    html += `<div class="ch-backend-bar-container">`;
+    html += `<div class="ch-backend-bar" style="width:${pct}%; background:${meta.color};"></div></div>`;
+    html += `</div>`;
   }
   for (const [backend, data] of Object.entries(stats.backends)) {
     if (BACKEND_LABELS[backend] || data.success + data.fail === 0) continue;
-    html += `<div style="font-size:12px; opacity:0.6;">\u{1F539} ${backend}: ${data.success} \u6210\u529F / ${data.fail} \u5931\u8D25</div>`;
+    html += `<div style="font-size:13px; opacity:0.75; padding:4px 2px;">\u{1F539} ${backend}: <strong>${data.success}</strong> \u6210\u529F / <span style="color:#ef5350;">${data.fail} \u5931\u8D25</span></div>`;
   }
   html += "</div>";
   el.innerHTML = html;
@@ -88645,17 +89168,11 @@ async function translateAndAnnotateField(fieldBase, suffix) {
     let tokens = [];
     if (cleaned.includes("Scene Composition")) {
       const parsed = parsePromptStringWithCoordinates(cleaned);
-      const keys = [
-        "Scene Composition",
-        "Character 1 Prompt",
-        "Character 1 UC",
-        "Character 2 Prompt",
-        "Character 2 UC",
-        "Character 3 Prompt",
-        "Character 3 UC",
-        "Character 4 Prompt",
-        "Character 4 UC"
-      ];
+      const charIds = getSortedCharacterIds(parsed);
+      const keys = ["Scene Composition"];
+      charIds.forEach((id) => {
+        keys.push(`Character ${id} Prompt`, `Character ${id} UC`);
+      });
       keys.forEach((k) => {
         const v = parsed?.[k];
         if (typeof v === "string" && v.trim()) {
@@ -88699,29 +89216,13 @@ async function translateAndAnnotateField(fieldBase, suffix) {
       return t;
     });
     let annotated = annotatedTokens.join(", ");
-    const novelaiKeywords = [
-      "Scene Composition:",
-      "Character 1 Prompt:",
-      "Character 1 UC:",
-      "Character 1 coordinates:",
-      "Character 2 Prompt:",
-      "Character 2 UC:",
-      "Character 2 coordinates:",
-      "Character 3 Prompt:",
-      "Character 3 UC:",
-      "Character 3 coordinates:",
-      "Character 4 Prompt:",
-      "Character 4 UC:",
-      "Character 4 coordinates:"
-    ];
-    const hasNovelAIFormat = novelaiKeywords.some((kw) => annotated.includes(kw));
-    if (hasNovelAIFormat) {
-      for (const keyword of novelaiKeywords) {
-        const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        annotated = annotated.replace(new RegExp(`\\s*${escaped}`, "g"), (match, offset) => offset === 0 ? match : `
+    const rolePattern = /(?:Scene Composition:|Character\s+\d+\s+(?:Prompt|UC|coordinates):)/i;
+    if (rolePattern.test(annotated)) {
+      annotated = annotated.replace(/(?:[ \t\r\n]*)(Scene Composition:|Character\s+\d+\s+(?:Prompt|UC|coordinates):)/gi, (match, p1, offset) => {
+        return offset === 0 ? p1 : `
 
-${keyword}`);
-      }
+${p1}`;
+      });
       annotated = annotated.replace(/^\s+/, "").replace(/\n{3,}/g, "\n\n");
     }
     textarea.value = annotated;
@@ -89939,7 +90440,6 @@ var imageObserver;
 var isMultiSelectMode = false;
 var recalcStartedAt = 0;
 var recalcPanelDismissed = false;
-var compressTask = null;
 function formatMB(bytes) {
   if (!Number.isFinite(bytes) || bytes < 0) return "0 MB";
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
@@ -90696,7 +91196,6 @@ async function clearCache() {
   });
 }
 var RECALC_PHASE_LABELS = {
-  compress: "压缩加强",
   db: "\u6D4F\u89C8\u5668\u6570\u636E\u5E93",
   server: "\u9152\u9986\u5B58\u50A8",
   writeback: "\u4FDD\u5B58\u7ED3\u679C",
@@ -90791,7 +91290,6 @@ function syncRecalcButtons() {
     cancelBtn.textContent = running ? "\u53D6\u6D88" : "\u5173\u95ED";
     cancelBtn.classList.toggle("danger", running);
   }
-  syncCompressButtons();
 }
 function hideRecalcPanel() {
   const panel = document.getElementById("image-cache-recalc-progress");
@@ -90801,10 +91299,6 @@ function hideRecalcPanel() {
 async function recalcImageSizes(options = {}) {
   const { force = false } = options;
   const existing = getSizeCalcTask();
-  if (compressTask && compressTask.running) {
-    alert("「压缩加强」正在进行中，请等待完成或先取消。");
-    return;
-  }
   if (existing && existing.running) {
     renderRecalcProgress(existing.lastProgress);
     syncRecalcButtons();
@@ -90853,399 +91347,6 @@ async function recalcImageSizes(options = {}) {
     syncRecalcButtons();
   }
 }
-// ===== 压缩加强：任务状态与界面同步 =====
-var COMPRESS_LEVELS = ["lossless", "balanced", "max"];
-var COMPRESS_LEVEL_LABELS = { lossless: "无损优先", balanced: "均衡", max: "极限" };
-function resolveCompressLevel() {
-  const raw = String((extension_settings[extensionName] || {}).compressBoostLevel || "balanced");
-  return COMPRESS_LEVELS.indexOf(raw) >= 0 ? raw : "balanced";
-}
-var compressProgressToast = null;
-function getCompressTask() {
-  if (!compressTask) return null;
-  return {
-    running: compressTask.running,
-    done: compressTask.done,
-    total: compressTask.total,
-    savedBytes: compressTask.savedBytes
-  };
-}
-function cancelCompress() {
-  if (compressTask && compressTask.running) {
-    compressTask.cancelled = true;
-    return true;
-  }
-  return false;
-}
-function syncCompressButtons() {
-  const compressRunning = !!(compressTask && compressTask.running);
-  const sizeCalc = getSizeCalcTask();
-  const sizeRunning = !!(sizeCalc && sizeCalc.running);
-  const busy = compressRunning || sizeRunning;
-  const label = compressRunning ? '<i class="fa-solid fa-spinner fa-spin"></i> 压缩中...' : '<i class="fa-solid fa-compress"></i> 压缩加强';
-  const button = document.getElementById("image-cache-compress");
-  if (button) {
-    button.disabled = busy;
-    button.innerHTML = label;
-  }
-  const mainButton = document.getElementById("image-cache-compress-main");
-  if (mainButton) {
-    mainButton.disabled = busy;
-    mainButton.innerHTML = compressRunning ? '<i class="fa-solid fa-spinner fa-spin"></i> 压缩中...' : '<i class="fa-solid fa-compress"></i> 立即压缩已有缓存';
-  }
-  const recalcSizeBtn = document.getElementById("image-cache-recalc-size");
-  if (recalcSizeBtn) recalcSizeBtn.disabled = busy;
-  const recalcAllBtn = document.getElementById("image-cache-recalc-all");
-  if (recalcAllBtn) recalcAllBtn.disabled = busy;
-  const cancelBtn = document.getElementById("image-cache-recalc-cancel");
-  if (cancelBtn && compressRunning) {
-    cancelBtn.textContent = "取消";
-    cancelBtn.classList.add("danger");
-  }
-}
-function updateCompressToast(text) {
-  if (typeof toastr === "undefined") return;
-  try {
-    if (compressProgressToast && compressProgressToast.find) {
-      compressProgressToast.find(".toast-message").text(text);
-      return;
-    }
-    compressProgressToast = toastr.info(text, "压缩加强", { timeOut: 0, extendedTimeOut: 0, closeButton: true, tapToDismiss: false, progressBar: false });
-  } catch (error) {
-    compressProgressToast = null;
-  }
-}
-function clearCompressToast() {
-  if (!compressProgressToast) return;
-  try {
-    if (typeof toastr !== "undefined") toastr.clear(compressProgressToast);
-  } catch (error) {
-  }
-  compressProgressToast = null;
-}
-function renderCompressSummary(task, skipReasons) {
-  const bar = document.getElementById("image-cache-recalc-bar");
-  const title = document.getElementById("image-cache-recalc-title");
-  const detail = document.getElementById("image-cache-recalc-detail");
-  if (bar) bar.style.width = "100%";
-  const text = buildCompressSummaryText(task, skipReasons);
-  if (!title || !detail) return text;
-  title.textContent = task.cancelled ? "压缩已取消" : "压缩完成";
-  detail.textContent = text;
-  return text;
-}
-function buildCompressSummaryText(task, skipReasons) {
-  const elapsed = recalcStartedAt ? ((Date.now() - recalcStartedAt) / 1e3).toFixed(1) : "?";
-  const ratio = task.attemptedBytes > 0 ? Math.round(task.savedBytes / task.attemptedBytes * 100) : 0;
-  const lines = [
-    "压缩 " + task.done + " 张（强度 " + (COMPRESS_LEVEL_LABELS[task.level] || task.level || "均衡") + "），节省 " + formatMB(task.savedBytes) + "（" + ratio + "%）",
-    "跳过 " + task.skipped + " 张（视频 " + (task.videoSkipped || 0) + " · 酒馆存储 " + (task.serverSkipped || 0) + "）｜失败 " + task.failed + " 张",
-    "用时 " + elapsed + "s"
-  ];
-  const reasons = Object.keys(skipReasons || {}).filter(function(key) { return key !== "视频" && key !== "酒馆存储"; });
-  if (reasons.length > 0) {
-    lines.push("跳过原因：" + reasons.map(function(key) { return key + " " + skipReasons[key]; }).join(" · "));
-  }
-  return lines.join("\n");
-}
-
-// ===== 压缩加强：格式嗅探（只信字节魔数，不信元数据）=====
-function matchAsciiBytes(view, text, limit) {
-  const max = Math.min(view.length - text.length, limit);
-  for (let i = 0; i <= max; i++) {
-    let hit = true;
-    for (let j = 0; j < text.length; j++) {
-      if (view[i + j] !== text.charCodeAt(j)) {
-        hit = false;
-        break;
-      }
-    }
-    if (hit) return true;
-  }
-  return false;
-}
-function sniffCachedImageFormat(view) {
-  if (!view || view.length < 16) return "字节过短";
-  if (view[0] === 137 && view[1] === 80 && view[2] === 78 && view[3] === 71) {
-    return matchAsciiBytes(view, "acTL", 65536) ? "APNG 动图" : "png";
-  }
-  if (view[0] === 255 && view[1] === 216 && view[2] === 255) return "jpeg";
-  if (view[0] === 82 && view[1] === 73 && view[2] === 70 && view[3] === 70 && view[8] === 87 && view[9] === 69 && view[10] === 66 && view[11] === 80) {
-    return matchAsciiBytes(view, "ANIM", 65536) ? "WebP 动图" : "webp";
-  }
-  if (view[0] === 71 && view[1] === 73 && view[2] === 70) return "GIF 动图";
-  return "非图片格式";
-}
-async function canDecodeCachedImage(blob) {
-  if (typeof createImageBitmap !== "function") return true;
-  try {
-    const bitmap = await createImageBitmap(blob);
-    if (bitmap && typeof bitmap.close === "function") bitmap.close();
-    return true;
-  } catch (error) {
-    console.warn("[st-chatu8] 压缩结果无法解码，已丢弃该结果:", error);
-    return false;
-  }
-}
-
-// ===== 压缩加强：主流程 =====
-var COMPRESS_MIN_BYTES = 64 * 1024;
-var COMPRESS_MIN_GAIN = 0.98;
-async function collectCacheTargets() {
-  if (allCachedImages.length > 0) {
-    return allCachedImages.slice();
-  }
-  const metadata = await getAllImageMetadata();
-  const list = [];
-  for (const md5 in metadata) {
-    const meta = metadata[md5];
-    if (!meta || !Array.isArray(meta.images)) continue;
-    for (const img of meta.images) {
-      if (!img || !img.date) continue;
-      list.push({
-        uuid: img.uuid,
-        md5,
-        source: img.source || "db",
-        path: img.path || null,
-        isVideo: !!img.isVideo,
-        size: typeof img.size === "number" ? img.size : void 0
-      });
-    }
-  }
-  return list;
-}
-async function compressCachedImages(options = {}) {
-  if (compressTask && compressTask.running) {
-    toastr.info("压缩任务正在进行中。");
-    return;
-  }
-  const sizeCalc = getSizeCalcTask();
-  if (sizeCalc && sizeCalc.running) {
-    alert("「计算大小」正在进行中，请等待完成或先取消。");
-    return;
-  }
-  const level = resolveCompressLevel();
-  const wantSelected = options.scope === "selected" || options.scope === void 0 && selectedImages.size > 0;
-  const snapshot = wantSelected ? allCachedImages.filter(function(img) { return selectedImages.has(img.uuid); }).slice() : await collectCacheTargets();
-  if (snapshot.length === 0) {
-    alert("图片库为空，无需压缩。");
-    return;
-  }
-  const targets = [];
-  let videoSkipped = 0;
-  let serverSkipped = 0;
-  for (const img of snapshot) {
-    if (img.isVideo) {
-      videoSkipped++;
-      continue;
-    }
-    if (img.source === "server" || img.path) {
-      serverSkipped++;
-      continue;
-    }
-    targets.push(img);
-  }
-  if (targets.length === 0) {
-    alert("没有可压缩的图片：视频与酒馆服务器存储的图片会被跳过。");
-    return;
-  }
-  compressTask = {
-    running: true,
-    cancelled: false,
-    started: false,
-    level,
-    total: targets.length,
-    done: 0,
-    failed: 0,
-    skipped: videoSkipped + serverSkipped,
-    videoSkipped,
-    serverSkipped,
-    savedBytes: 0,
-    attemptedBytes: 0
-  };
-  syncRecalcButtons();
-  syncCompressButtons();
-  const metadata = await getMetadata();
-  const indexByUuid = {};
-  for (const md5 in metadata) {
-    const entry = metadata[md5];
-    if (entry && Array.isArray(entry.images)) {
-      for (const item of entry.images) indexByUuid[item.uuid] = item;
-    }
-  }
-  let metadataDirty = false;
-  const skipReasons = {};
-  const noteSkip = function(reason) {
-    skipReasons[reason] = (skipReasons[reason] || 0) + 1;
-    compressTask.skipped++;
-  };
-  try {
-    const confirmed = await stylishConfirm(
-      "将对 " + targets.length + " 张缓存图片执行「压缩加强」。\n" +
-      "· 只处理浏览器数据库里的图片，视频与酒馆服务器图片自动跳过\n" +
-      "· 压缩有损且不可撤销，聊天记录里引用这些图片的消息也会同步变小\n" +
-      "· 建议先用「下载选中」备份原图\n" +
-      "确定继续吗？"
-    );
-    if (!confirmed) return;
-    let compressApi;
-    try {
-      recalcPanelDismissed = false;
-      recalcStartedAt = Date.now();
-      const panelExists = !!document.getElementById("image-cache-recalc-progress");
-      if (panelExists) {
-        renderRecalcProgress({ phase: "compress", current: 0, total: targets.length, detail: "正在加载压缩组件（首次使用需要加载本地编码器，图片不会上传）..." });
-      } else {
-        updateCompressToast("正在加载压缩组件（首次使用需要加载本地编码器）...");
-      }
-      compressApi = await loadCompressModule();
-      if (typeof compressApi.load === "function") await compressApi.load();
-    } catch (error) {
-      console.error("[st-chatu8] 压缩组件加载失败:", error);
-      clearCompressToast();
-      renderRecalcProgress({ phase: "compress", current: 0, total: targets.length, detail: "压缩组件加载失败：" + (error && error.message ? error.message : error) });
-      toastr.error("压缩组件加载失败，请确认插件 compress/ 目录完整。");
-      return;
-    }
-    compressTask.started = true;
-    recalcStartedAt = Date.now();
-    for (let i = 0; i < targets.length; i++) {
-      if (compressTask.cancelled) break;
-      const img = targets[i];
-      const progressText = "已压缩 " + compressTask.done + " 张 · 节省 " + formatMB(compressTask.savedBytes) + " · 跳过 " + compressTask.skipped + " · 失败 " + compressTask.failed;
-      compressTask.lastProgress = { phase: "compress", current: i, total: targets.length, detail: progressText };
-      if (document.getElementById("image-cache-recalc-progress")) {
-        renderRecalcProgress(compressTask.lastProgress);
-      } else {
-        updateCompressToast("正在压缩 " + (i + 1) + " / " + targets.length + " · " + progressText);
-      }
-      try {
-        const entry = indexByUuid[img.uuid];
-        const mark = entry && entry.compress;
-        if (mark && mark.v === 1 && mark.level === level) {
-          noteSkip("已压缩");
-          continue;
-        }
-        const row = await storeReadOnly(img.uuid);
-        if (!row || !row.data) {
-          noteSkip("无字节");
-          continue;
-        }
-        const view = row.data instanceof Uint8Array ? row.data : new Uint8Array(row.data);
-        const before = view.byteLength;
-        if (before === 0) {
-          noteSkip("0 字节");
-          continue;
-        }
-        if (typeof img.size === "number" && img.size > 0 && Math.abs(img.size - before) > 1) {
-          noteSkip("记录已变化");
-          continue;
-        }
-        if (before < COMPRESS_MIN_BYTES) {
-          noteSkip("小于 64KB");
-          continue;
-        }
-        const format = sniffCachedImageFormat(view);
-        if (format !== "png" && format !== "jpeg" && format !== "webp") {
-          noteSkip(format);
-          continue;
-        }
-        const mime = format === "jpeg" ? "image/jpeg" : format === "webp" ? "image/webp" : "image/png";
-        compressTask.attemptedBytes += before;
-        const result = await compressApi.compress(new Blob([view], { type: mime }), { level, allowFormatChange: true });
-        if (!result || !result.ok) {
-          noteSkip(result && result.reason ? result.reason : "无收益");
-          continue;
-        }
-        const after = await result.blob.arrayBuffer();
-        if (!after || after.byteLength === 0 || after.byteLength >= before * COMPRESS_MIN_GAIN) {
-          noteSkip("无收益");
-          continue;
-        }
-        if (!await canDecodeCachedImage(result.blob)) {
-          noteSkip("解码校验失败");
-          continue;
-        }
-        await storeReadWrite({ id: img.uuid, data: after });
-        if (entry) {
-          entry.size = after.byteLength;
-          entry.compress = {
-            v: 1,
-            level,
-            at: Date.now(),
-            codec: result.codec || "",
-            from: mime,
-            to: result.mime || mime
-          };
-          metadataDirty = true;
-        }
-        compressTask.savedBytes += before - after.byteLength;
-        compressTask.done++;
-      } catch (itemError) {
-        console.error("[st-chatu8] 压缩失败:", img.uuid, itemError);
-        compressTask.failed++;
-      }
-    }
-  } finally {
-    if (metadataDirty) {
-      try {
-        await setMetadata(metadata);
-      } catch (metaError) {
-        console.error("[st-chatu8] 压缩后写入元数据失败:", metaError);
-      }
-    }
-    clearCompressToast();
-    compressTask.running = false;
-    syncRecalcButtons();
-    syncCompressButtons();
-    if (compressTask.started) {
-      try {
-        await loadImageCache({ preservePage: true });
-      } catch (reloadError) {
-        console.warn("[st-chatu8] 压缩后刷新缓存列表失败:", reloadError);
-      }
-      const summaryText = renderCompressSummary(compressTask, skipReasons);
-      if (compressTask.done > 0) {
-        toastr.success("压缩加强完成：压缩 " + compressTask.done + " 张，节省 " + formatMB(compressTask.savedBytes));
-      } else {
-        toastr.info("没有可压缩的项目（可能已是压缩过的结果）。");
-      }
-      if (!document.getElementById("image-cache-recalc-detail")) {
-        updateCompressToast(summaryText);
-        toastr.info(summaryText, "压缩加强", { timeOut: 8000 });
-        clearCompressToast();
-      }
-    }
-    compressTask = null;
-  }
-}
-// ===== 压缩加强：生图时自动压缩（主设置页「压缩加强」开关）=====
-function imageInputToBlob(input) {
-  if (input instanceof Blob) return Promise.resolve(input);
-  if (typeof input !== "string") return Promise.resolve(null);
-  if (input.startsWith("data:")) {
-    return fetch(input).then(function(response) { return response.blob(); }).catch(function() { return null; });
-  }
-  return fetch(input).then(function(response) { return response.ok ? response.blob() : null; }).catch(function() { return null; });
-}
-async function compressGeneratedImage(input) {
-  try {
-    if (String((extension_settings[extensionName] || {}).compressBoostStorage) !== "true") return input;
-    if (!input) return input;
-    const api = await loadCompressModule();
-    if (typeof api.load === "function") await api.load();
-    const blob = await imageInputToBlob(input);
-    if (!blob || !blob.size) return input;
-    const result = await api.compress(blob, { level: resolveCompressLevel(), allowFormatChange: true });
-    if (!result || !result.ok || !result.blob) return input;
-    if (result.blob.size >= blob.size * COMPRESS_MIN_GAIN) return input;
-    if (!await canDecodeCachedImage(result.blob)) return input;
-    return await blobToBase64(result.blob);
-  } catch (error) {
-    console.warn("[st-chatu8] 生图时「压缩加强」失败，保留原图:", error);
-    return input;
-  }
-}
 function initImageCache(settingsModal) {
   settingsModal.find('a[data-tab="image-cache"]').on("click", async () => {
     await loadImageCache();
@@ -91254,7 +91355,6 @@ function initImageCache(settingsModal) {
       renderRecalcProgress(task.lastProgress);
     }
     syncRecalcButtons();
-    syncCompressButtons();
   });
   settingsModal.find("#Clear-Cache").on("click", clearCache);
   const jumpInput = document.getElementById("image-cache-jump-input");
@@ -91326,11 +91426,10 @@ function initImageCache(settingsModal) {
     if (ok) recalcImageSizes({ force: true });
   });
   $("#image-cache-recalc-cancel").on("click", () => {
-    if (!cancelCompress() && !cancelSizeCalc()) {
+    if (!cancelSizeCalc()) {
       hideRecalcPanel();
     }
     syncRecalcButtons();
-    syncCompressButtons();
   });
   subscribeSizeCalcProgress((payload) => {
     renderRecalcProgress(payload);
@@ -91339,41 +91438,6 @@ function initImageCache(settingsModal) {
     }
   });
   syncRecalcButtons();
-  // ==== 压缩加强 ====
-  $("#image-cache-compress").on("click", function() {
-    compressCachedImages({ scope: selectedImages.size > 0 ? "selected" : "all" });
-  });
-  // 主要设置页「转JPEG储存」下方的入口：先切到「图片缓存」页（进度面板在那里），再开始压缩。
-  // 注意：设置弹窗会一次性加载所有分页 HTML，因此不能用「面板元素是否存在」当判据，要看分页是否真的可见/激活。
-  function isImageCacheTabActive() {
-    const tab = document.getElementById("st-chatu8-tab-image-cache");
-    if (!tab) return false;
-    if (tab.classList && tab.classList.contains("active")) return true;
-    const rect = tab.getBoundingClientRect ? tab.getBoundingClientRect() : null;
-    return !!(rect && rect.width > 0 && rect.height > 0);
-  }
-  $(document).on("click", "#image-cache-compress-main", async function() {
-    if (compressTask && compressTask.running) return;
-    if (!isImageCacheTabActive()) {
-      const navLink = document.querySelector('.st-chatu8-nav-link[data-tab="image-cache"]');
-      if (navLink) {
-        navLink.click();
-        for (let i = 0; i < 30 && !isImageCacheTabActive(); i++) {
-          await new Promise(function(resolve) { setTimeout(resolve, 100); });
-        }
-      }
-    }
-    compressCachedImages({ scope: "all" });
-  });
-  // 「计算大小」点击后立刻同步一次压缩按钮状态（统计任务在点击回调里同步建立，故延后一个宏任务）
-  $("#image-cache-recalc-size, #image-cache-recalc-all").on("click", function() {
-    setTimeout(syncCompressButtons, 0);
-  });
-  // 统计进度每次更新都刷新压缩按钮状态（统计期间/结束时都能及时恢复）
-  subscribeSizeCalcProgress(function() {
-    syncCompressButtons();
-  });
-  syncCompressButtons();
   $("#image-cache-delete-selected").on("click", async () => {
     if (selectedImages.size === 0) {
       alert("\u8BF7\u5148\u9009\u62E9\u8981\u5220\u9664\u7684\u56FE\u7247\u3002");
@@ -91492,6 +91556,7 @@ var OFFICIAL_NOVELAI_MODEL_DEFAULTS = {
     AQT_novelai: "best quality, amazing quality, very aesthetic, absurdres",
     UCP_novelai: "heavy",
     novelai_straight_alpha: false,
+    novelai_v5_effort: "high",
     addFurryDataset: "false",
     AI_use_coords: true,
     sm: false,
@@ -91626,6 +91691,7 @@ var NOVELAI_MODEL_PARAM_KEYS = [
   "AQT_novelai",
   "UCP_novelai",
   "novelai_straight_alpha",
+  "novelai_v5_effort",
   "addFurryDataset",
   "AI_use_coords",
   "sm",
@@ -91703,6 +91769,77 @@ function loadModelConfigIntoUI(modelName) {
       settings3.novelai_size = currentDim;
     }
   }
+  updateNovelaiReferenceSectionsVisibility(modelName);
+  updateNovelaiEffortUIState(modelName);
+}
+function updateNovelaiEffortUIState(targetModel = null) {
+  const novelaiModeSelect = document.getElementById("novelaimode");
+  const selectedModel = targetModel || (novelaiModeSelect ? novelaiModeSelect.value : "");
+  const effortContainer = document.getElementById("novelai_v5_effort_container");
+  const effortInput = document.getElementById("novelai_v5_effort");
+  const stepsInput = document.getElementById("novelai_steps");
+  const samplerSelect = document.getElementById("novelai_sampler");
+  const cfgRescaleInput = document.getElementById("cfg_rescale");
+  const btnHigh = document.getElementById("st_chatu8_effort_high");
+  const btnMedium = document.getElementById("st_chatu8_effort_medium");
+  const isV5Full = selectedModel === "nai-diffusion-5-full";
+  if (effortContainer) {
+    effortContainer.style.display = isV5Full ? "flex" : "none";
+  }
+  if (!isV5Full) {
+    if (stepsInput) {
+      stepsInput.disabled = false;
+      stepsInput.title = "";
+    }
+    if (samplerSelect) {
+      samplerSelect.disabled = false;
+      samplerSelect.title = "";
+    }
+    if (cfgRescaleInput) {
+      cfgRescaleInput.disabled = false;
+      cfgRescaleInput.title = "";
+    }
+    return;
+  }
+  const currentEffort = effortInput ? effortInput.value || "high" : "high";
+  if (btnHigh && btnMedium) {
+    if (currentEffort === "medium") {
+      btnHigh.classList.remove("active");
+      btnMedium.classList.add("active");
+    } else {
+      btnHigh.classList.add("active");
+      btnMedium.classList.remove("active");
+    }
+  }
+  if (currentEffort === "medium") {
+    if (stepsInput) {
+      stepsInput.value = 14;
+      stepsInput.disabled = true;
+      stepsInput.title = "Medium \u6863\u4F4D\u5DF2\u9501\u5B9A\u4E3A 14 \u6B65\uFF08\u84B8\u998F\u9AD8\u6548\u6A21\u578B\uFF09";
+    }
+    if (samplerSelect) {
+      samplerSelect.value = "k_euler_ancestral";
+      samplerSelect.disabled = true;
+      samplerSelect.title = "Medium \u6863\u4F4D\u5DF2\u9501\u5B9A\u4F7F\u7528 Euler Ancestral \u91C7\u6837\u5668";
+    }
+    if (cfgRescaleInput) {
+      cfgRescaleInput.disabled = true;
+      cfgRescaleInput.title = "Medium \u6863\u4F4D\u4E0D\u652F\u6301 Prompt Guidance Rescale";
+    }
+  } else {
+    if (stepsInput) {
+      stepsInput.disabled = false;
+      stepsInput.title = "";
+    }
+    if (samplerSelect) {
+      samplerSelect.disabled = false;
+      samplerSelect.title = "";
+    }
+    if (cfgRescaleInput) {
+      cfgRescaleInput.disabled = false;
+      cfgRescaleInput.title = "";
+    }
+  }
 }
 function resetCurrentModelToOfficialDefault() {
   const novelaiModeSelect = document.getElementById("novelaimode");
@@ -91743,13 +91880,14 @@ function updateNai3OptionsVisibility() {
     straightAlphaContainer.style.display = isNai5 ? "flex" : "none";
   }
 }
-function updateNovelaiReferenceSectionsVisibility() {
+function updateNovelaiReferenceSectionsVisibility(targetModel = null) {
+  const settings3 = extension_settings75[extensionName] || {};
   const novelaiModeSelect = document.getElementById("novelaimode");
   const vibeSection = document.getElementById("nai-vibe-transfer-section");
   const charRefSection = document.getElementById("nai-char-ref-section");
   const vibeGroupSection = document.getElementById("nai-vibe-group-section");
-  if (!novelaiModeSelect) return;
-  const selectedModel = novelaiModeSelect.value;
+  const selectedModel = targetModel || (novelaiModeSelect ? novelaiModeSelect.value : null) || settings3.novelaimode;
+  if (!selectedModel) return;
   if (vibeSection) {
     vibeSection.style.display = selectedModel === "nai-diffusion-3" ? "block" : "none";
   }
@@ -91822,8 +91960,10 @@ function updateNovelaiModelSchedule(isInitial = false) {
   const novelaiModeSelect = document.getElementById("novelaimode");
   const scheduleSelect = document.getElementById("Schedule");
   const samplerSelect = document.getElementById("novelai_sampler");
-  if (!novelaiModeSelect || !scheduleSelect || !samplerSelect) return;
+  if (!novelaiModeSelect) return;
   const selectedModel = novelaiModeSelect.value;
+  updateNovelaiReferenceSectionsVisibility(selectedModel);
+  if (!scheduleSelect || !samplerSelect) return;
   if (!isInitial && lastSelectedNovelaiModel && lastSelectedNovelaiModel !== selectedModel) {
     saveModelConfigFromUI(lastSelectedNovelaiModel);
   }
@@ -91831,9 +91971,8 @@ function updateNovelaiModelSchedule(isInitial = false) {
   lastSelectedNovelaiModel = selectedModel;
   updateNai3OptionsVisibility();
   updateNovelaiUcpOptions();
-  updateNovelaiReferenceSectionsVisibility();
   const isV5 = selectedModel.includes("nai-diffusion-5");
-  const straightAlphaField = document.getElementById("st-chatu8-novelai-straight-alpha-field");
+  const straightAlphaField = document.getElementById("novelai_straight_alpha_container");
   if (straightAlphaField) {
     straightAlphaField.style.display = isV5 ? "flex" : "none";
   }
@@ -91874,6 +92013,16 @@ function updateNovelaiModelSchedule(isInitial = false) {
   if (fixedPromptEl) {
     $(fixedPromptEl).trigger("input");
   }
+}
+function refreshNovelaiUIFromSettings(targetModel = null) {
+  const settings3 = extension_settings75[extensionName] || {};
+  const novelaiModeSelect = document.getElementById("novelaimode");
+  const model = targetModel || settings3.novelaimode || (novelaiModeSelect ? novelaiModeSelect.value : "nai-diffusion-4-5-full");
+  if (novelaiModeSelect && novelaiModeSelect.value !== model) {
+    novelaiModeSelect.value = model;
+  }
+  lastSelectedNovelaiModel = model;
+  updateNovelaiModelSchedule(true);
 }
 function updateNovelaiOtherSiteVisibility() {
   const novelaiSiteSelect = document.getElementById("novelaisite");
@@ -91943,7 +92092,11 @@ function initNovelaiUI(settingsModal) {
         saveSettingsDebounced47();
       }
     }
+    clearNovelAIUrlCache();
     updateNovelaiOtherSiteVisibility();
+  });
+  settingsModal.find("#novelaiOtherSite").on("change input", function() {
+    clearNovelAIUrlCache();
   });
   settingsModal.find("#novelaiApiToggle").on("click", function() {
     const input = settingsModal.find("#novelaiApi")[0];
@@ -91956,9 +92109,25 @@ function initNovelaiUI(settingsModal) {
       icon.removeClass("fa-eye-slash").addClass("fa-eye");
     }
   });
+  settingsModal.find(".st-chatu8-effort-btn").on("click", function() {
+    const effort = $(this).data("effort");
+    const effortInput = document.getElementById("novelai_v5_effort");
+    if (effortInput) {
+      effortInput.value = effort;
+      $(effortInput).trigger("change");
+    }
+    updateNovelaiEffortUIState();
+    const modeSelect = document.getElementById("novelaimode");
+    const currentModel = modeSelect ? modeSelect.value : null;
+    if (currentModel) {
+      saveModelConfigFromUI(currentModel);
+      saveSettingsDebounced47();
+    }
+  });
   updateNovelaiScheduleVisibility();
   updateNovelaiModelSchedule(true);
   updateNovelaiOtherSiteVisibility();
+  updateNovelaiEffortUIState();
 }
 
 // utils/settings/vibeTransferGenerator.js
@@ -91968,12 +92137,6 @@ init_configDatabase();
 
 init_utils();
 var FIXED_ENCODING_KEY = "b36a8472fe418d9f80d6bb1c54e3a6e62c62936aa7bf31dae2bcf7e929f6430f";
-function normalizeNovelAIOtherSiteUrl2(value) {
-  if (typeof value !== "string") {
-    return "";
-  }
-  return value.trim().replace(/\/+$/, "");
-}
 async function sha256(message) {
   if (typeof crypto !== "undefined" && crypto.subtle) {
     try {
@@ -91997,7 +92160,7 @@ async function sha256(message) {
   const combined = (timestamp + random + hashHex + message.substring(0, 20)).replace(/[^0-9a-f]/g, "0");
   return combined.padEnd(64, "0").substring(0, 64);
 }
-function uint8ArrayToBase642(uint8Array) {
+function uint8ArrayToBase643(uint8Array) {
   let binary = "";
   const chunkSize = 8192;
   for (let i = 0; i < uint8Array.length; i += chunkSize) {
@@ -92745,40 +92908,25 @@ function showVibeGeneratorDialog() {
         information_extracted: extractVal,
         model
       };
-      let encodeVibeUrl = "https://image.novelai.net/ai/encode-vibe";
-      if (settings3.novelaisite && settings3.novelaisite !== "\u5B98\u7F51") {
-        if (settings3.client === "jiuguan") {
-          throw new Error("\u9152\u9986\u7AEF\u4E0D\u652F\u6301\u81EA\u5B9A\u4E49\u7AD9\u70B9\u7684 Vibe \u7F16\u7801\uFF01");
-        }
-        const otherSite = normalizeNovelAIOtherSiteUrl2(settings3.novelaiOtherSite);
-        if (!otherSite) {
-          throw new Error("\u5DF2\u9009\u62E9\u7B2C\u4E09\u65B9\u7AD9\u70B9\uFF0C\u4F46\u672A\u586B\u5199 novelaiOtherSite \u5730\u5740");
-        }
-        encodeVibeUrl = otherSite.includes("encode-vibe") ? otherSite : `${otherSite}/ai/encode-vibe`;
+      if (settings3.novelaisite && settings3.novelaisite !== "\u5B98\u7F51" && settings3.client === "jiuguan") {
+        throw new Error("\u9152\u9986\u7AEF\u4E0D\u652F\u6301\u81EA\u5B9A\u4E49\u7AD9\u70B9\u7684 Vibe \u7F16\u7801\uFF01");
       }
-      console.log(`[Vibe] \u7F16\u7801\u8BF7\u6C42 URL: ${encodeVibeUrl}`);
-      const response = await fetch(encodeVibeUrl, {
-        method: "POST",
+      const { candidates, rawOtherSite } = getNovelAICandidateUrls("/ai/encode-vibe");
+      console.log(`[Vibe] \u7F16\u7801\u8BF7\u6C42\u5019\u9009 URLs:`, candidates);
+      const response = await postNovelAIWithFallback({
+        candidates,
+        rawOtherSite,
+        endpointPath: "/ai/encode-vibe",
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${apiKey}`
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        logPrefix: "[Vibe]"
       });
-      if (!response.ok) {
-        let errorDetail;
-        try {
-          errorDetail = await response.text();
-          const errorJson = JSON.parse(errorDetail);
-          throw new Error(`API \u9519\u8BEF (${response.status}): ${errorJson.message || errorDetail}`);
-        } catch (e) {
-          if (e.message.startsWith("API \u9519\u8BEF")) throw e;
-          throw new Error(`HTTP ${response.status}: ${errorDetail || response.statusText}`);
-        }
-      }
       const arrayBuffer = await response.arrayBuffer();
       const vibeUint8 = new Uint8Array(arrayBuffer);
-      const vibeBase64 = uint8ArrayToBase642(vibeUint8);
+      const vibeBase64 = uint8ArrayToBase643(vibeUint8);
       console.log(`[Vibe] encoding \u539F\u59CB\u5B57\u8282: ${vibeUint8.length} bytes, base64 \u957F\u5EA6: ${vibeBase64.length}`);
       if (vibeUint8.length < 100) {
         throw new Error(`encoding \u6570\u636E\u5F02\u5E38 (\u4EC5 ${vibeUint8.length} bytes)\uFF0CAPI \u53EF\u80FD\u8FD4\u56DE\u4E86\u9519\u8BEF\u54CD\u5E94`);
@@ -98298,12 +98446,74 @@ function initRunningHubUI(settingsModal) {
   eventSource33.on("st_chatu8_cancel_runninghub_task", handleTaskMgrCancel);
   async function compressImageSource(source, maxDim = 768, quality = 0.8) {
     if (!source) return null;
+    const calcFitDimensions = (origWidth, origHeight, maxLimit) => {
+      let width = origWidth || 512;
+      let height = origHeight || 512;
+      if (width > maxLimit || height > maxLimit) {
+        if (width >= height) {
+          height = Math.round(height * maxLimit / width);
+          width = maxLimit;
+        } else {
+          width = Math.round(width * maxLimit / height);
+          height = maxLimit;
+        }
+      }
+      return {
+        width: Math.max(1, width),
+        height: Math.max(1, height)
+      };
+    };
+    const drawAndExport = (drawable, origWidth, origHeight) => {
+      const { width, height } = calcFitDimensions(origWidth, origHeight, maxDim);
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(drawable, 0, 0, width, height);
+      try {
+        return canvas.toDataURL("image/jpeg", quality);
+      } catch (err) {
+        console.warn("[compressImageSource] canvas.toDataURL \u5BFC\u51FA\u5931\u8D25 (\u53EF\u80FD\u88AB\u6C61\u67D3):", err);
+        return null;
+      }
+    };
+    if (source instanceof HTMLImageElement) {
+      if (!source.src || source.style.display === "none") return null;
+      if (source.complete && source.naturalWidth > 0) {
+        try {
+          if (typeof createImageBitmap === "function") {
+            const bitmap = await createImageBitmap(source);
+            const dataUrl = drawAndExport(bitmap, bitmap.width, bitmap.height);
+            bitmap.close();
+            if (dataUrl) return dataUrl;
+          } else {
+            const dataUrl = drawAndExport(source, source.naturalWidth, source.naturalHeight);
+            if (dataUrl) return dataUrl;
+          }
+        } catch (e) {
+          console.warn("[compressImageSource] HTMLImageElement \u76F4\u63A5\u8BFB\u53D6\u5931\u8D25\uFF0C\u5C1D\u8BD5\u5E38\u89C4\u56DE\u9000:", e);
+        }
+      }
+    }
+    if (source instanceof Blob || source instanceof File) {
+      if (typeof createImageBitmap === "function") {
+        try {
+          const bitmap = await createImageBitmap(source);
+          const dataUrl = drawAndExport(bitmap, bitmap.width, bitmap.height);
+          bitmap.close();
+          if (dataUrl) return dataUrl;
+        } catch (err) {
+          console.warn("[compressImageSource] createImageBitmap \u89E3\u7801 Blob \u5931\u8D25\uFF0C\u5C1D\u8BD5\u56DE\u9000:", err);
+        }
+      }
+    }
     let imgSrc = "";
     let shouldRevoke = false;
     if (typeof source === "string") {
       imgSrc = source;
     } else if (source instanceof HTMLImageElement) {
-      if (!source.src || source.style.display === "none") return null;
       imgSrc = source.src;
     } else if (source instanceof Blob || source instanceof File) {
       imgSrc = URL.createObjectURL(source);
@@ -98312,7 +98522,10 @@ function initRunningHubUI(settingsModal) {
     if (!imgSrc) return null;
     return new Promise((resolve) => {
       const img = new Image();
-      img.crossOrigin = "Anonymous";
+      const isHttpUrl = imgSrc.startsWith("http://") || imgSrc.startsWith("https://");
+      if (isHttpUrl) {
+        img.crossOrigin = "Anonymous";
+      }
       img.onload = () => {
         if (shouldRevoke) {
           try {
@@ -98320,26 +98533,8 @@ function initRunningHubUI(settingsModal) {
           } catch (e) {
           }
         }
-        let width = img.naturalWidth || img.width || 512;
-        let height = img.naturalHeight || img.height || 512;
-        if (width > maxDim || height > maxDim) {
-          if (width >= height) {
-            height = Math.round(height * maxDim / width);
-            width = maxDim;
-          } else {
-            width = Math.round(width * maxDim / height);
-            height = maxDim;
-          }
-        }
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.max(1, width);
-        canvas.height = Math.max(1, height);
-        const ctx = canvas.getContext("2d");
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
-        ctx.drawImage(img, 0, 0, width, height);
-        const compressedDataUrl = canvas.toDataURL("image/jpeg", quality);
-        resolve(compressedDataUrl);
+        const dataUrl = drawAndExport(img, img.naturalWidth || img.width, img.naturalHeight || img.height);
+        resolve(dataUrl);
       };
       img.onerror = (err) => {
         if (shouldRevoke) {
@@ -98348,7 +98543,7 @@ function initRunningHubUI(settingsModal) {
           } catch (e) {
           }
         }
-        console.warn("[compressImageSource] \u56FE\u7247\u52A0\u8F7D\u5931\u8D25:", err);
+        console.warn("[compressImageSource] \u56FE\u7247\u52A0\u8F7D\u5931\u8D25:", err, imgSrc?.slice?.(0, 100));
         resolve(null);
       };
       img.src = imgSrc;
@@ -98486,10 +98681,17 @@ ${imgName}` : `
       let img1Desc = "";
       if (!isImg1Muted) {
         const img1Source = sessionUploadedMedia.imgFiles?.[1] || document.getElementById("runninghub_file_img_1")?.files?.[0] || document.getElementById("runninghub_preview_img_1");
+        const hasImg1 = Boolean(
+          sessionUploadedMedia.imgFiles?.[1] || document.getElementById("runninghub_file_img_1")?.files?.[0] || document.getElementById("runninghub_preview_img_1")?.getAttribute("src") && !document.getElementById("runninghub_preview_img_1")?.getAttribute("src")?.endsWith("/")
+        );
         img1Desc = (document.getElementById("runninghub_img_desc_1")?.value || settings3.runninghub_img_desc_1 || "").trim();
         compressedImg1 = await compressImageSource(img1Source, 768, 0.8);
         if (!compressedImg1) {
-          toastr.info("\u63D0\u793A\uFF1A\u56FE\u7247 1 \u672A\u4E0A\u4F20\u6216\u672A\u80FD\u52A0\u8F7D\uFF0C\u5C06\u4EE5\u7EAF\u9700\u6C42\u6587\u672C\u65B9\u5F0F\u751F\u6210\u63D0\u793A\u8BCD");
+          if (hasImg1) {
+            toastr.warning("\u8B66\u544A\uFF1A\u56FE\u7247 1 \u8BFB\u53D6\u6216\u538B\u7F29\u5931\u8D25\uFF0C\u5C06\u4EC5\u4EE5\u6587\u5B57\u65B9\u5F0F\u8BF7\u6C42 LLM");
+          } else {
+            toastr.info("\u63D0\u793A\uFF1A\u56FE\u7247 1 \u672A\u4E0A\u4F20\uFF0C\u5C06\u4EE5\u7EAF\u9700\u6C42\u6587\u672C\u65B9\u5F0F\u751F\u6210\u63D0\u793A\u8BCD");
+          }
         }
       } else {
         toastr.info("\u63D0\u793A\uFF1A\u56FE\u7247 1 \u5F53\u524D\u8BBE\u7F6E\u4E3A\u505C\u7528 (Mute)\uFF0C\u5DF2\u8DF3\u8FC7\u4F5C\u4E3A\u53C2\u8003\u9644\u4EF6");
@@ -98566,12 +98768,16 @@ ${imgName}` : `
     try {
       const collectedImages = [];
       const textOnlyImageDescs = [];
+      const failedImageIndices = [];
       for (let i = 1; i <= 9; i++) {
         const ctrlMode = document.getElementById(`runninghub_img_ctrl_${i}`)?.value || settings3[`runninghub_img_ctrl_${i}`] || "bypass";
         if (ctrlMode === "mute") {
           continue;
         }
         const imgSource = sessionUploadedMedia.imgFiles?.[i] || document.getElementById(`runninghub_file_img_${i}`)?.files?.[0] || document.getElementById(`runninghub_preview_img_${i}`);
+        const hasImgSource = Boolean(
+          sessionUploadedMedia.imgFiles?.[i] || document.getElementById(`runninghub_file_img_${i}`)?.files?.[0] || document.getElementById(`runninghub_preview_img_${i}`)?.getAttribute("src") && !document.getElementById(`runninghub_preview_img_${i}`)?.getAttribute("src")?.endsWith("/")
+        );
         const desc = (document.getElementById(`runninghub_img_desc_${i}`)?.value || settings3[`runninghub_img_desc_${i}`] || "").trim();
         const compressed = await compressImageSource(imgSource, 512, 0.8);
         if (compressed) {
@@ -98580,8 +98786,19 @@ ${imgName}` : `
             name: `<Picture ${i}>`,
             description: desc
           });
-        } else if (desc) {
-          textOnlyImageDescs.push({ index: i, description: desc });
+        } else {
+          if (hasImgSource) {
+            failedImageIndices.push(i);
+          }
+          if (desc) {
+            textOnlyImageDescs.push({ index: i, description: desc });
+          }
+        }
+      }
+      if (failedImageIndices.length > 0) {
+        console.warn(`[RunningHub] \u56FE\u7247 ${failedImageIndices.join(", ")} \u8BFB\u53D6\u6216\u538B\u7F29\u5931\u8D25\uFF0C\u672A\u80FD\u4F5C\u4E3A\u591A\u6A21\u6001\u9644\u4EF6\u53D1\u9001`);
+        if (window.toastr) {
+          toastr.warning(`\u56FE\u7247 ${failedImageIndices.join(", ")} \u8BFB\u53D6\u6216\u538B\u7F29\u5931\u8D25\uFF0C\u5DF2\u8F6C\u4E3A\u4EC5\u6587\u5B57\u8BF4\u660E\u6216\u8DF3\u8FC7`);
         }
       }
       const collectedAudios = [];
@@ -99677,12 +99894,74 @@ function initComfyUIVideoUI() {
   eventSource34.on("st_chatu8_cancel_comfyui_task", handleTaskMgrCancel);
   async function compressImageSource(source, maxDim = 768, quality = 0.8) {
     if (!source) return null;
+    const calcFitDimensions = (origWidth, origHeight, maxLimit) => {
+      let width = origWidth || 512;
+      let height = origHeight || 512;
+      if (width > maxLimit || height > maxLimit) {
+        if (width >= height) {
+          height = Math.round(height * maxLimit / width);
+          width = maxLimit;
+        } else {
+          width = Math.round(width * maxLimit / height);
+          height = maxLimit;
+        }
+      }
+      return {
+        width: Math.max(1, width),
+        height: Math.max(1, height)
+      };
+    };
+    const drawAndExport = (drawable, origWidth, origHeight) => {
+      const { width, height } = calcFitDimensions(origWidth, origHeight, maxDim);
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(drawable, 0, 0, width, height);
+      try {
+        return canvas.toDataURL("image/jpeg", quality);
+      } catch (err) {
+        console.warn("[compressImageSource] canvas.toDataURL \u5BFC\u51FA\u5931\u8D25 (\u53EF\u80FD\u88AB\u6C61\u67D3):", err);
+        return null;
+      }
+    };
+    if (source instanceof HTMLImageElement) {
+      if (!source.src || source.style.display === "none") return null;
+      if (source.complete && source.naturalWidth > 0) {
+        try {
+          if (typeof createImageBitmap === "function") {
+            const bitmap = await createImageBitmap(source);
+            const dataUrl = drawAndExport(bitmap, bitmap.width, bitmap.height);
+            bitmap.close();
+            if (dataUrl) return dataUrl;
+          } else {
+            const dataUrl = drawAndExport(source, source.naturalWidth, source.naturalHeight);
+            if (dataUrl) return dataUrl;
+          }
+        } catch (e) {
+          console.warn("[compressImageSource] HTMLImageElement \u76F4\u63A5\u8BFB\u53D6\u5931\u8D25\uFF0C\u5C1D\u8BD5\u5E38\u89C4\u56DE\u9000:", e);
+        }
+      }
+    }
+    if (source instanceof Blob || source instanceof File) {
+      if (typeof createImageBitmap === "function") {
+        try {
+          const bitmap = await createImageBitmap(source);
+          const dataUrl = drawAndExport(bitmap, bitmap.width, bitmap.height);
+          bitmap.close();
+          if (dataUrl) return dataUrl;
+        } catch (err) {
+          console.warn("[compressImageSource] createImageBitmap \u89E3\u7801 Blob \u5931\u8D25\uFF0C\u5C1D\u8BD5\u56DE\u9000:", err);
+        }
+      }
+    }
     let imgSrc = "";
     let shouldRevoke = false;
     if (typeof source === "string") {
       imgSrc = source;
     } else if (source instanceof HTMLImageElement) {
-      if (!source.src || source.style.display === "none") return null;
       imgSrc = source.src;
     } else if (source instanceof Blob || source instanceof File) {
       imgSrc = URL.createObjectURL(source);
@@ -99691,7 +99970,10 @@ function initComfyUIVideoUI() {
     if (!imgSrc) return null;
     return new Promise((resolve) => {
       const img = new Image();
-      img.crossOrigin = "Anonymous";
+      const isHttpUrl = imgSrc.startsWith("http://") || imgSrc.startsWith("https://");
+      if (isHttpUrl) {
+        img.crossOrigin = "Anonymous";
+      }
       img.onload = () => {
         if (shouldRevoke) {
           try {
@@ -99699,26 +99981,8 @@ function initComfyUIVideoUI() {
           } catch (e) {
           }
         }
-        let width = img.naturalWidth || img.width || 512;
-        let height = img.naturalHeight || img.height || 512;
-        if (width > maxDim || height > maxDim) {
-          if (width >= height) {
-            height = Math.round(height * maxDim / width);
-            width = maxDim;
-          } else {
-            width = Math.round(width * maxDim / height);
-            height = maxDim;
-          }
-        }
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.max(1, width);
-        canvas.height = Math.max(1, height);
-        const ctx = canvas.getContext("2d");
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
-        ctx.drawImage(img, 0, 0, width, height);
-        const compressedDataUrl = canvas.toDataURL("image/jpeg", quality);
-        resolve(compressedDataUrl);
+        const dataUrl = drawAndExport(img, img.naturalWidth || img.width, img.naturalHeight || img.height);
+        resolve(dataUrl);
       };
       img.onerror = (err) => {
         if (shouldRevoke) {
@@ -99727,7 +99991,7 @@ function initComfyUIVideoUI() {
           } catch (e) {
           }
         }
-        console.warn("[compressImageSource] \u56FE\u7247\u52A0\u8F7D\u5931\u8D25:", err);
+        console.warn("[compressImageSource] \u56FE\u7247\u52A0\u8F7D\u5931\u8D25:", err, imgSrc?.slice?.(0, 100));
         resolve(null);
       };
       img.src = imgSrc;
@@ -99865,10 +100129,17 @@ ${imgName}` : `
       let img1Desc = "";
       if (!isImg1Muted) {
         const img1Source = sessionUploadedMedia2.imgFiles?.[1] || document.getElementById("comfyui_img_file_1")?.files?.[0] || document.getElementById("comfyui_preview_img_1");
+        const hasImg1 = Boolean(
+          sessionUploadedMedia2.imgFiles?.[1] || document.getElementById("comfyui_img_file_1")?.files?.[0] || document.getElementById("comfyui_preview_img_1")?.getAttribute("src") && !document.getElementById("comfyui_preview_img_1")?.getAttribute("src")?.endsWith("/")
+        );
         img1Desc = (document.getElementById("comfyui_img_desc_1")?.value || settings3.comfyui_img_desc_1 || "").trim();
         compressedImg1 = await compressImageSource(img1Source, 768, 0.8);
         if (!compressedImg1) {
-          toastr.info("\u63D0\u793A\uFF1A\u56FE\u7247 1 \u672A\u4E0A\u4F20\u6216\u672A\u80FD\u52A0\u8F7D\uFF0C\u5C06\u4EE5\u7EAF\u9700\u6C42\u6587\u672C\u65B9\u5F0F\u751F\u6210\u63D0\u793A\u8BCD");
+          if (hasImg1) {
+            toastr.warning("\u8B66\u544A\uFF1A\u56FE\u7247 1 \u8BFB\u53D6\u6216\u538B\u7F29\u5931\u8D25\uFF0C\u5C06\u4EC5\u4EE5\u6587\u5B57\u65B9\u5F0F\u8BF7\u6C42 LLM");
+          } else {
+            toastr.info("\u63D0\u793A\uFF1A\u56FE\u7247 1 \u672A\u4E0A\u4F20\uFF0C\u5C06\u4EE5\u7EAF\u9700\u6C42\u6587\u672C\u65B9\u5F0F\u751F\u6210\u63D0\u793A\u8BCD");
+          }
         }
       } else {
         toastr.info("\u63D0\u793A\uFF1A\u56FE\u7247 1 \u5F53\u524D\u8BBE\u7F6E\u4E3A\u505C\u7528 (Mute)\uFF0C\u5DF2\u8DF3\u8FC7\u4F5C\u4E3A\u53C2\u8003\u9644\u4EF6");
@@ -99945,12 +100216,16 @@ ${imgName}` : `
     try {
       const collectedImages = [];
       const textOnlyImageDescs = [];
+      const failedImageIndices = [];
       for (let i = 1; i <= 9; i++) {
         const ctrlMode = document.getElementById(`comfyui_img_ctrl_${i}`)?.value || settings3[`comfyui_img_ctrl_${i}`] || "bypass";
         if (ctrlMode === "mute") {
           continue;
         }
         const imgSource = sessionUploadedMedia2.imgFiles?.[i] || document.getElementById(`comfyui_img_file_${i}`)?.files?.[0] || document.getElementById(`comfyui_preview_img_${i}`);
+        const hasImgSource = Boolean(
+          sessionUploadedMedia2.imgFiles?.[i] || document.getElementById(`comfyui_img_file_${i}`)?.files?.[0] || document.getElementById(`comfyui_preview_img_${i}`)?.getAttribute("src") && !document.getElementById(`comfyui_preview_img_${i}`)?.getAttribute("src")?.endsWith("/")
+        );
         const desc = (document.getElementById(`comfyui_img_desc_${i}`)?.value || settings3[`comfyui_img_desc_${i}`] || "").trim();
         const compressed = await compressImageSource(imgSource, 512, 0.8);
         if (compressed) {
@@ -99959,8 +100234,19 @@ ${imgName}` : `
             name: `<Picture ${i}>`,
             description: desc
           });
-        } else if (desc) {
-          textOnlyImageDescs.push({ index: i, description: desc });
+        } else {
+          if (hasImgSource) {
+            failedImageIndices.push(i);
+          }
+          if (desc) {
+            textOnlyImageDescs.push({ index: i, description: desc });
+          }
+        }
+      }
+      if (failedImageIndices.length > 0) {
+        console.warn(`[ComfyUI] \u56FE\u7247 ${failedImageIndices.join(", ")} \u8BFB\u53D6\u6216\u538B\u7F29\u5931\u8D25\uFF0C\u672A\u80FD\u4F5C\u4E3A\u591A\u6A21\u6001\u9644\u4EF6\u53D1\u9001`);
+        if (window.toastr) {
+          toastr.warning(`\u56FE\u7247 ${failedImageIndices.join(", ")} \u8BFB\u53D6\u6216\u538B\u7F29\u5931\u8D25\uFF0C\u5DF2\u8F6C\u4E3A\u4EC5\u6587\u5B57\u8BF4\u660E\u6216\u8DF3\u8FC7`);
         }
       }
       const collectedAudios = [];
@@ -100077,6 +100363,7 @@ init_ui_common();
 // utils/settings/video_assets_merger.js
 init_videoAssetsService();
 init_configDatabase();
+init_ui_common();
 var canvasWidth = 1024;
 var canvasHeight = 1024;
 var canvasBg = "transparent";
@@ -100090,6 +100377,7 @@ var isSpacePressed = false;
 var panStartPointer = { x: 0, y: 0 };
 var panStartOffset = { x: 0, y: 0 };
 var isInitialized2 = false;
+var mergerResizeHandler = null;
 var mergerMode = "create";
 var currentEditingAsset = null;
 var currentDragMode = null;
@@ -100135,6 +100423,36 @@ function clearAllLayers() {
     renderLayers();
   }
 }
+function applyMergerMobileLayout() {
+  if (!$mergerModal || !$mergerModal.length || !$mergerModal.is(":visible")) return;
+  const $container4 = $mergerModal.find(".va-merger-container");
+  if (window.innerWidth <= 768) {
+    const { topBound, availableHeight } = getMobileLayoutBounds(document);
+    $mergerModal.css({ "align-items": "start" });
+    $container4.css({
+      "margin-top": `${topBound}px`,
+      "height": `${availableHeight}px`
+    });
+  } else {
+    $mergerModal.css({ "align-items": "" });
+    $container4.css({
+      "margin-top": "",
+      "height": ""
+    });
+  }
+}
+function ensureMergerResizeListener() {
+  if (!mergerResizeHandler) {
+    mergerResizeHandler = () => {
+      if ($mergerModal && $mergerModal.is(":visible")) {
+        applyMergerMobileLayout();
+        fitCanvasToViewport();
+      }
+    };
+    window.addEventListener("resize", mergerResizeHandler, { passive: true });
+    window.addEventListener("orientationchange", mergerResizeHandler, { passive: true });
+  }
+}
 function openMergerForCreate() {
   if (!isInitialized2) {
     initMergerStudio();
@@ -100147,11 +100465,15 @@ function openMergerForCreate() {
   $("#va-merger-btn-overwrite-asset").hide();
   $("#va-merger-btn-save-as-new").hide();
   $mergerModal.css("display", "flex").hide().fadeIn(150, () => {
+    applyMergerMobileLayout();
     fitCanvasToViewport();
   });
+  applyMergerMobileLayout();
   requestAnimationFrame(() => {
+    applyMergerMobileLayout();
     fitCanvasToViewport();
   });
+  ensureMergerResizeListener();
   renderLayers();
 }
 function openMergerForAsset(asset, dataUrl) {
@@ -100166,15 +100488,29 @@ function openMergerForAsset(asset, dataUrl) {
   $("#va-merger-btn-overwrite-asset").show();
   $("#va-merger-btn-save-as-new").show();
   $mergerModal.css("display", "flex").hide().fadeIn(150, () => {
+    applyMergerMobileLayout();
     fitCanvasToViewport();
   });
+  applyMergerMobileLayout();
   requestAnimationFrame(() => {
+    applyMergerMobileLayout();
     fitCanvasToViewport();
   });
+  ensureMergerResizeListener();
   addImageLayer(dataUrl, asset.name || "\u8D44\u4EA7\u7D20\u6750", asset.fileid, { autoFitCanvas: true, fullCover: true });
 }
 function closeMergerStudio() {
   $mergerModal.fadeOut(150);
+  $mergerModal.css({ "align-items": "" });
+  $mergerModal.find(".va-merger-container").css({
+    "margin-top": "",
+    "height": ""
+  });
+  if (mergerResizeHandler) {
+    window.removeEventListener("resize", mergerResizeHandler);
+    window.removeEventListener("orientationchange", mergerResizeHandler);
+    mergerResizeHandler = null;
+  }
 }
 function initMergerStudio() {
   $mergerModal = $("#va-merger-modal");
@@ -101441,6 +101777,7 @@ function normalizeFps(rawFps) {
 }
 
 // utils/settings/video_frame_extractor.js
+init_ui_common();
 var isInitialized3 = false;
 var currentVideoFile = null;
 var currentVideoObjectUrl = null;
@@ -101452,6 +101789,7 @@ var totalFrames = 0;
 var isPlaying = false;
 var currentCapturedDataUrl = null;
 var currentCapturedBlob = null;
+var extractorResizeHandler = null;
 var $modal;
 var $video;
 var videoEl;
@@ -101492,6 +101830,24 @@ var $btnSaveAsset;
 var $btnDownload;
 var $btnCopy;
 var $btnToMerger;
+function applyExtractorMobileLayout() {
+  if (!$modal || !$modal.length || !$modal.is(":visible")) return;
+  const $container4 = $modal.find(".va-extractor-container");
+  if (window.innerWidth <= 768) {
+    const { topBound, availableHeight } = getMobileLayoutBounds(document);
+    $modal.css({ "align-items": "start" });
+    $container4.css({
+      "margin-top": `${topBound}px`,
+      "height": `${availableHeight}px`
+    });
+  } else {
+    $modal.css({ "align-items": "" });
+    $container4.css({
+      "margin-top": "",
+      "height": ""
+    });
+  }
+}
 function initVideoFrameExtractor() {
   $modal = $("#va-extractor-modal");
   if ($modal.length === 0) return;
@@ -101546,7 +101902,19 @@ function openVideoFrameExtractor() {
   if (!isInitialized3) {
     initVideoFrameExtractor();
   }
-  $modal.css("display", "flex").hide().fadeIn(150);
+  $modal.css("display", "flex").hide().fadeIn(150, () => {
+    applyExtractorMobileLayout();
+  });
+  applyExtractorMobileLayout();
+  if (!extractorResizeHandler) {
+    extractorResizeHandler = () => {
+      if ($modal && $modal.is(":visible")) {
+        applyExtractorMobileLayout();
+      }
+    };
+    window.addEventListener("resize", extractorResizeHandler, { passive: true });
+    window.addEventListener("orientationchange", extractorResizeHandler, { passive: true });
+  }
 }
 function closeVideoFrameExtractor() {
   if (videoEl) {
@@ -101555,6 +101923,16 @@ function closeVideoFrameExtractor() {
   isPlaying = false;
   updatePlayButtonUI();
   $modal.fadeOut(150);
+  $modal.css({ "align-items": "" });
+  $modal.find(".va-extractor-container").css({
+    "margin-top": "",
+    "height": ""
+  });
+  if (extractorResizeHandler) {
+    window.removeEventListener("resize", extractorResizeHandler);
+    window.removeEventListener("orientationchange", extractorResizeHandler);
+    extractorResizeHandler = null;
+  }
 }
 function bindUploadEvents() {
   $closeBtn.off("click").on("click", closeVideoFrameExtractor);
@@ -101672,6 +102050,10 @@ function bindVideoPlaybackEvents() {
     updatePlayButtonUI();
   });
   $btnPlay.off("click").on("click", togglePlayPause);
+  $video.off("click").on("click", (e) => {
+    e.stopPropagation();
+    togglePlayPause();
+  });
 }
 var isSliderDragging = false;
 function bindFrameControlEvents() {
@@ -109029,7 +109411,10 @@ var NOVELAI_PROFILE_KEYS = [
   "cloudQueueUrl",
   "cloudQueueGreeting",
   "showQueueGreeting",
+  "cloudQueueTimeout",
   "novelaimode",
+  "novelai_v5_effort",
+  "novelai_straight_alpha",
   "novelai_sampler",
   "Schedule",
   "nai3Scale",
@@ -109039,11 +109424,17 @@ var NOVELAI_PROFILE_KEYS = [
   "dyn",
   "nai3Variety",
   "nai3Deceisp",
-  // Vibe Transfer
+  "AQT_novelai",
+  "UCP_novelai",
+  "addFurryDataset",
+  // Vibe Transfer 与参考图
+  "nai3VibeTransfer",
+  "nai3CharRef",
   "enableVibeGroupTransfer",
   "randomVibeGroup",
   "normalizeRefStrength",
   // 生成参数
+  "novelai_size",
   "novelai_width",
   "novelai_height",
   "novelai_steps",
@@ -109220,6 +109611,11 @@ function refreshComfyuiProfileSelect() {
 }
 function collectNovelaiProfile() {
   const settings3 = getSettings3();
+  const modeSelect = document.getElementById("novelaimode");
+  const currentModel = modeSelect ? modeSelect.value : settings3.novelaimode || "nai-diffusion-4-5-full";
+  if (currentModel) {
+    saveModelConfigFromUI(currentModel);
+  }
   const profile = {};
   for (const key of NOVELAI_PROFILE_KEYS) {
     let val = settings3[key];
@@ -109227,6 +109623,11 @@ function collectNovelaiProfile() {
       val = val.trim();
     }
     profile[key] = val;
+  }
+  if (settings3.novelai_model_configs) {
+    profile.novelai_model_configs = JSON.parse(JSON.stringify(settings3.novelai_model_configs));
+  } else {
+    profile.novelai_model_configs = {};
   }
   return profile;
 }
@@ -109240,6 +109641,7 @@ function collectComfyuiProfile() {
 }
 function applyNovelaiProfile(profile) {
   const settings3 = getSettings3();
+  if (!profile) return;
   if (profile.enableVibeGroupTransfer === void 0) {
     profile.enableVibeGroupTransfer = "false";
   }
@@ -109248,6 +109650,21 @@ function applyNovelaiProfile(profile) {
   }
   if (profile.randomVibeGroup === void 0) {
     profile.randomVibeGroup = "false";
+  }
+  const targetModel = profile.novelaimode || settings3.novelaimode || "nai-diffusion-4-5-full";
+  if (profile.novelai_model_configs && typeof profile.novelai_model_configs === "object" && Object.keys(profile.novelai_model_configs).length > 0) {
+    settings3.novelai_model_configs = JSON.parse(JSON.stringify(profile.novelai_model_configs));
+  } else {
+    settings3.novelai_model_configs = settings3.novelai_model_configs || {};
+    const legacyConfig = {};
+    NOVELAI_MODEL_PARAM_KEYS.forEach((key) => {
+      if (profile[key] !== void 0) {
+        legacyConfig[key] = profile[key];
+      }
+    });
+    if (Object.keys(legacyConfig).length > 0) {
+      settings3.novelai_model_configs[targetModel] = legacyConfig;
+    }
   }
   for (const key of NOVELAI_PROFILE_KEYS) {
     if (profile[key] !== void 0) {
@@ -109259,17 +109676,14 @@ function applyNovelaiProfile(profile) {
       const element = document.getElementById(key);
       if (element) {
         if (element.type === "checkbox") {
-          element.checked = String(val) === "true";
+          element.checked = String(val) === "true" || val === true;
         } else {
           element.value = val;
         }
       }
     }
   }
-  const novelaiModeSelect = document.getElementById("novelaimode");
-  if (novelaiModeSelect) {
-    $(novelaiModeSelect).trigger("change");
-  }
+  refreshNovelaiUIFromSettings(targetModel);
   syncSliders();
   updateNovelaiOtherSiteVisibility();
   if (settings3.novelaisite && settings3.novelaisite !== "\u5B98\u7F51") {
@@ -110439,12 +110853,13 @@ image### 1girl, solo, blue hair ###
   comfyui_profile_id: "\u968F\u65F6\u4FDD\u5B58\u548C\u5207\u6362\u4EE5\u4E0B\u7684\u8FD9\u4E9B\u8BBE\u7F6E",
   novelaiApi: "NovelAI Persistent API Token\uFF08\u5728\u8D26\u53F7\u8BA2\u9605\u9875\u83B7\u53D6\uFF09",
   novelaimode: "NovelAI \u6A21\u578B\u7248\u672C\uFF08v3 / v4 / v4.5\uFF0C**v4.5 Curated** \u6700\u65B0\uFF09",
-  novelaisite: "\u8BF7\u6C42\u8D70\u54EA\u4E2A\u7AD9\u70B9\uFF1A\u5B98\u65B9 / \u7B2C\u4E09\u65B9\u4EE3\u7406\uFF08\u4EC5\u652F\u6301\u5B98\u7F51\u683C\u5F0F\uFF09\uFF08\u6CE8\u610F\u8981\u5207\u6362\u4E3A\u4E3B\u8981\u8BBE\u7F6E\u7684\u5BA2\u6237\u7AEF\u4E3A\u6D4F\u89C8\u5668\uFF0C\u5426\u5219\u4E0D\u652F\u6301\uFF01\uFF09",
-  novelaiOtherSite: "\u81EA\u5B9A\u4E49\u7B2C\u4E09\u65B9 NovelAI \u517C\u5BB9\u7AD9\u70B9 URL",
+  novelaisite: "\u8BF7\u6C42\u8D70\u54EA\u4E2A\u7AD9\u70B9\uFF1A\u5B98\u65B9 / \u7B2C\u4E09\u65B9\u4EE3\u7406\uFF08\u652F\u6301\u5B98\u65B9\u53CD\u4EE3\u6839\u5730\u5740\u4E0E\u5355 Endpoint \u4E2D\u8F6C\u81EA\u52A8\u56DE\u9000\uFF09\uFF08\u6CE8\u610F\u9700\u4F7F\u7528\u6D4F\u89C8\u5668\u5BA2\u6237\u7AEF\uFF09",
+  novelaiOtherSite: "\u81EA\u5B9A\u4E49\u7B2C\u4E09\u65B9 NovelAI \u517C\u5BB9\u7AD9\u70B9 URL\uFF08\u652F\u6301\u53CD\u4EE3\u6839\u5730\u5740\u6216\u5B8C\u6574\u5355 Endpoint\uFF0C\u5185\u7F6E\u81EA\u52A8\u56DE\u9000\u4E0E\u7AEF\u70B9\u81EA\u6108\uFF09",
   enableCloudQueue: "\u5F53\u6709\u591A\u4E2A\u5C0F\u4F19\u4F34\u540C\u65F6\u4F7F\u7528\u4E00\u4E2Akey\u65F6\uFF0C\u5B98\u7F51\u4F1A429\u62A5\u9519\uFF0C\u5F00\u542F\u540E\u4F1A\u81EA\u52A8\u6392\u961F\uFF0C\u8BA9\u4F60\u4EEC\u4F9D\u6B21\u751F\u56FE\u3002\uFF08\u4E0D\u4F1A\u53D1\u9001\u4EFB\u4F55\u654F\u611F\u6570\u636E\uFF09",
   cloudQueueUrl: "\u4E91\u7AEF\u961F\u5217\u670D\u52A1\u5730\u5740\uFF08\u81EA\u90E8\u7F72\u6216\u793E\u533A\u516C\u5171\u8282\u70B9\uFF09",
   cloudQueueGreeting: "\u4E91\u961F\u5217\u9996\u6B21\u8FDE\u63A5\u65F6\u7684\u95EE\u5019\u8BED\uFF08\u793E\u533A\u793C\u4EEA\uFF09",
   showQueueGreeting: "\u5728\u961F\u5217\u7B49\u5F85\u65F6\u662F\u5426\u663E\u793A\u95EE\u5019\u8BED\u63D0\u793A",
+  novelai_v5_effort: "NovelAI V5 Full \u7684\u8D28\u91CF\u4E0E\u7B97\u529B\u6863\u4F4D\uFF1AHigh \u4E3A\u9AD8\u8D28\u91CF 23 \u6B65\u539F\u7248\uFF1BMedium \u4E3A\u7701\u6D41 14 \u6B65\u84B8\u998F\u7248\uFF08\u7701\u7EA6 42% \u7B97\u529B\u4E14\u753B\u8D28\u76F8\u8FD1\uFF0C\u9501\u5B9A 14 \u6B65\u4E0E Euler Ancestral\uFF09",
   novelai_sampler: "NovelAI \u91C7\u6837\u5668\uFF08Euler / Euler Ancestral / DPM++ \u7B49\uFF09",
   Schedule: "\u91C7\u6837\u8C03\u5EA6\u8868\uFF08Native / Karras / Exponential \u7B49\uFF09",
   nai3Scale: "Prompt Guidance\uFF1A\u63D0\u793A\u8BCD\u5F15\u5BFC\u5F3A\u5EA6\uFF0C\u5E38\u7528 `5~10`",
@@ -111090,12 +111505,13 @@ eventSource45.on(event_types6.GENERATION_ENDED, async (data) => {
       try {
         console.log("[st-chatu8] Triggering handlePromptRequest with gesture1 for messageId:", messageId);
         debugMilestone("autoLLMClick.GENERATION_ENDED", "\u5F00\u59CB\u89E6\u53D1 handlePromptRequest");
-        debugLog("autoLLMClick.GENERATION_ENDED", "\u8C03\u7528 handlePromptRequest", {
+        debugLog("autoLLMClick.GENERATION_ENDED", "\u8C03\u7528 handlePromptRequest (\u81EA\u52A8\u89E6\u53D1\u6A21\u5F0F)", {
           gestureId: "gesture1",
           messageId,
-          elementConnected: el.isConnected
+          elementConnected: el.isConnected,
+          source: "auto"
         });
-        handlePromptRequest(el, "gesture1");
+        handlePromptRequest(el, "gesture1", { source: "auto", isAuto: true, skipDemandPopup: true });
       } catch (error) {
         console.error("[st-chatu8] handlePromptRequest failed:", error);
         debugLog("autoLLMClick.GENERATION_ENDED", "handlePromptRequest \u8C03\u7528\u5931\u8D25", {
@@ -111464,7 +111880,7 @@ async function initUI({ check_update: check_update2 }) {
       settings2.theme_id = "\u9ED8\u8BA4-\u767D\u5929";
     }
     applyTheme(settings2.themes[settings2.theme_id]);
-    const mainKeys = ["varsEnabled", "scriptEnabled", "helpTipsEnabled", "disablePluginToast", "newlineFixEnabled", "mode", "client", "displayMode", "heavyFrontendMode", "insertOriginalText", "dbclike", "collapseImage", "zidongdianji", "zidongdianji2", "longPressToEdit", "clickToPreview", "startTag", "endTag", "cache", "sdUrl", "st_chatu8_sd_auth", "comfyuiUrl", "novelaiApi", "novelaisite", "novelaiOtherSite", "enableCloudQueue", "cloudQueueUrl", "cloudQueueGreeting", "showQueueGreeting", "novelaimode", "novelai_sampler", "Schedule", "nai3Scale", "cfg_rescale", "AI_use_coords", "sm", "dyn", "nai3Variety", "nai3Deceisp", "sd_cwidth", "sd_cheight", "sd_csteps", "sd_cseed", "sdCfgScale", "restoreFaces", "novelai_width", "novelai_height", "novelai_steps", "novelai_seed", "nai3VibeTransfer", "enableVibeGroupTransfer", "randomVibeGroup", "normalizeRefStrength", "InformationExtracted", "ReferenceStrength", "nai3CharRef", "nai3StylePerception", "comfyui_width", "comfyui_height", "comfyui_steps", "comfyui_seed", "cfg_comfyui", "worker", "ipa", "c_fenwei", "c_xijie", "c_quanzhong", "c_idquanzhong", "AQT_sd", "UCP_sd", "AQT_novelai", "UCP_novelai", "AQT_comfyui", "UCP_comfyui", "addFurryDataset", "sd_cupscale_factor", "sd_chires_fix", "sd_chires_steps", "sd_cdenoising_strength", "sd_cclip_skip", "sd_cadetailer", "worldBookEnabled", "ai_temperature", "ai_top_p", "ai_presence_penalty", "ai_frequency_penalty", "ai_stream", "ai_private", "ai_token", "vocabulary_search_startswith", "vocabulary_search_limit", "vocabulary_search_sort", "enablePregen", "autoLLMImageGen", "randomYushe", "aiAutonomousResolution", "videoChannel", "imageAlignment", "imageSizeScale", "imageGenInterval", "translation_system_prompt", "ai_test_system", "ai_test_user", "ai_test_output", "jiuguanchucun", "vibeJiuguanchucun", "convertToJpegStorage", "weilin_lora_fix"];
+    const mainKeys = ["varsEnabled", "scriptEnabled", "helpTipsEnabled", "disablePluginToast", "newlineFixEnabled", "mode", "client", "displayMode", "heavyFrontendMode", "insertOriginalText", "dbclike", "collapseImage", "zidongdianji", "zidongdianji2", "longPressToEdit", "clickToPreview", "startTag", "endTag", "cache", "sdUrl", "st_chatu8_sd_auth", "comfyuiUrl", "comfyui_max_concurrency", "comfyui_timeout", "novelaiApi", "novelaisite", "novelaiOtherSite", "enableCloudQueue", "cloudQueueUrl", "cloudQueueGreeting", "showQueueGreeting", "novelaimode", "novelai_v5_effort", "novelai_sampler", "Schedule", "nai3Scale", "cfg_rescale", "AI_use_coords", "sm", "dyn", "nai3Variety", "nai3Deceisp", "sd_cwidth", "sd_cheight", "sd_csteps", "sd_cseed", "sdCfgScale", "restoreFaces", "novelai_width", "novelai_height", "novelai_steps", "novelai_seed", "nai3VibeTransfer", "enableVibeGroupTransfer", "randomVibeGroup", "normalizeRefStrength", "InformationExtracted", "ReferenceStrength", "nai3CharRef", "nai3StylePerception", "comfyui_width", "comfyui_height", "comfyui_steps", "comfyui_seed", "cfg_comfyui", "worker", "ipa", "c_fenwei", "c_xijie", "c_quanzhong", "c_idquanzhong", "AQT_sd", "UCP_sd", "AQT_novelai", "UCP_novelai", "AQT_comfyui", "UCP_comfyui", "addFurryDataset", "sd_cupscale_factor", "sd_chires_fix", "sd_chires_steps", "sd_cdenoising_strength", "sd_cclip_skip", "sd_cadetailer", "worldBookEnabled", "ai_temperature", "ai_top_p", "ai_presence_penalty", "ai_frequency_penalty", "ai_stream", "ai_private", "ai_token", "vocabulary_search_startswith", "vocabulary_search_limit", "vocabulary_search_sort", "enablePregen", "autoLLMImageGen", "randomYushe", "aiAutonomousResolution", "videoChannel", "imageAlignment", "imageSizeScale", "imageGenInterval", "translation_system_prompt", "ai_test_system", "ai_test_user", "ai_test_output", "jiuguanchucun", "vibeJiuguanchucun", "convertToJpegStorage", "weilin_lora_fix"];
     mainKeys.forEach((key) => {
       const element = document.getElementById(key);
       if (element) {
@@ -111475,6 +111891,9 @@ async function initUI({ check_update: check_update2 }) {
         }
       }
     });
+    if (settings2.comfyui_max_concurrency) {
+      comfyuiConcurrencyLock.setMaxConcurrency(settings2.comfyui_max_concurrency);
+    }
     if (settings2.novelaimode) {
       loadModelConfigIntoUI(settings2.novelaimode);
     }
@@ -111858,6 +112277,7 @@ async function initUI({ check_update: check_update2 }) {
       }
     }
     updateNovelaiOtherSiteVisibility();
+    updateNovelaiReferenceSectionsVisibility(settings2.novelaimode);
   }
   loadSettingsIntoUI();
   updateGenerationModeHandlers();
@@ -111950,6 +112370,9 @@ async function initUI({ check_update: check_update2 }) {
         updateLogView();
         updateErrorStats();
         updateImageGenStats();
+      } else if (tabId === "novelai") {
+        updateNovelaiReferenceSectionsVisibility();
+        updateNovelaiOtherSiteVisibility();
       } else if (tabId === "character") {
         refreshCharacterSettings(targetTab);
       } else if (tabId === "video_assets") {
@@ -112284,24 +112707,6 @@ async function initUI({ check_update: check_update2 }) {
       addLog("[\u7F13\u5B58] JPEG\u50A8\u5B58\u5DF2\u5173\u95ED");
     }
   });
-  settingsModal.find("#compressBoostStorage").prop("checked", String(settings2.compressBoostStorage) === "true");
-  settingsModal.find("#compressBoostStorage").on("change", function() {
-    const isEnabled = $(this).prop("checked");
-    settings2.compressBoostStorage = isEnabled.toString();
-    saveSettingsDebounced71();
-    if (isEnabled) {
-      toastr.info("新生成的图片会自动做「压缩加强」（本地编码器，不联网）", "压缩加强已启用");
-      addLog("[缓存] 压缩加强已启用（生图时自动压缩）");
-    } else {
-      toastr.info("已关闭：新生成的图片按原样存储", "压缩加强已关闭");
-    }
-  });
-  settingsModal.find("#compressBoostLevel").val(resolveCompressLevel());
-  settingsModal.find("#compressBoostLevel").on("change", function() {
-    settings2.compressBoostLevel = String($(this).val() || "balanced");
-    saveSettingsDebounced71();
-    toastr.info("压缩强度已设为：" + (COMPRESS_LEVEL_LABELS[resolveCompressLevel()] || resolveCompressLevel()) + "（下次压缩生效）", "压缩加强");
-  });
   settingsModal.find("#autoLLMImageGen").on("change", async function() {
     const isEnabled = $(this).prop("checked");
     settings2.autoLLMImageGen = isEnabled.toString();
@@ -112315,15 +112720,6 @@ async function initUI({ check_update: check_update2 }) {
         saveSettingsDebounced71();
         await handleInsertOriginalTextRegex(true);
         changes.push('\u5DF2\u5F00\u542F"\u63D2\u5165\u539F\u6587(\u975E\u540C\u5C42)"');
-      }
-      if (extension_settings113[extensionName]?.imageGenDemandEnabled) {
-        extension_settings113[extensionName].imageGenDemandEnabled = false;
-        const imageGenDemandSwitch = $("#ch-image-gen-demand-enabled");
-        if (imageGenDemandSwitch.length) {
-          imageGenDemandSwitch.prop("checked", false);
-        }
-        saveSettingsDebounced71();
-        changes.push('\u5DF2\u5173\u95ED"\u751F\u56FE\u9700\u6C42\u5F39\u7A97"');
       }
       if (changes.length > 0) {
         toastr.info(changes.join("\uFF0C"), "\u81EA\u52A8LLM\u8BF7\u6C42\u751F\u56FE\u5DF2\u542F\u7528");
@@ -112714,6 +113110,12 @@ async function initUI({ check_update: check_update2 }) {
         }
         if (settingKey === "videoChannel") {
           updateModeNavVisibility(settingsModal);
+        }
+        if (settingKey === "comfyui_max_concurrency") {
+          const parsedMax = parseInt(value, 10);
+          if (!isNaN(parsedMax) && parsedMax > 0) {
+            comfyuiConcurrencyLock.setMaxConcurrency(parsedMax);
+          }
         }
         if (settingKey === "imageAlignment" || settingKey === "imageSizeScale") {
           const currentTheme = settings2.themes?.[settings2.theme_id] || {};
@@ -113185,37 +113587,248 @@ function loadmsgpack() {
   return msgpackLoadPromise;
 }
 window.loadmsgpack = loadmsgpack;
-// ===== 压缩加强：模块懒加载（首次使用才加载 compress/ 下的 WASM 编码器）=====
-var compressModulePromise;
-function loadCompressModule() {
-  if (window.stChatu8Compress && typeof window.stChatu8Compress.compress === "function") {
-    return Promise.resolve(window.stChatu8Compress);
+// ===== chatu8 personal: HTTP 429 自动重发（自用，不进上游补丁集）=====
+// 配置（随时可改、立即生效；也可持久化到 localStorage['chatu8_retry429']）：
+//   window.__chatu8Retry = { enabled:true, delayMs:4000, maxRetries:5,
+//                            backoff:"exponential", factor:2, maxDelayMs:60000,
+//                            jitter:0.2, respectRetryAfter:true, retryStatuses:[429] }
+//   持久化调整：__chatu8RetrySet({ delayMs: 8000 })
+//   查看统计：  __chatu8RetryStats()      查看当前配置：__chatu8RetryGet()
+(function () {
+  var STORE_KEY = "chatu8_retry429";
+  var DEFAULTS = {
+    enabled: true,
+    delayMs: 4000,
+    maxRetries: 5,
+    backoff: "exponential",
+    factor: 2,
+    maxDelayMs: 60000,
+    jitter: 0.2,
+    respectRetryAfter: true,
+    retryStatuses: [429],
+    log: true
+  };
+  var stats = { attempts: 0, retries: 0, exhausted: 0, lastStatus: 0, lastUrl: "", lastWaitMs: 0, lastRetryAt: 0 };
+  function readStored() {
+    try {
+      var raw = window.localStorage.getItem(STORE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      return {};
+    }
   }
-  if (compressModulePromise) {
-    return compressModulePromise;
+  function cfg() {
+    var out = {};
+    var k;
+    for (k in DEFAULTS) out[k] = DEFAULTS[k];
+    var src = readStored();
+    for (k in src) if (src[k] !== undefined) out[k] = src[k];
+    try {
+      var w = window.__chatu8Retry;
+      if (w) for (k in w) if (w[k] !== undefined) out[k] = w[k];
+    } catch (e) {
+    }
+    return out;
   }
-  const compressFolder = extensionFolderPath + "/compress";
-  compressModulePromise = new Promise(function(resolve, reject) {
-    window.stChatu8CompressBase = compressFolder;
-    const scriptEl = document.createElement("script");
-    scriptEl.src = new URL(compressFolder + "/st-chatu8-compress.js", window.location.href).href;
-    scriptEl.async = true;
-    scriptEl.onload = function() {
-      if (window.stChatu8Compress && typeof window.stChatu8Compress.compress === "function") {
-        resolve(window.stChatu8Compress);
-      } else {
-        compressModulePromise = void 0;
-        reject(new Error("压缩模块未导出 stChatu8Compress"));
+  function sleep(ms, signal) {
+    return new Promise(function (resolve, reject) {
+      var t = setTimeout(resolve, ms);
+      if (signal && signal.addEventListener) {
+        signal.addEventListener("abort", function () {
+          clearTimeout(t);
+          reject(new Error("chatu8-retry: aborted"));
+        }, { once: true });
       }
+    });
+  }
+  function targetMatch(url) {
+    try {
+      return /image\.novelai\.net\/ai\/(generate-image|encode-vibe)/.test(url) ||
+        /\/api\/novelai\/generate-image/.test(url);
+    } catch (e) {
+      return false;
+    }
+  }
+  function delayFor(c, attempt, res) {
+    var base = Number(c.delayMs) || 4000;
+    var d = c.backoff === "exponential" ? base * Math.pow(Number(c.factor) || 2, attempt) : base;
+    var cap = Number(c.maxDelayMs) || 0;
+    if (cap > 0) d = Math.min(d, cap);
+    if (c.respectRetryAfter && res && res.headers && res.headers.get) {
+      var ra = parseInt(res.headers.get("retry-after") || "", 10);
+      if (!isNaN(ra) && ra > 0) {
+        var raMs = ra * 1000;
+        d = cap > 0 ? Math.max(d, Math.min(raMs, cap)) : Math.max(d, raMs);
+      }
+    }
+    var j = Number(c.jitter) || 0;
+    if (j > 0) d = Math.round(d * (1 + (Math.random() * 2 - 1) * j));
+    return Math.max(0, d);
+  }
+  function install() {
+    if (window.__chatu8RetryInstalled) return false;
+    var orig = window.fetch;
+    if (typeof orig !== "function") return false;
+    window.__chatu8RetryInstalled = true;
+    window.fetch = function (input, init) {
+      var url = "";
+      try {
+        url = typeof input === "string" ? input : (input && input.url) || "";
+      } catch (e) {
+      }
+      var c = cfg();
+      if (!c.enabled || !targetMatch(url)) return orig.apply(this, arguments);
+      if (init && init.body && typeof ReadableStream !== "undefined" && init.body instanceof ReadableStream) {
+        return orig.apply(this, arguments);
+      }
+      var attempt = 0;
+      var ctx = this;
+      var args = arguments;
+      function once() {
+        stats.attempts++;
+        stats.lastUrl = url;
+        return orig.apply(ctx, args).then(function (res) {
+          stats.lastStatus = res.status;
+          var list = c.retryStatuses || [429];
+          if (list.indexOf(res.status) === -1) return res;
+          if (attempt >= (Number(c.maxRetries) || 0)) {
+            stats.exhausted++;
+            if (c.log) console.warn("[chatu8-retry] HTTP " + res.status + " 已重试 " + attempt + " 次，放弃：" + url);
+            return res;
+          }
+          var waitMs = delayFor(c, attempt, res);
+          attempt++;
+          stats.retries++;
+          stats.lastWaitMs = waitMs;
+          stats.lastRetryAt = Date.now();
+          if (c.log) console.warn("[chatu8-retry] HTTP " + res.status + " → " + waitMs + "ms 后第 " + attempt + "/" + c.maxRetries + " 次重发：" + url);
+          updateStatus();
+          return sleep(waitMs, init && init.signal).then(once);
+        });
+      }
+      return once();
     };
-    scriptEl.onerror = function() {
-      compressModulePromise = void 0;
-      reject(new Error("压缩模块脚本加载失败"));
+    window.__chatu8RetryStats = function () {
+      return JSON.parse(JSON.stringify(stats));
     };
-    document.head.appendChild(scriptEl);
-  });
-  return compressModulePromise;
-}
+    window.__chatu8RetryGet = function () {
+      return cfg();
+    };
+    window.__chatu8RetrySet = function (patch) {
+      var cur = readStored();
+      var k;
+      for (k in patch || {}) cur[k] = patch[k];
+      try {
+        window.localStorage.setItem(STORE_KEY, JSON.stringify(cur));
+      } catch (e) {
+      }
+      var next = cfg();
+      console.info("[chatu8-retry] 配置已更新:", next);
+      return next;
+    };
+    console.info("[chatu8-retry] HTTP 429 自动重发已启用：基础延迟 " + cfg().delayMs + "ms、" + cfg().backoff + "、最多 " + cfg().maxRetries + " 次。");
+    console.info("  调整：__chatu8RetrySet({ delayMs: 8000 }) ｜ 临时：window.__chatu8Retry = { delayMs: 1000 } ｜ 统计：__chatu8RetryStats()");
+    return true;
+  }
+  function uiGet(id) {
+    try {
+      return document.getElementById(id);
+    } catch (e) {
+      return null;
+    }
+  }
+  function updateStatus() {
+    var el = uiGet("ch-429-status");
+    if (!el) return;
+    var s = stats;
+    var next = "已重发 " + s.retries + " 次 / 发起 " + s.attempts + " 次请求" +
+      (s.lastWaitMs ? "（上次等待 " + s.lastWaitMs + "ms）" : "");
+    // 只在文本真的变化时才写：写同样的 textContent 也会产生 childList 变更，
+    // 而我们的 MutationObserver 正盯着这个子树，会被自己的写入反复唤醒（死循环）。
+    if (el.textContent !== next) el.textContent = next;
+  }
+  function syncUi() {
+    var c = cfg();
+    var en = uiGet("ch-429-enabled");
+    if (en) en.checked = c.enabled !== false;
+    var d = uiGet("ch-429-delay");
+    if (d) d.value = c.delayMs;
+    var m = uiGet("ch-429-max");
+    if (m) m.value = c.maxRetries;
+    var b = uiGet("ch-429-backoff");
+    if (b) b.value = c.backoff === "fixed" ? "fixed" : "exponential";
+    var ra = uiGet("ch-429-retryafter");
+    if (ra) ra.checked = c.respectRetryAfter !== false;
+    var sec = uiGet("ch-429-retry-section");
+    if (sec && !uiGet("ch-429-status")) {
+      var small = document.createElement("small");
+      small.id = "ch-429-status";
+      small.style.opacity = "0.7";
+      sec.appendChild(small);
+    }
+    updateStatus();
+  }
+  function readUi() {
+    var patch = {};
+    var en = uiGet("ch-429-enabled");
+    if (en) patch.enabled = !!en.checked;
+    var d = uiGet("ch-429-delay");
+    if (d) {
+      var dv = parseInt(d.value, 10);
+      if (!isNaN(dv) && dv >= 0) patch.delayMs = dv;
+    }
+    var m = uiGet("ch-429-max");
+    if (m) {
+      var mv = parseInt(m.value, 10);
+      if (!isNaN(mv) && mv >= 0) patch.maxRetries = mv;
+    }
+    var b = uiGet("ch-429-backoff");
+    if (b && b.value) patch.backoff = b.value;
+    var ra = uiGet("ch-429-retryafter");
+    if (ra) patch.respectRetryAfter = !!ra.checked;
+    return patch;
+  }
+  function bindUi() {
+    if (window.__chatu8RetryUiBound) return;
+    window.__chatu8RetryUiBound = true;
+    var handler = function (ev) {
+      var t = ev.target;
+      if (!t || !t.id || String(t.id).indexOf("ch-429-") !== 0) return;
+      var patch = readUi();
+      window.__chatu8RetrySet(patch);
+      updateStatus();
+    };
+    document.addEventListener("change", handler, true);
+    document.addEventListener("input", handler, true);
+    try {
+      var scheduled = false;
+      var syncSoon = function () {
+        scheduled = false;
+        if (uiGet("ch-429-delay")) syncUi();
+      };
+      // 设置面板是这个插件点开标签页时才抓取注入的，所以必须监听 DOM 变化。
+      // 但回调里同步调用 syncUi() 会与 updateStatus() 的写入形成同步微任务死循环，
+      // 因此这里把同步合并成一次异步任务（每轮变更最多执行一次），双保险。
+      var mo = new MutationObserver(function () {
+        if (scheduled) return;
+        scheduled = true;
+        setTimeout(syncSoon, 0);
+      });
+      mo.observe(document.body || document.documentElement, { childList: true, subtree: true });
+    } catch (e) {
+    }
+    syncUi();
+  }
+  install();
+  try {
+    if (typeof document !== "undefined") {
+      if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bindUi);
+      else bindUi();
+    }
+  } catch (e) {
+  }
+})();
+
 function getRequestHeaders2(token2) {
   return {
     "X-CSRF-Token": token2,
