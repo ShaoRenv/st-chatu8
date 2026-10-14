@@ -60,6 +60,55 @@ const REF_RE = /\$([^$]+)\$/g;
 // 半角 , ; 与全角 ，；都算分段符（模型常写全角）
 function isSegSep(ch) { return ch === "," || ch === ";" || ch === "，" || ch === "；"; }
 
+// 减号的各种写法：半角 - 、全角 － 、数学减号 − 、不换行连字符 ‑ 、小连字符 ﹣
+const MINUS_CHARS = "-\uFF0D\u2212\u2011\uFE63";
+function isMinusChar(ch) { return ch.length === 1 && MINUS_CHARS.indexOf(ch) >= 0; }
+// 项以减号开头 = 减一项；返回 { minus, body }
+function splitMinus(s) {
+  const str = String(s);
+  if (!str.length) return { minus: false, body: str };
+  return isMinusChar(str.charAt(0)) ? { minus: true, body: str.slice(1).trim() } : { minus: false, body: str };
+}
+
+// {A,B} 是并列候选；{{tag}} 是 tag 自带的强调括号（如 {{blue pupils}}），不是候选。
+// 判定按「组」来：某一层里带顶层逗号才算并列候选，所以同一个 $...$ 里两种都能混着写。
+function findAlternativesBrace(s) {
+  const str = String(s);
+  for (let i = 0; i < str.length; i++) {
+    if (str.charAt(i) !== "{") continue;
+    let depth = 0;
+    let close = -1;
+    for (let j = i; j < str.length; j++) {
+      const ch = str.charAt(j);
+      if (ch === "{") depth++;
+      else if (ch === "}") { depth--; if (depth === 0) { close = j; break; } }
+    }
+    if (close < 0) continue; // 没闭合：当字面
+    // {{tag}} = tag 自带的强调括号（如 {{blue pupils}}）：整组跳过，别把内层 { 当候选
+    if (str.charAt(i + 1) === "{" && str.charAt(close - 1) === "}") { i = close; continue; }
+    return i;
+  }
+  return -1;
+}
+function hasBraceAlternatives(s) { return findAlternativesBrace(s) >= 0; }
+
+// 花括号体的切分：只在花括号自己这一层切，嵌套的逗号不算
+function splitBraceBody(body) {
+  const out = [];
+  let buf = "";
+  let depth = 0;
+  const str = String(body);
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charAt(i);
+    if (ch === "{") { depth++; buf += ch; continue; }
+    if (ch === "}") { depth = Math.max(0, depth - 1); buf += ch; continue; }
+    if (depth === 0 && (ch === "," || ch === "，")) { out.push(buf); buf = ""; continue; }
+    buf += ch;
+  }
+  out.push(buf);
+  return out;
+}
+
 function splitSegments(text) {
   const out = [];
   let buf = "";
@@ -295,7 +344,7 @@ function splitGroupItems(text) {
 // 花括号并列：$A/{x,y}$ -> ["A/x","A/y"]（可嵌套，最多 cap 项）
 function braceExpandItems(text, cap) {
   const str = String(text);
-  const open = str.indexOf("{");
+  const open = findAlternativesBrace(str);
   if (open < 0) return [str];
   let depth = 0;
   let close = -1;
@@ -309,9 +358,9 @@ function braceExpandItems(text, cap) {
   const body = str.slice(open + 1, close);
   const tail = str.slice(close + 1);
   const out = [];
-  for (const opt of body.split(/[,，]/)) {
+  for (const opt of splitBraceBody(body)) {
     const raw = opt.trim();
-    const neg = raw.charAt(0) === "-";
+    const neg = raw.length > 0 && isMinusChar(raw.charAt(0));
     const core = neg ? raw.slice(1) : raw;
     for (const rest of braceExpandItems(tail, cap)) {
       // 减号提到整项最前：$A/{状态,-服装列表/长袍}$ 才能被当成「减一项」而不是取用项
@@ -369,18 +418,17 @@ function groupLadder(segs, outer) {
 function isPathLike(body) { return /[\/.*]/.test(String(body)); }
 
 function expandRefGroup(root, baseSegs, inner, ctx) {
-  const hasBrace = inner.indexOf("{") >= 0;
+  const hasBrace = hasBraceAlternatives(inner);
   const raw = splitGroupItems(inner);
   if (raw.length < 2 && !hasBrace) return null;
   const items = [];
   for (const it of raw) {
-    const minus = it.charAt(0) === "-";
-    const body = minus ? it.slice(1).trim() : it.trim();
-    for (const o of braceExpandItems(body, 32)) items.push(hoistMinus((minus ? "-" : "") + o));
+    const m = splitMinus(it);
+    for (const o of braceExpandItems(m.body, 32)) items.push(hoistMinus((m.minus ? "-" : "") + o));
     if (items.length > 32) break;
   }
   const list = items.filter((s) => s.length > 0 && s !== "-");
-  if (list.length < 2) return null;
+  if (!list.length) return null;
   const firstTake = list.find((i) => i.charAt(0) !== "-") || list[0];
   // 第 1 项解析出来之后，梯子换成它的「真实路径」（含它自己），后面的项就能相对它写
   let ladder = groupLadder(splitPath(firstTake), baseSegs);
@@ -388,8 +436,9 @@ function expandRefGroup(root, baseSegs, inner, ctx) {
   const takes = []; // 已经取到的片段（按书写顺序）
   let anyHit = false;
   for (const it of list) {
-    const minus = it.charAt(0) === "-";
-    const body = minus ? it.slice(1).trim() : it;
+    const mi = splitMinus(it);
+    const minus = mi.minus;
+    const body = mi.body;
     if (!body) continue;
     if (body.indexOf("$") >= 0) { if (!minus) takes.push(body); continue; }
     const hit = readPathInGroup(root, ladder, body, baseSegs, ctx);
@@ -467,7 +516,7 @@ function isVarPointer(root, span) {
   if (!inner) return false;
   if (inner.charAt(0) === "{") return false; // ${...}$ 预设调用
   // 多重调用 / 花括号并列：整条都当变量指针（里面某一项查不到也不交给官方展开器去猜）
-  if (/[,;，；]/.test(inner) || inner.indexOf("{") >= 0) return true;
+  if (/[,;，；]/.test(inner) || hasBraceAlternatives(inner)) return true;
   if (inner.indexOf("/") >= 0 || inner.indexOf("*") >= 0 || inner.indexOf(".") >= 0) return true;
   try { if (readPath(root || {}, [], inner).value !== undefined) return true; } catch (e) { }
   try { if (expandGlobRef(root || {}, [], inner, makeCtx("")) !== null) return true; } catch (e) { }
@@ -488,7 +537,7 @@ function evalText(root, baseSegs, text, ctx) {
   for (const p of parts) {
     const q = p.trim();
     if (!q) continue;
-    if (q.charAt(0) === "-" && q.length > 1) {
+    if (isMinusChar(q.charAt(0)) && q.length > 1) {
       const body = q.slice(1).trim();
       if (body.indexOf("$") >= 0) {
         // -$引用$：把这个引用产出的所有 tag 都减掉
@@ -506,7 +555,7 @@ function evalText(root, baseSegs, text, ctx) {
   for (const raw of parts) {
     const seg = raw.trim();
     if (!seg) continue;
-    if (seg.charAt(0) === "-" && seg.length > 1) continue;
+    if (isMinusChar(seg.charAt(0)) && seg.length > 1) continue;
     const rawExp = expandRefs(root, baseSegs, seg, c);
     const isPreset = rawExp.indexOf("${") >= 0;
     const isVarRef = seg.indexOf("$") >= 0 && seg.indexOf("${") < 0;
@@ -993,7 +1042,7 @@ function __stFindVarBox(obj, depth, path) {
 }
 
 window.stChatu8Vars = {
-  version: "1.2.1",
+  version: "1.2.2",
 
   // 生图 LLM 输出：摘掉 <变量更新> 块并写入该楼层，返回摘干净后的提示词
   // id 不给 = 写当前楼层（正在处理的那一楼）
