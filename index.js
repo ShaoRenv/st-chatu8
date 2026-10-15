@@ -3063,6 +3063,9 @@ var init_config = __esm({
       jiuguanchucun: "false",
       vibeJiuguanchucun: "true",
       convertToJpegStorage: "false",
+      compressBoostStorage: "false",
+      compressBoostLevel: "balanced",
+      compressBoostLevel: "balanced",
       jiuguanStorage: {},
       banana: {
         apiKey: "123456",
@@ -48152,6 +48155,9 @@ Scheduler: ${payload.scheduler}
       if (String(extension_settings49[extensionName].convertToJpegStorage) === "true" && !isVideo) {
         imageUrl = await convertImageToJpeg(imageUrl);
       }
+      if (String(extension_settings49[extensionName].compressBoostStorage) === "true") {
+        imageUrl = await compressGeneratedImage(imageUrl);
+      }
       let finalFormat = format;
       if (isVideo) {
         finalFormat = `video/${mimeType}`;
@@ -48322,6 +48328,9 @@ Scheduler: ${payload.scheduler}
               if (!imageInfo.isVideo) {
                 imageUrl = await convertImageToJpeg(imageUrl);
               }
+            }
+            if (String(extension_settings49[extensionName].compressBoostStorage) === "true") {
+              imageUrl = await compressGeneratedImage(imageUrl);
             }
             break;
           }
@@ -49400,6 +49409,9 @@ async function generateBananaImage({ prompt: prompt2, width, height, change, ret
               if (!isMdVideo && String(extension_settings50[extensionName].convertToJpegStorage) === "true") {
                 imageUrl = await convertImageToJpeg(imageUrl);
               }
+              if (String(extension_settings50[extensionName].compressBoostStorage) === "true") {
+                imageUrl = await compressGeneratedImage(imageUrl);
+              }
               addLog("[Banana] Successfully converted Markdown image to base64.");
             } catch (fetchError) {
               addLog(`[Banana] Failed to fetch Markdown image: ${fetchError.message}`);
@@ -50246,6 +50258,9 @@ async function generateRunningHubImage({ prompt: link, width: Xwidth, height: Xh
     }
     if (String(settings3.convertToJpegStorage) === "true" && !isVideo) {
       finalImageData = await convertImageToJpeg(finalImageData);
+    }
+    if (String(settings3.compressBoostStorage) === "true") {
+      finalImageData = await compressGeneratedImage(finalImageData);
     }
     const duration = ((Date.now() - startTime) / 1e3).toFixed(1);
     taskQueue.completeTask(taskId, true);
@@ -80856,6 +80871,9 @@ async function generateSDImage({ prompt: link, width: Xwidth, height: Xheight, c
       if (String(extension_settings58[extensionName].convertToJpegStorage) === "true") {
         imageUrl = await convertImageToJpeg(imageUrl);
       }
+      if (String(extension_settings58[extensionName].compressBoostStorage) === "true") {
+        imageUrl = await compressGeneratedImage(imageUrl);
+      }
       return { image: imageUrl, change: change || "", genParams: _sd_gen_params };
     } else {
       const urlObj = new URL(url + "/sdapi/v1/txt2img");
@@ -80885,6 +80903,9 @@ async function generateSDImage({ prompt: link, width: Xwidth, height: Xheight, c
       currentTaskId4 = null;
       if (String(extension_settings58[extensionName].convertToJpegStorage) === "true") {
         imageUrl = await convertImageToJpeg(imageUrl);
+      }
+      if (String(extension_settings58[extensionName].compressBoostStorage) === "true") {
+        imageUrl = await compressGeneratedImage(imageUrl);
       }
       return { image: imageUrl, change: change_ || "", genParams: _sd_gen_params };
     }
@@ -85565,6 +85586,9 @@ async function generateNovelAIImage({ prompt: link, width: Xwidth, height: Xheig
     if (String(extension_settings62[extensionName].convertToJpegStorage) === "true") {
       imageUrl = await convertImageToJpeg(imageUrl);
     }
+    if (String(extension_settings62[extensionName].compressBoostStorage) === "true") {
+      imageUrl = await compressGeneratedImage(imageUrl);
+    }
     return { image: imageUrl, change: change_ || "", genParams: _nai_gen_params };
   } catch (error) {
     if (extension_settings62[extensionName].novelaisite !== "\u5B98\u7F51") {
@@ -85831,6 +85855,9 @@ async function generateNovelAIInpaint({ prompt: link, width: Xwidth, height: Xhe
     }
     if (String(extension_settings62[extensionName].convertToJpegStorage) === "true") {
       imageUrl = await convertImageToJpeg(imageUrl);
+    }
+    if (String(extension_settings62[extensionName].compressBoostStorage) === "true") {
+      imageUrl = await compressGeneratedImage(imageUrl);
     }
     addLog(`[NovelAI Inpaint] \u5C40\u90E8\u91CD\u7ED8\u5B8C\u6210 (\u8017\u65F6 ${inpaintDuration} \u79D2)\uFF01`);
     return { image: imageUrl, change: change || "", genParams: _inpaint_gen_params };
@@ -90440,6 +90467,7 @@ var imageObserver;
 var isMultiSelectMode = false;
 var recalcStartedAt = 0;
 var recalcPanelDismissed = false;
+var compressTask = null;
 function formatMB(bytes) {
   if (!Number.isFinite(bytes) || bytes < 0) return "0 MB";
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
@@ -91196,6 +91224,7 @@ async function clearCache() {
   });
 }
 var RECALC_PHASE_LABELS = {
+  compress: "压缩加强",
   db: "\u6D4F\u89C8\u5668\u6570\u636E\u5E93",
   server: "\u9152\u9986\u5B58\u50A8",
   writeback: "\u4FDD\u5B58\u7ED3\u679C",
@@ -91290,6 +91319,7 @@ function syncRecalcButtons() {
     cancelBtn.textContent = running ? "\u53D6\u6D88" : "\u5173\u95ED";
     cancelBtn.classList.toggle("danger", running);
   }
+  syncCompressButtons();
 }
 function hideRecalcPanel() {
   const panel = document.getElementById("image-cache-recalc-progress");
@@ -91299,6 +91329,10 @@ function hideRecalcPanel() {
 async function recalcImageSizes(options = {}) {
   const { force = false } = options;
   const existing = getSizeCalcTask();
+  if (compressTask && compressTask.running) {
+    alert("「压缩加强」正在进行中，请等待完成或先取消。");
+    return;
+  }
   if (existing && existing.running) {
     renderRecalcProgress(existing.lastProgress);
     syncRecalcButtons();
@@ -91347,6 +91381,399 @@ async function recalcImageSizes(options = {}) {
     syncRecalcButtons();
   }
 }
+// ===== 压缩加强：任务状态与界面同步 =====
+var COMPRESS_LEVELS = ["lossless", "balanced", "max"];
+var COMPRESS_LEVEL_LABELS = { lossless: "无损优先", balanced: "均衡", max: "极限" };
+function resolveCompressLevel() {
+  const raw = String((extension_settings[extensionName] || {}).compressBoostLevel || "balanced");
+  return COMPRESS_LEVELS.indexOf(raw) >= 0 ? raw : "balanced";
+}
+var compressProgressToast = null;
+function getCompressTask() {
+  if (!compressTask) return null;
+  return {
+    running: compressTask.running,
+    done: compressTask.done,
+    total: compressTask.total,
+    savedBytes: compressTask.savedBytes
+  };
+}
+function cancelCompress() {
+  if (compressTask && compressTask.running) {
+    compressTask.cancelled = true;
+    return true;
+  }
+  return false;
+}
+function syncCompressButtons() {
+  const compressRunning = !!(compressTask && compressTask.running);
+  const sizeCalc = getSizeCalcTask();
+  const sizeRunning = !!(sizeCalc && sizeCalc.running);
+  const busy = compressRunning || sizeRunning;
+  const label = compressRunning ? '<i class="fa-solid fa-spinner fa-spin"></i> 压缩中...' : '<i class="fa-solid fa-compress"></i> 压缩加强';
+  const button = document.getElementById("image-cache-compress");
+  if (button) {
+    button.disabled = busy;
+    button.innerHTML = label;
+  }
+  const mainButton = document.getElementById("image-cache-compress-main");
+  if (mainButton) {
+    mainButton.disabled = busy;
+    mainButton.innerHTML = compressRunning ? '<i class="fa-solid fa-spinner fa-spin"></i> 压缩中...' : '<i class="fa-solid fa-compress"></i> 立即压缩已有缓存';
+  }
+  const recalcSizeBtn = document.getElementById("image-cache-recalc-size");
+  if (recalcSizeBtn) recalcSizeBtn.disabled = busy;
+  const recalcAllBtn = document.getElementById("image-cache-recalc-all");
+  if (recalcAllBtn) recalcAllBtn.disabled = busy;
+  const cancelBtn = document.getElementById("image-cache-recalc-cancel");
+  if (cancelBtn && compressRunning) {
+    cancelBtn.textContent = "取消";
+    cancelBtn.classList.add("danger");
+  }
+}
+function updateCompressToast(text) {
+  if (typeof toastr === "undefined") return;
+  try {
+    if (compressProgressToast && compressProgressToast.find) {
+      compressProgressToast.find(".toast-message").text(text);
+      return;
+    }
+    compressProgressToast = toastr.info(text, "压缩加强", { timeOut: 0, extendedTimeOut: 0, closeButton: true, tapToDismiss: false, progressBar: false });
+  } catch (error) {
+    compressProgressToast = null;
+  }
+}
+function clearCompressToast() {
+  if (!compressProgressToast) return;
+  try {
+    if (typeof toastr !== "undefined") toastr.clear(compressProgressToast);
+  } catch (error) {
+  }
+  compressProgressToast = null;
+}
+function renderCompressSummary(task, skipReasons) {
+  const bar = document.getElementById("image-cache-recalc-bar");
+  const title = document.getElementById("image-cache-recalc-title");
+  const detail = document.getElementById("image-cache-recalc-detail");
+  if (bar) bar.style.width = "100%";
+  const text = buildCompressSummaryText(task, skipReasons);
+  if (!title || !detail) return text;
+  title.textContent = task.cancelled ? "压缩已取消" : "压缩完成";
+  detail.textContent = text;
+  return text;
+}
+function buildCompressSummaryText(task, skipReasons) {
+  const elapsed = recalcStartedAt ? ((Date.now() - recalcStartedAt) / 1e3).toFixed(1) : "?";
+  const ratio = task.attemptedBytes > 0 ? Math.round(task.savedBytes / task.attemptedBytes * 100) : 0;
+  const lines = [
+    "压缩 " + task.done + " 张（强度 " + (COMPRESS_LEVEL_LABELS[task.level] || task.level || "均衡") + "），节省 " + formatMB(task.savedBytes) + "（" + ratio + "%）",
+    "跳过 " + task.skipped + " 张（视频 " + (task.videoSkipped || 0) + " · 酒馆存储 " + (task.serverSkipped || 0) + "）｜失败 " + task.failed + " 张",
+    "用时 " + elapsed + "s"
+  ];
+  const reasons = Object.keys(skipReasons || {}).filter(function(key) { return key !== "视频" && key !== "酒馆存储"; });
+  if (reasons.length > 0) {
+    lines.push("跳过原因：" + reasons.map(function(key) { return key + " " + skipReasons[key]; }).join(" · "));
+  }
+  return lines.join("\n");
+}
+
+// ===== 压缩加强：格式嗅探（只信字节魔数，不信元数据）=====
+function matchAsciiBytes(view, text, limit) {
+  const max = Math.min(view.length - text.length, limit);
+  for (let i = 0; i <= max; i++) {
+    let hit = true;
+    for (let j = 0; j < text.length; j++) {
+      if (view[i + j] !== text.charCodeAt(j)) {
+        hit = false;
+        break;
+      }
+    }
+    if (hit) return true;
+  }
+  return false;
+}
+function sniffCachedImageFormat(view) {
+  if (!view || view.length < 16) return "字节过短";
+  if (view[0] === 137 && view[1] === 80 && view[2] === 78 && view[3] === 71) {
+    return matchAsciiBytes(view, "acTL", 65536) ? "APNG 动图" : "png";
+  }
+  if (view[0] === 255 && view[1] === 216 && view[2] === 255) return "jpeg";
+  if (view[0] === 82 && view[1] === 73 && view[2] === 70 && view[3] === 70 && view[8] === 87 && view[9] === 69 && view[10] === 66 && view[11] === 80) {
+    return matchAsciiBytes(view, "ANIM", 65536) ? "WebP 动图" : "webp";
+  }
+  if (view[0] === 71 && view[1] === 73 && view[2] === 70) return "GIF 动图";
+  return "非图片格式";
+}
+async function canDecodeCachedImage(blob) {
+  if (typeof createImageBitmap !== "function") return true;
+  try {
+    const bitmap = await createImageBitmap(blob);
+    if (bitmap && typeof bitmap.close === "function") bitmap.close();
+    return true;
+  } catch (error) {
+    console.warn("[st-chatu8] 压缩结果无法解码，已丢弃该结果:", error);
+    return false;
+  }
+}
+
+// ===== 压缩加强：主流程 =====
+var COMPRESS_MIN_BYTES = 64 * 1024;
+var COMPRESS_MIN_GAIN = 0.98;
+async function collectCacheTargets() {
+  if (allCachedImages.length > 0) {
+    return allCachedImages.slice();
+  }
+  const metadata = await getAllImageMetadata();
+  const list = [];
+  for (const md5 in metadata) {
+    const meta = metadata[md5];
+    if (!meta || !Array.isArray(meta.images)) continue;
+    for (const img of meta.images) {
+      if (!img || !img.date) continue;
+      list.push({
+        uuid: img.uuid,
+        md5,
+        source: img.source || "db",
+        path: img.path || null,
+        isVideo: !!img.isVideo,
+        size: typeof img.size === "number" ? img.size : void 0
+      });
+    }
+  }
+  return list;
+}
+async function compressCachedImages(options = {}) {
+  if (compressTask && compressTask.running) {
+    toastr.info("压缩任务正在进行中。");
+    return;
+  }
+  const sizeCalc = getSizeCalcTask();
+  if (sizeCalc && sizeCalc.running) {
+    alert("「计算大小」正在进行中，请等待完成或先取消。");
+    return;
+  }
+  const level = resolveCompressLevel();
+  const wantSelected = options.scope === "selected" || options.scope === void 0 && selectedImages.size > 0;
+  const snapshot = wantSelected ? allCachedImages.filter(function(img) { return selectedImages.has(img.uuid); }).slice() : await collectCacheTargets();
+  if (snapshot.length === 0) {
+    alert("图片库为空，无需压缩。");
+    return;
+  }
+  const targets = [];
+  let videoSkipped = 0;
+  let serverSkipped = 0;
+  for (const img of snapshot) {
+    if (img.isVideo) {
+      videoSkipped++;
+      continue;
+    }
+    if (img.source === "server" || img.path) {
+      serverSkipped++;
+      continue;
+    }
+    targets.push(img);
+  }
+  if (targets.length === 0) {
+    alert("没有可压缩的图片：视频与酒馆服务器存储的图片会被跳过。");
+    return;
+  }
+  compressTask = {
+    running: true,
+    cancelled: false,
+    started: false,
+    level,
+    total: targets.length,
+    done: 0,
+    failed: 0,
+    skipped: videoSkipped + serverSkipped,
+    videoSkipped,
+    serverSkipped,
+    savedBytes: 0,
+    attemptedBytes: 0
+  };
+  syncRecalcButtons();
+  syncCompressButtons();
+  const metadata = await getMetadata();
+  const indexByUuid = {};
+  for (const md5 in metadata) {
+    const entry = metadata[md5];
+    if (entry && Array.isArray(entry.images)) {
+      for (const item of entry.images) indexByUuid[item.uuid] = item;
+    }
+  }
+  let metadataDirty = false;
+  const skipReasons = {};
+  const noteSkip = function(reason) {
+    skipReasons[reason] = (skipReasons[reason] || 0) + 1;
+    compressTask.skipped++;
+  };
+  try {
+    const confirmed = await stylishConfirm(
+      "将对 " + targets.length + " 张缓存图片执行「压缩加强」。\n" +
+      "· 只处理浏览器数据库里的图片，视频与酒馆服务器图片自动跳过\n" +
+      "· 压缩有损且不可撤销，聊天记录里引用这些图片的消息也会同步变小\n" +
+      "· 建议先用「下载选中」备份原图\n" +
+      "确定继续吗？"
+    );
+    if (!confirmed) return;
+    let compressApi;
+    try {
+      recalcPanelDismissed = false;
+      recalcStartedAt = Date.now();
+      const panelExists = !!document.getElementById("image-cache-recalc-progress");
+      if (panelExists) {
+        renderRecalcProgress({ phase: "compress", current: 0, total: targets.length, detail: "正在加载压缩组件（首次使用需要加载本地编码器，图片不会上传）..." });
+      } else {
+        updateCompressToast("正在加载压缩组件（首次使用需要加载本地编码器）...");
+      }
+      compressApi = await loadCompressModule();
+      if (typeof compressApi.load === "function") await compressApi.load();
+    } catch (error) {
+      console.error("[st-chatu8] 压缩组件加载失败:", error);
+      clearCompressToast();
+      renderRecalcProgress({ phase: "compress", current: 0, total: targets.length, detail: "压缩组件加载失败：" + (error && error.message ? error.message : error) });
+      toastr.error("压缩组件加载失败，请确认插件 compress/ 目录完整。");
+      return;
+    }
+    compressTask.started = true;
+    recalcStartedAt = Date.now();
+    for (let i = 0; i < targets.length; i++) {
+      if (compressTask.cancelled) break;
+      const img = targets[i];
+      const progressText = "已压缩 " + compressTask.done + " 张 · 节省 " + formatMB(compressTask.savedBytes) + " · 跳过 " + compressTask.skipped + " · 失败 " + compressTask.failed;
+      compressTask.lastProgress = { phase: "compress", current: i, total: targets.length, detail: progressText };
+      if (document.getElementById("image-cache-recalc-progress")) {
+        renderRecalcProgress(compressTask.lastProgress);
+      } else {
+        updateCompressToast("正在压缩 " + (i + 1) + " / " + targets.length + " · " + progressText);
+      }
+      try {
+        const entry = indexByUuid[img.uuid];
+        const mark = entry && entry.compress;
+        if (mark && mark.v === 1 && mark.level === level) {
+          noteSkip("已压缩");
+          continue;
+        }
+        const row = await storeReadOnly(img.uuid);
+        if (!row || !row.data) {
+          noteSkip("无字节");
+          continue;
+        }
+        const view = row.data instanceof Uint8Array ? row.data : new Uint8Array(row.data);
+        const before = view.byteLength;
+        if (before === 0) {
+          noteSkip("0 字节");
+          continue;
+        }
+        if (typeof img.size === "number" && img.size > 0 && Math.abs(img.size - before) > 1) {
+          noteSkip("记录已变化");
+          continue;
+        }
+        if (before < COMPRESS_MIN_BYTES) {
+          noteSkip("小于 64KB");
+          continue;
+        }
+        const format = sniffCachedImageFormat(view);
+        if (format !== "png" && format !== "jpeg" && format !== "webp") {
+          noteSkip(format);
+          continue;
+        }
+        const mime = format === "jpeg" ? "image/jpeg" : format === "webp" ? "image/webp" : "image/png";
+        compressTask.attemptedBytes += before;
+        const result = await compressApi.compress(new Blob([view], { type: mime }), { level, allowFormatChange: true });
+        if (!result || !result.ok) {
+          noteSkip(result && result.reason ? result.reason : "无收益");
+          continue;
+        }
+        const after = await result.blob.arrayBuffer();
+        if (!after || after.byteLength === 0 || after.byteLength >= before * COMPRESS_MIN_GAIN) {
+          noteSkip("无收益");
+          continue;
+        }
+        if (!await canDecodeCachedImage(result.blob)) {
+          noteSkip("解码校验失败");
+          continue;
+        }
+        await storeReadWrite({ id: img.uuid, data: after });
+        if (entry) {
+          entry.size = after.byteLength;
+          entry.compress = {
+            v: 1,
+            level,
+            at: Date.now(),
+            codec: result.codec || "",
+            from: mime,
+            to: result.mime || mime
+          };
+          metadataDirty = true;
+        }
+        compressTask.savedBytes += before - after.byteLength;
+        compressTask.done++;
+      } catch (itemError) {
+        console.error("[st-chatu8] 压缩失败:", img.uuid, itemError);
+        compressTask.failed++;
+      }
+    }
+  } finally {
+    if (metadataDirty) {
+      try {
+        await setMetadata(metadata);
+      } catch (metaError) {
+        console.error("[st-chatu8] 压缩后写入元数据失败:", metaError);
+      }
+    }
+    clearCompressToast();
+    compressTask.running = false;
+    syncRecalcButtons();
+    syncCompressButtons();
+    if (compressTask.started) {
+      try {
+        await loadImageCache({ preservePage: true });
+      } catch (reloadError) {
+        console.warn("[st-chatu8] 压缩后刷新缓存列表失败:", reloadError);
+      }
+      const summaryText = renderCompressSummary(compressTask, skipReasons);
+      if (compressTask.done > 0) {
+        toastr.success("压缩加强完成：压缩 " + compressTask.done + " 张，节省 " + formatMB(compressTask.savedBytes));
+      } else {
+        toastr.info("没有可压缩的项目（可能已是压缩过的结果）。");
+      }
+      if (!document.getElementById("image-cache-recalc-detail")) {
+        updateCompressToast(summaryText);
+        toastr.info(summaryText, "压缩加强", { timeOut: 8000 });
+        clearCompressToast();
+      }
+    }
+    compressTask = null;
+  }
+}
+// ===== 压缩加强：生图时自动压缩（主设置页「压缩加强」开关）=====
+function imageInputToBlob(input) {
+  if (input instanceof Blob) return Promise.resolve(input);
+  if (typeof input !== "string") return Promise.resolve(null);
+  if (input.startsWith("data:")) {
+    return fetch(input).then(function(response) { return response.blob(); }).catch(function() { return null; });
+  }
+  return fetch(input).then(function(response) { return response.ok ? response.blob() : null; }).catch(function() { return null; });
+}
+async function compressGeneratedImage(input) {
+  try {
+    if (String((extension_settings[extensionName] || {}).compressBoostStorage) !== "true") return input;
+    if (!input) return input;
+    const api = await loadCompressModule();
+    if (typeof api.load === "function") await api.load();
+    const blob = await imageInputToBlob(input);
+    if (!blob || !blob.size) return input;
+    const result = await api.compress(blob, { level: resolveCompressLevel(), allowFormatChange: true });
+    if (!result || !result.ok || !result.blob) return input;
+    if (result.blob.size >= blob.size * COMPRESS_MIN_GAIN) return input;
+    if (!await canDecodeCachedImage(result.blob)) return input;
+    return await blobToBase64(result.blob);
+  } catch (error) {
+    console.warn("[st-chatu8] 生图时「压缩加强」失败，保留原图:", error);
+    return input;
+  }
+}
 function initImageCache(settingsModal) {
   settingsModal.find('a[data-tab="image-cache"]').on("click", async () => {
     await loadImageCache();
@@ -91355,6 +91782,7 @@ function initImageCache(settingsModal) {
       renderRecalcProgress(task.lastProgress);
     }
     syncRecalcButtons();
+    syncCompressButtons();
   });
   settingsModal.find("#Clear-Cache").on("click", clearCache);
   const jumpInput = document.getElementById("image-cache-jump-input");
@@ -91426,10 +91854,11 @@ function initImageCache(settingsModal) {
     if (ok) recalcImageSizes({ force: true });
   });
   $("#image-cache-recalc-cancel").on("click", () => {
-    if (!cancelSizeCalc()) {
+    if (!cancelCompress() && !cancelSizeCalc()) {
       hideRecalcPanel();
     }
     syncRecalcButtons();
+    syncCompressButtons();
   });
   subscribeSizeCalcProgress((payload) => {
     renderRecalcProgress(payload);
@@ -91438,6 +91867,41 @@ function initImageCache(settingsModal) {
     }
   });
   syncRecalcButtons();
+  // ==== 压缩加强 ====
+  $("#image-cache-compress").on("click", function() {
+    compressCachedImages({ scope: selectedImages.size > 0 ? "selected" : "all" });
+  });
+  // 主要设置页「转JPEG储存」下方的入口：先切到「图片缓存」页（进度面板在那里），再开始压缩。
+  // 注意：设置弹窗会一次性加载所有分页 HTML，因此不能用「面板元素是否存在」当判据，要看分页是否真的可见/激活。
+  function isImageCacheTabActive() {
+    const tab = document.getElementById("st-chatu8-tab-image-cache");
+    if (!tab) return false;
+    if (tab.classList && tab.classList.contains("active")) return true;
+    const rect = tab.getBoundingClientRect ? tab.getBoundingClientRect() : null;
+    return !!(rect && rect.width > 0 && rect.height > 0);
+  }
+  $(document).on("click", "#image-cache-compress-main", async function() {
+    if (compressTask && compressTask.running) return;
+    if (!isImageCacheTabActive()) {
+      const navLink = document.querySelector('.st-chatu8-nav-link[data-tab="image-cache"]');
+      if (navLink) {
+        navLink.click();
+        for (let i = 0; i < 30 && !isImageCacheTabActive(); i++) {
+          await new Promise(function(resolve) { setTimeout(resolve, 100); });
+        }
+      }
+    }
+    compressCachedImages({ scope: "all" });
+  });
+  // 「计算大小」点击后立刻同步一次压缩按钮状态（统计任务在点击回调里同步建立，故延后一个宏任务）
+  $("#image-cache-recalc-size, #image-cache-recalc-all").on("click", function() {
+    setTimeout(syncCompressButtons, 0);
+  });
+  // 统计进度每次更新都刷新压缩按钮状态（统计期间/结束时都能及时恢复）
+  subscribeSizeCalcProgress(function() {
+    syncCompressButtons();
+  });
+  syncCompressButtons();
   $("#image-cache-delete-selected").on("click", async () => {
     if (selectedImages.size === 0) {
       alert("\u8BF7\u5148\u9009\u62E9\u8981\u5220\u9664\u7684\u56FE\u7247\u3002");
@@ -112707,6 +113171,24 @@ async function initUI({ check_update: check_update2 }) {
       addLog("[\u7F13\u5B58] JPEG\u50A8\u5B58\u5DF2\u5173\u95ED");
     }
   });
+  settingsModal.find("#compressBoostStorage").prop("checked", String(settings2.compressBoostStorage) === "true");
+  settingsModal.find("#compressBoostStorage").on("change", function() {
+    const isEnabled = $(this).prop("checked");
+    settings2.compressBoostStorage = isEnabled.toString();
+    saveSettingsDebounced71();
+    if (isEnabled) {
+      toastr.info("新生成的图片会自动做「压缩加强」（本地编码器，不联网）", "压缩加强已启用");
+      addLog("[缓存] 压缩加强已启用（生图时自动压缩）");
+    } else {
+      toastr.info("已关闭：新生成的图片按原样存储", "压缩加强已关闭");
+    }
+  });
+  settingsModal.find("#compressBoostLevel").val(resolveCompressLevel());
+  settingsModal.find("#compressBoostLevel").on("change", function() {
+    settings2.compressBoostLevel = String($(this).val() || "balanced");
+    saveSettingsDebounced71();
+    toastr.info("压缩强度已设为：" + (COMPRESS_LEVEL_LABELS[resolveCompressLevel()] || resolveCompressLevel()) + "（下次压缩生效）", "压缩加强");
+  });
   settingsModal.find("#autoLLMImageGen").on("change", async function() {
     const isEnabled = $(this).prop("checked");
     settings2.autoLLMImageGen = isEnabled.toString();
@@ -113587,6 +114069,37 @@ function loadmsgpack() {
   return msgpackLoadPromise;
 }
 window.loadmsgpack = loadmsgpack;
+// ===== 压缩加强：模块懒加载（首次使用才加载 compress/ 下的 WASM 编码器）=====
+var compressModulePromise;
+function loadCompressModule() {
+  if (window.stChatu8Compress && typeof window.stChatu8Compress.compress === "function") {
+    return Promise.resolve(window.stChatu8Compress);
+  }
+  if (compressModulePromise) {
+    return compressModulePromise;
+  }
+  const compressFolder = extensionFolderPath + "/compress";
+  compressModulePromise = new Promise(function(resolve, reject) {
+    window.stChatu8CompressBase = compressFolder;
+    const scriptEl = document.createElement("script");
+    scriptEl.src = new URL(compressFolder + "/st-chatu8-compress.js", window.location.href).href;
+    scriptEl.async = true;
+    scriptEl.onload = function() {
+      if (window.stChatu8Compress && typeof window.stChatu8Compress.compress === "function") {
+        resolve(window.stChatu8Compress);
+      } else {
+        compressModulePromise = void 0;
+        reject(new Error("压缩模块未导出 stChatu8Compress"));
+      }
+    };
+    scriptEl.onerror = function() {
+      compressModulePromise = void 0;
+      reject(new Error("压缩模块脚本加载失败"));
+    };
+    document.head.appendChild(scriptEl);
+  });
+  return compressModulePromise;
+}
 // ===== chatu8 personal: HTTP 429 自动重发（自用，不进上游补丁集）=====
 // 配置（随时可改、立即生效；也可持久化到 localStorage['chatu8_retry429']）：
 //   window.__chatu8Retry = { enabled:true, delayMs:4000, maxRetries:5,
