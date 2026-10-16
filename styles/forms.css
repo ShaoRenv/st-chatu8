@@ -316,6 +316,34 @@
     color: var(--st-chatu8-dropdown-text, var(--st-chatu8-text-primary));
 }
 
+/* 变量楼层：最新层操作按钮 + 状态行（楼层模式 v1.3.0） */
+#st-chatu8-settings .st-chatu8-vars-floor-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+#st-chatu8-settings .st-chatu8-vars-floor-actions .menu_button {
+    flex: 0 0 auto;
+    max-width: 100%;
+    white-space: nowrap;
+}
+
+#st-chatu8-settings .st-chatu8-vars-floor-status {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--st-chatu8-text-secondary, var(--st-chatu8-text-primary));
+    font-size: 0.85rem;
+    line-height: 1.5;
+    text-align: right;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
 
 #st-chatu8-settings .st-chatu8-textarea,
 #st-chatu8-settings .st-chatu8-text-input {

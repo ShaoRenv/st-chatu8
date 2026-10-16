@@ -986,6 +986,22 @@ function __stSys() {
 }
 function __stLastId() { return __stSys().storage.lastMessageId(); }
 
+// ---- 楼层模式 v1.3.0：varsFloorMode = "follow"（默认，v1.2.2 行为）| "latest"（始终最新层）----
+// 缺失 / 非法 / 其它值一律回落 "follow"，保证默认行为一字不变
+function __stSettingsBox() {
+  try {
+    var c = (window.SillyTavern && window.SillyTavern.getContext) ? window.SillyTavern.getContext() : null;
+    var es = c && c.extensionSettings;
+    return es ? (es["st-chatu8"] || null) : null;
+  } catch (e) { return null; }
+}
+function __stMode() {
+  try {
+    var cfg = __stSettingsBox();
+    return (cfg && cfg.varsFloorMode === "latest") ? "latest" : "follow";
+  } catch (e) { return "follow"; }
+}
+
 // 当前聊天楼层数（拿不到返回 -1）
 function __stChatLen() {
   try {
@@ -1012,9 +1028,24 @@ function __stCurId() {
 }
 
 // 给模型看的变量 = 上一个消息楼层（当前楼层还没定稿，它该看的是自己之前的状态）
-function __stReadId() {
-  var cur = __stCurId();
+// latest 模式：读最新层本身。id 只给 floor() 这类显式查询用，不传 = 当前楼层。
+function __stReadId(id) {
+  if (__stMode() === "latest") return __stLastId();
+  var cur = (id == null) ? __stCurId() : id;
   return cur > 0 ? cur - 1 : -1;
+}
+
+// 写哪一楼（生图求值 render 用）：latest = 最新层；follow = 当前楼层（v1.2.2 行为）
+function __stWriteId(id) {
+  if (__stMode() === "latest") return __stLastId();
+  return (id == null) ? __stCurId() : id;
+}
+
+// <变量更新> 落库写哪一楼：latest 忽略传进来的旧楼层 id，一律写最新层；
+// follow 与 v1.2.2 完全相同（显式 id 优先，否则当前楼层）
+function __stIngestId(id) {
+  if (__stMode() === "latest") return __stLastId();
+  return (id == null) ? __stCurId() : id;
 }
 
 // 指定楼层的状态（<0 视为空）
@@ -1042,12 +1073,13 @@ function __stFindVarBox(obj, depth, path) {
 }
 
 window.stChatu8Vars = {
-  version: "1.2.2",
+  version: "1.3.0",
 
   // 生图 LLM 输出：摘掉 <变量更新> 块并写入该楼层，返回摘干净后的提示词
   // id 不给 = 写当前楼层（正在处理的那一楼）
   ingestMessage: function (mes, id, expand) {
-    var at = (id == null) ? __stCurId() : id;
+    // latest 模式忽略传进来的旧楼层 id，一律写最新层
+    var at = __stIngestId(id);
     var r = parseUpdate(mes);
     var out = { changed: r.clean !== mes, clean: r.clean, ok: false, wrote: false, error: r.error, raw: "", tried: 0 };
     var list = (r.candidates && r.candidates.length) ? r.candidates : (r.raw ? [{ text: r.raw }] : []);
@@ -1081,7 +1113,7 @@ window.stChatu8Vars = {
       out.ok = true;
       out.error = "";
       out.raw = raw.slice(0, 300);
-      console.log("[ChatU8 vars] 写入楼层 " + at + "（读上一楼 " + __stReadId() + "）ok=" + out.wrote + " 后端=" + (window.TavernHelper ? "TavernHelper" : "chat.variables") + " 候选=" + (i + 1) + "/" + list.length);
+      console.log("[ChatU8 vars] 写入楼层 " + at + "（读 " + __stReadId() + "）ok=" + out.wrote + " 后端=" + (window.TavernHelper ? "TavernHelper" : "chat.variables") + " 候选=" + (i + 1) + "/" + list.length);
       return out;
     }
     out.error = "parse: " + lastErr;
@@ -1092,7 +1124,8 @@ window.stChatu8Vars = {
   // 插件 LLM 入口的统一处理：字符串 / {result:...} / 嵌套对象都能吃
   // 返回 {ok, wrote, changed, clean, error, field, tried}；对象会就地写回摘干净的正文
   ingestLlm: function (out, id, kind, expand) {
-    var mid = (id == null) ? __stCurId() : id;
+    // 与 ingestMessage 同一套规则：latest 模式下一律写最新层
+    var mid = __stIngestId(id);
     var empty = { ok: false, wrote: false, changed: false, clean: "", error: "", field: null, tried: 0, kind: kind || "" };
     if (typeof out === "string") {
       if (out.indexOf("变量更新") < 0) { empty.error = "没有 <变量更新> 块"; return empty; }
@@ -1109,12 +1142,13 @@ window.stChatu8Vars = {
     return r2;
   },
 
-  // 生图前：把提示词里的 $路径$ 用【当前楼层】的变量求值（官方 $...$ 调用原样穿过）
-  // 当前楼层 = 正在处理的这条消息；它的更新已经写进这一楼，所以这里读自己这一楼
+  // 生图前：把提示词里的 $路径$ 用【写楼层】的变量求值（官方 $...$ 调用原样穿过）
+  // follow：写楼层 = 正在处理的这条消息（它的更新已经写进这一楼，所以这里读自己这一楼）
+  // latest：写楼层 = 最新层
   render: function (text, id) {
     try {
       var s = __stSys();
-      var root = __stTagsAt(id == null ? __stCurId() : id);
+      var root = __stTagsAt(id == null ? __stWriteId() : id);
       if (!root || !Object.keys(root).length) return text;
       return evaluate(root, text, text);
     } catch (e) {
@@ -1123,13 +1157,93 @@ window.stChatu8Vars = {
     }
   },
 
-  // 楼层去向（调试用）：当前楼层 / 读哪一楼 / 写哪一楼
+  // 楼层去向（调试用）：当前楼层 / 读哪一楼 / 写哪一楼 / 模式
   floor: function (id) {
     var cur = (id == null) ? __stCurId() : id;
     var h = null;
     try { h = window.__stChatu8VarsFloor || null; } catch (e) { h = null; }
-    return { current: cur, read: cur > 0 ? cur - 1 : -1, write: cur, last: __stLastId(), hint: h };
+    return { current: cur, read: __stReadId(id), write: __stWriteId(id), last: __stLastId(), mode: __stMode(), hint: h };
   },
+
+  // ---------------- 楼层模式 v1.3.0 ----------------
+
+  // 当前模式："follow"（默认）| "latest"
+  getFloorMode: function () { return __stMode(); },
+
+  // 切换模式：非法值回落 "follow"；写扩展设置 + 保存 + 同步设置页
+  setFloorMode: function (mode) {
+    var m = (mode === "latest") ? "latest" : "follow";
+    try {
+      var cfg = __stSettingsBox();
+      if (cfg) cfg.varsFloorMode = m;
+      var c = (window.SillyTavern && window.SillyTavern.getContext) ? window.SillyTavern.getContext() : null;
+      if (c && typeof c.saveSettingsDebounced === "function") c.saveSettingsDebounced();
+    } catch (e) { }
+    try { __stSyncFloorUi(); } catch (e) { }
+    return { ok: true, mode: m };
+  },
+
+  // 立刻看最新层的变量（只读，不改任何存储）
+  // exact = 最新层自己有表；from = 实际取到表的那一层（没有则 -1）
+  readLatest: function () {
+    var to = -1, exact = false, from = -1, tags = {};
+    try {
+      to = __stLastId();
+      if (to >= 0) {
+        try { exact = !!__stSys().storage.readAt(to); } catch (e) { exact = false; }
+        tags = __stTagsAt(to) || {};
+        if (exact) from = to;
+        else {
+          try { var f = __stSys().storage.findLatest(to); from = (f && typeof f.messageId === "number") ? f.messageId : -1; }
+          catch (e) { from = -1; }
+        }
+      }
+    } catch (e) { }
+    var s = "";
+    try { s = JSON.stringify(tags); } catch (e) { s = ""; }
+    return {
+      ok: to >= 0,
+      to: to,
+      from: from,
+      exact: exact,
+      tags: tags,
+      count: Object.keys(tags || {}).length,
+      chars: s.length
+    };
+  },
+
+  // 把当前生效的变量状态固化/更新到最新一层
+  // from 缺省 = 当前楼层；from === to 时改取 to 之前最近一份快照（找不到仍用 to），任何情况都不抛
+  commitLatest: function (fromId) {
+    var to = -1, from = -1, wrote = false, tags = {};
+    try {
+      to = __stLastId();
+      from = (fromId == null) ? __stCurId() : fromId;
+      if (to >= 0) {
+        var st = __stSys().storage;
+        if (from === to) {
+          var f = st.findLatest(to - 1);
+          if (f && typeof f.messageId === "number" && f.messageId >= 0) from = f.messageId;
+          else from = to;
+        }
+        tags = __stTagsAt(from) || {};
+        wrote = !!st.writeAt(to, tags);
+      }
+    } catch (e) { wrote = false; }
+    var s = "";
+    try { s = JSON.stringify(tags); } catch (e) { s = ""; }
+    return {
+      ok: (to >= 0 && wrote),
+      from: from,
+      to: to,
+      wrote: wrote,
+      count: Object.keys(tags || {}).length,
+      chars: s.length
+    };
+  },
+
+  // 把模式 / 楼层 / 按钮 title 同步到设置页（DOM 不在就安全跳过）
+  syncFloorUi: function () { return __stSyncFloorUi(); },
 
   tags: function (id) { return __stSys().tags(id); },
 
@@ -1191,6 +1305,110 @@ window.stChatu8Vars = {
     createStorage: createStorage
   }
 };
+
+// ---------------- 设置页 DOM（v1.3.0） ----------------
+// 设置页会被反复打开/重渲染，所以用 document 级事件委托 + 幂等标记；node 单测里没有 document，全部安全跳过
+
+function __stDoc() {
+  try { return (typeof document === "undefined") ? null : document; } catch (e) { return null; }
+}
+function __stEl(id) {
+  var d = __stDoc();
+  if (!d || typeof d.getElementById !== "function") return null;
+  try { return d.getElementById(id); } catch (e) { return null; }
+}
+function __stModeLabel(mode) {
+  return (mode === "latest") ? "始终最新层" : "跟随当前楼层";
+}
+// toast：window.toastr 有就用，没有/报错都静默跳过
+function __stToast(level, msg) {
+  try {
+    var t = (typeof window !== "undefined") ? window.toastr : null;
+    if (!t) return false;
+    var fn = t[level];
+    if (typeof fn !== "function") fn = t.info;
+    if (typeof fn !== "function") return false;
+    fn.call(t, msg);
+    return true;
+  } catch (e) { return false; }
+}
+
+// 把模式 / 楼层 / 按钮 title 同步到设置页（DOM 不在就安全跳过）
+function __stSyncFloorUi() {
+  if (!__stDoc()) return false;
+  try {
+    var mode = __stMode();
+    var sel = __stEl("varsFloorMode");
+    if (sel) sel.value = mode;
+    var txt = __stEl("vars-floor-status");
+    if (txt) txt.textContent = "当前楼层 " + __stCurId() + " · 读取 " + __stReadId() + " · 写 " + __stWriteId() + " · 模式 " + __stModeLabel(mode);
+    var last = __stLastId();
+    var suffix = (last >= 0) ? ("（最新层 " + last + "）") : "";
+    var rd = __stEl("vars-read-latest");
+    if (rd) rd.title = "立即读取最新一层的变量" + suffix;
+    var wr = __stEl("vars-write-latest");
+    if (wr) wr.title = "把当前变量状态写入最新一层" + suffix;
+  } catch (e) { }
+  return true;
+}
+
+// 「📥 读取最新层」：看最新层变量 -> toast -> 同步状态行
+function __stFloorUiRead() {
+  var r = window.stChatu8Vars.readLatest();
+  var msg = "最新层 " + r.to + "：" + r.count + " 个角色 / " + r.chars + " 字";
+  if (!r.exact && r.from >= 0) msg += "（取楼层 " + r.from + " 的快照）";
+  __stToast(r.ok ? "success" : "warning", msg);
+  __stSyncFloorUi();
+  return r;
+}
+// 「📤 更新到最新层」：把当前生效状态写进最新层 -> toast -> 同步状态行
+function __stFloorUiWrite() {
+  var r = window.stChatu8Vars.commitLatest();
+  var msg;
+  if (r.ok) msg = "已把楼层 " + r.from + " 的变量更新到最新层 " + r.to + "（" + r.count + " 个字段）";
+  else msg = "更新失败：没有可用的楼层（最新层 " + r.to + "）";
+  __stToast(r.ok ? "success" : "error", msg);
+  __stSyncFloorUi();
+  return r;
+}
+
+// document 级事件委托（幂等：document 上打标记，重复调用只绑一次）
+function __stBindFloorUi() {
+  var d = __stDoc();
+  if (!d || typeof d.addEventListener !== "function") return false;
+  if (d.__stChatu8VarsFloorUiBound) return false;
+  d.__stChatu8VarsFloorUiBound = true;
+  d.addEventListener("change", function (ev) {
+    try {
+      var el = ev && ev.target;
+      if (!el || el.id !== "varsFloorMode") return;
+      var r = window.stChatu8Vars.setFloorMode(el.value);
+      __stToast("info", "变量楼层模式：" + __stModeLabel(r.mode));
+    } catch (e) { }
+  }, true);
+  d.addEventListener("click", function (ev) {
+    try {
+      var el = ev && ev.target;
+      if (!el) return;
+      var id = el.id || "";
+      if (id !== "vars-read-latest" && id !== "vars-write-latest" && el.closest) {
+        var hit = el.closest("#vars-read-latest, #vars-write-latest");
+        id = hit ? hit.id : "";
+      }
+      if (id === "vars-read-latest") __stFloorUiRead();
+      else if (id === "vars-write-latest") __stFloorUiWrite();
+    } catch (e) { }
+  }, true);
+  return true;
+}
+
+// 模块加载后：DOM 已在就直接同步一次（设置页先于模块加载也有效）
+try {
+  if (__stDoc()) {
+    __stBindFloorUi();
+    __stSyncFloorUi();
+  }
+} catch (e) { }
 /* ---- debug.js ---- */
 // ---- 变量调试接口（控制台用）：读取 / 写入指定 JSON / 模拟模型回复 ----
 // 注意：只提供 window.stChatu8VarsDebug 函数，不往页面里塞任何悬浮窗/按钮。
@@ -1220,16 +1438,33 @@ function __stDbgLog(n, win) {
   return String(es.log || "").split("\n").filter(function (x) { return x.indexOf("[变量]") >= 0; }).slice(-(n || 8));
 }
 
-// 楼层去向：当前楼层 / 读哪一楼（模型看到的）/ 写哪一楼（更新写进去的）
+// 楼层模式（读注入的 win，缺省全局 window）：缺失 / 非法一律回落 "follow"
+function __stDbgMode(win) {
+  try {
+    var w = win || (typeof window !== "undefined" ? window : null);
+    var c = (w && w.SillyTavern && w.SillyTavern.getContext) ? w.SillyTavern.getContext() : null;
+    var cfg = (c && c.extensionSettings) ? c.extensionSettings["st-chatu8"] : null;
+    return (cfg && cfg.varsFloorMode === "latest") ? "latest" : "follow";
+  } catch (e) { return "follow"; }
+}
+
+// 楼层去向：当前楼层 / 读哪一楼（模型看到的）/ 写哪一楼（更新写进去的）/ 模式
 function __stDbgFloor(sys, win) {
   var w = win || (typeof window !== "undefined" ? window : {});
   var vm = w.stChatu8Vars || (typeof window !== "undefined" ? window.stChatu8Vars : null);
-  var out = { current: -1, read: -1, write: -1, last: -1, hint: null, src: "" };
+  var out = { current: -1, read: -1, write: -1, last: -1, mode: "follow", hint: null, src: "" };
   try {
-    if (vm && typeof vm.floor === "function") return vm.floor();
+    out.mode = __stDbgMode(w);
+    if (vm && typeof vm.floor === "function") {
+      var r = vm.floor();
+      if (r && r.mode == null) r.mode = out.mode;
+      return r;
+    }
     var s = __stDbgSys(sys);
     out.last = __stDbgLastId(s);
-    out.current = out.last; out.read = out.current > 0 ? out.current - 1 : -1; out.write = out.current;
+    out.current = out.last;
+    if (out.mode === "latest") { out.read = out.last; out.write = out.last; }
+    else { out.read = out.current > 0 ? out.current - 1 : -1; out.write = out.current; }
     out.hint = w.__stChatu8VarsFloor || null;
   } catch (e) { }
   return out;
@@ -1253,6 +1488,7 @@ function __stDbgInfo(sys, win) {
     floorWrite: fl.write,
     floorLast: fl.last,
     floorHint: fl.hint,
+    floorMode: (fl && fl.mode) ? fl.mode : __stDbgMode(w),
     messageId: mid,
     floorHasStore: exact,
     storeKeys: (function () { try { return Object.keys((mid >= 0 && s && s.storage.readAt(mid)) || {}); } catch (e) { return []; } })(),
@@ -1369,9 +1605,33 @@ function __stDbgReadAll(sys) {
 
 // ---- 对外调试接口：window.stChatu8VarsDebug（只有控制台函数，不往页面里塞任何悬浮窗）----
 window.stChatu8VarsDebug = {
-  version: "1.1.0",
+  version: "1.3.0",
   info: function () { return __stDbgInfo(); },
   floor: function (id) { return __stDbgFloor(__stDbgSys(), undefined); },
+  // 楼层模式：setMode 转调主模块；readLatest / commitLatest 转调同名方法
+  setMode: function (mode) {
+    try {
+      var vm = window.stChatu8Vars;
+      if (!vm || typeof vm.setFloorMode !== "function") return { ok: false, mode: __stDbgMode(), error: "变量模块未加载" };
+      return vm.setFloorMode(mode);
+    } catch (e) { return { ok: false, mode: __stDbgMode(), error: String(e && e.message || e) }; }
+  },
+  readLatest: function () {
+    var empty = { ok: false, to: -1, from: -1, exact: false, tags: {}, count: 0, chars: 0, error: "" };
+    try {
+      var vm = window.stChatu8Vars;
+      if (!vm || typeof vm.readLatest !== "function") { empty.error = "变量模块未加载"; return empty; }
+      return vm.readLatest();
+    } catch (e) { empty.error = String(e && e.message || e); return empty; }
+  },
+  commitLatest: function (fromId) {
+    var empty = { ok: false, from: -1, to: -1, wrote: false, count: 0, chars: 0, error: "" };
+    try {
+      var vm = window.stChatu8Vars;
+      if (!vm || typeof vm.commitLatest !== "function") { empty.error = "变量模块未加载"; return empty; }
+      return vm.commitLatest(fromId);
+    } catch (e) { empty.error = String(e && e.message || e); return empty; }
+  },
   read: function (id) { return __stDbgRead(id); },
   readAll: function () { return __stDbgReadAll(); },
   analyze: function (text) { return __stDbgAnalyze(text); },
