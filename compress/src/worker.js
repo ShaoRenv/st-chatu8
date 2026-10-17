@@ -1,10 +1,11 @@
 // st-chatu8-compress — Web Worker 入口（classic worker，esbuild 打成单文件 IIFE）
 // 所有解码/编码都在这里发生，主线程只传 ArrayBuffer。
+// v1.2.0：结果解码校验下沉到本 worker；新增「极速模式」(fast)。
 
 import { sniffFormat, isAnimated, SUPPORTED_FORMATS, MIME_BY_FORMAT, pngHeaderInfo } from './sniff.js';
 import { initCodecs, status, errors, optimisePngBytes, encodeImageData, encodeJpegForConversion, hasTransparentPixels, normalizeLevel, CODEC_ID, LEVELS, DEFAULT_LEVEL, WASM_FILES } from './codec.js';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const MSG_TAG = 1;
 
 // PNG→JPEG 提速阈值（两个条件都满足才跳过 oxipng，保守）：
@@ -63,12 +64,31 @@ async function decodeToImageData(bytes, format) {
   }
 }
 
+/**
+ * 结果解码校验（v1.2.0 从主线程下沉到这里）：
+ * 只把即将写回库里的字节再解一次，确认浏览器读得懂。解不开就是坏结果，必须如实报失败。
+ * 没有 createImageBitmap 时按"通过"处理（与 v1.1.1 主线程侧的行为一致）。
+ */
+async function canDecodeOutput(u8, mime) {
+  if (typeof createImageBitmap !== 'function') return true;
+  try {
+    const blob = new Blob([u8], { type: mime });
+    const bitmap = await createImageBitmap(blob);
+    if (bitmap && typeof bitmap.close === 'function') bitmap.close();
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 async function runCompress(msg) {
   const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
   const bytes = msg.bytes instanceof ArrayBuffer ? new Uint8Array(msg.bytes) : new Uint8Array(0);
   const before = bytes.byteLength;
   const level = normalizeLevel(msg.level);
   const format = sniffFormat(bytes);
+  const fast = msg.fast === true;
+  const verifyOpt = msg.verify === undefined ? true : msg.verify;
 
   if (SUPPORTED_FORMATS.indexOf(format) < 0) {
     return { ok: false, reason: 'unsupported', message: 'format=' + format, before };
@@ -82,22 +102,67 @@ async function runCompress(msg) {
   }
 
   const allowFormatChange = msg.allowFormatChange === true;
-  let out;
+  let out = null;
   let width = 0;
   let height = 0;
   let outputFormat = format;
   let hasAlpha = null;          // 仅 PNG 有意义：true=真的用到透明像素 / false=确定不透明 / null=未检测
   let pngBytes = null;          // 诊断用：PNG→JPEG 两条路各自的字节数（跳过 oxipng 时为 null）
   let jpegBytes = null;
-  let skippedPngOptimise = false; // true = JPEG 已足够小，未再跑 oxipng（提速路径）
+  let skippedPngOptimise = false; // true = 未再跑 oxipng（提速 / 极速路径）
+
+  const failMeta = () => ({
+    codec: CODEC_ID[outputFormat],
+    mime: MIME_BY_FORMAT[outputFormat],
+    outputFormat,
+    hasAlpha,
+    pngBytes,
+    jpegBytes,
+    before,
+    after: before,
+    level,
+    width,
+    height,
+    format,
+    skippedPngOptimise,
+    fastMode: fast,
+    verified: false,
+  });
 
   if (format === 'png') {
-    const wantConversion = allowFormatChange && level !== 'lossless';
     const info = pngHeaderInfo(bytes);
     const headerNoAlpha = !!(info && !info.hasAlphaChannel); // colorType 0/2/3：结构上就没有 alpha 通道
-    let imageData = null;
-    if (wantConversion) {
+    // 极速模式只改变「跑不跑 oxipng」，不改变「要不要换格式」：
+    // level='lossless' 时本来就不转 JPEG（无损优先是用户的明确承诺，不能被极速模式悄悄推翻——
+    // 批量压缩是不可撤销的，转成 JPEG 就是不可逆的画质损失）。此时极速模式对 PNG 等于"原样保留"。
+    const wantConversion = allowFormatChange && level !== 'lossless';
+    if (!wantConversion) {
+      if (fast) {
+        // 极速 + 不允许换格式：既不能跑 oxipng 也不能转 JPEG → 原样保留
+        hasAlpha = headerNoAlpha ? false : null;
+        return Object.assign({ ok: false, reason: 'fast-mode-skip', message: 'fast mode: png kept as-is (format change disabled)' }, failMeta());
+      }
+      // 无损路径（与 v1.1.1 完全一致）：原始 PNG 字节 → oxipng，不解码、不重采样
+      const pngOut = await optimisePngBytes(bytes, level);
+      pngBytes = pngOut.byteLength;
+      out = pngOut;
+      if (headerNoAlpha) {
+        hasAlpha = false;
+      } else if (level !== 'lossless') {
+        try {
+          const imageData = await decodeToImageData(bytes, 'png');
+          width = imageData.width;
+          height = imageData.height;
+          hasAlpha = hasTransparentPixels(imageData);
+        } catch (_) {
+          hasAlpha = null;
+        }
+      } else {
+        hasAlpha = null; // lossless 档 + 存在 alpha 通道：不做转换，也就不额外解码
+      }
+    } else {
       // 换格式路径：无论如何都要解码一次（判 alpha + 拿像素编码 JPEG）
+      let imageData = null;
       try {
         imageData = await decodeToImageData(bytes, 'png');
         width = imageData.width;
@@ -113,7 +178,12 @@ async function runCompress(msg) {
         jpegBytes = jpegOut.byteLength;
         const pixels = width * height;
         const densePng = pixels > 0 && before / pixels >= PNG_SKIP_MIN_BYTES_PER_PIXEL;
-        if (densePng && jpegOut.byteLength <= before * PNG_SKIP_OPTIMISE_RATIO) {
+        if (fast) {
+          // 极速模式：只信 MozJPEG，永不跑 oxipng
+          out = jpegOut;
+          outputFormat = 'jpeg';
+          skippedPngOptimise = true;
+        } else if (densePng && jpegOut.byteLength <= before * PNG_SKIP_OPTIMISE_RATIO) {
           // JPEG 已经把体积压到原图 40% 以下：无损重压缩（oxipng）不可能反超，
           // 直接采用 JPEG 并跳过 oxipng（1024² 省约 1.1s、2048² 省约 4.6s）
           out = jpegOut;
@@ -129,29 +199,17 @@ async function runCompress(msg) {
             out = pngOut;
           }
         }
+      } else if (fast) {
+        // 真的有透明像素 / 解码失败：极速模式不冒险，原样保留
+        return Object.assign({
+          ok: false,
+          reason: 'fast-mode-skip',
+          message: imageData ? 'fast mode: transparent png kept as-is' : 'fast mode: png decode failed',
+        }, failMeta());
       } else {
         const pngOut = await optimisePngBytes(bytes, level);
         pngBytes = pngOut.byteLength;
         out = pngOut;
-      }
-    } else {
-      // 无损路径：原始 PNG 字节 → oxipng，不解码、不重采样、像素与 alpha 完全不变
-      const pngOut = await optimisePngBytes(bytes, level);
-      pngBytes = pngOut.byteLength;
-      out = pngOut;
-      if (headerNoAlpha) {
-        hasAlpha = false;
-      } else if (level !== 'lossless') {
-        try {
-          imageData = await decodeToImageData(bytes, 'png');
-          width = imageData.width;
-          height = imageData.height;
-          hasAlpha = hasTransparentPixels(imageData);
-        } catch (_) {
-          hasAlpha = null;
-        }
-      } else {
-        hasAlpha = null; // lossless 档 + 存在 alpha 通道：不做转换，也就不额外解码
       }
     }
   } else {
@@ -178,12 +236,25 @@ async function runCompress(msg) {
     height,
     format,
     skippedPngOptimise,
+    fastMode: fast,
   };
   if (after >= before) {
     return Object.assign({ ok: false, reason: 'not-smaller' }, meta);
   }
+
+  // 校验策略：true=一定校验；'auto'=只在换格式时校验；false=不校验
+  let verified = false;
+  const shouldVerify = verifyOpt === true || (verifyOpt === 'auto' && outputFormat !== format);
+  if (shouldVerify) {
+    const okOutput = await canDecodeOutput(out, MIME_BY_FORMAT[outputFormat]);
+    if (!okOutput) {
+      return Object.assign({ ok: false, reason: 'verify-failed', message: 'output could not be decoded' }, meta);
+    }
+    verified = true;
+  }
+
   const buffer = out.byteOffset === 0 && out.byteLength === out.buffer.byteLength ? out.buffer : out.slice().buffer;
-  return Object.assign({ ok: true, __transfer: [buffer], buffer }, meta);
+  return Object.assign({ ok: true, __transfer: [buffer], buffer, verified, fastMode: fast }, meta);
 }
 
 const queue = { chain: Promise.resolve() };

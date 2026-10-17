@@ -250,6 +250,23 @@
             </select>
         </div>
         <div class="st-chatu8-field">
+            <label for="compressBoostFast">极速模式（PNG 不做无损重压缩，最快；透明 PNG 原样保留，体积可能更大）</label>
+            <div class="st-chatu8-toggle">
+                <input id="compressBoostFast" type="checkbox" />
+                <span class="st-chatu8-slider"></span>
+            </div>
+        </div>
+        <div class="st-chatu8-field">
+            <label for="compressBoostConcurrency">压缩并发</label>
+            <select id="compressBoostConcurrency" class="st-chatu8-select">
+                <option value="auto">自动（推荐：手机 2 路 / 桌面最多 4 路）</option>
+                <option value="1">1 路（最省电、最省内存）</option>
+                <option value="2">2 路</option>
+                <option value="3">3 路</option>
+                <option value="4">4 路</option>
+            </select>
+        </div>
+        <div class="st-chatu8-field">
             <label>压缩加强</label>
             <div>
                 <button id="image-cache-compress-main" class="st-chatu8-btn"><i class="fa-solid fa-compress"></i> 立即压缩已有缓存</button>

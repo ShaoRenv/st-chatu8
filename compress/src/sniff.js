@@ -74,6 +74,89 @@ export function pngHeaderInfo(bytes) {
   return { colorType, hasAlphaChannel: colorType === 4 || colorType === 6 };
 }
 
+// ————— v1.2.0 新增：从文件头读尺寸（不解码），用于 worker 池的内存预算背压 —————
+
+function pngDimensions(u8) {
+  if (u8.length < 24) return null;
+  if (u8[12] !== 0x49 || u8[13] !== 0x48 || u8[14] !== 0x44 || u8[15] !== 0x52) return null;
+  const w = (u8[16] << 24 | u8[17] << 16 | u8[18] << 8 | u8[19]) >>> 0;
+  const h = (u8[20] << 24 | u8[21] << 16 | u8[22] << 8 | u8[23]) >>> 0;
+  return (w > 0 && h > 0) ? { width: w, height: h } : null;
+}
+
+function jpegDimensions(u8) {
+  let off = 2; // 跳过 SOI
+  while (off + 3 < u8.length) {
+    if (u8[off] !== 0xff) { off++; continue; }
+    const marker = u8[off + 1];
+    if (marker === 0xff) { off++; continue; }     // 填充字节
+    if (marker === 0x00) { off += 2; continue; }  // 压缩数据里的 0xFF00
+    off += 2;
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9)) continue; // 无长度字段
+    if (off + 2 > u8.length) return null;
+    const len = (u8[off] << 8 | u8[off + 1]) >>> 0;
+    if (len < 2) return null;
+    const isSof = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+    if (isSof) {
+      if (off + 7 > u8.length) return null;
+      const h = (u8[off + 3] << 8 | u8[off + 4]) >>> 0;
+      const w = (u8[off + 5] << 8 | u8[off + 6]) >>> 0;
+      return (w > 0 && h > 0) ? { width: w, height: h } : null;
+    }
+    if (marker === 0xda) return null; // 到了 SOS，后面是压缩数据
+    off += len;
+  }
+  return null;
+}
+
+function webpDimensions(u8) {
+  if (u8.length < 16) return null;
+  let off = 12;
+  while (off + 8 <= u8.length) {
+    const c0 = u8[off], c1 = u8[off + 1], c2 = u8[off + 2], c3 = u8[off + 3];
+    const size = (u8[off + 4] | u8[off + 5] << 8 | u8[off + 6] << 16 | u8[off + 7] << 24) >>> 0;
+    const p = off + 8;
+    // VP8X（扩展格式：alpha / 动画）：画布尺寸 24 位小端，存的是 size-1
+    if (c0 === 0x56 && c1 === 0x50 && c2 === 0x38 && c3 === 0x58 && p + 10 <= u8.length) {
+      const w = (u8[p + 4] | u8[p + 5] << 8 | u8[p + 6] << 16) + 1;
+      const h = (u8[p + 7] | u8[p + 8] << 8 | u8[p + 9] << 16) + 1;
+      return (w > 0 && h > 0) ? { width: w, height: h } : null;
+    }
+    // VP8L（无损）：0x2F + 14 位宽-1 + 14 位高-1
+    if (c0 === 0x56 && c1 === 0x50 && c2 === 0x38 && c3 === 0x4c && p + 5 <= u8.length) {
+      if (u8[p] !== 0x2f) return null;
+      const b0 = u8[p + 1], b1 = u8[p + 2], b2 = u8[p + 3], b3 = u8[p + 4];
+      const w = 1 + (((b1 & 0x3f) << 8) | b0);
+      const h = 1 + (((b3 & 0x0f) << 10) | (b2 << 2) | ((b1 & 0xc0) >> 6));
+      return (w > 0 && h > 0) ? { width: w, height: h } : null;
+    }
+    // VP8 （有损）：3 字节帧标签 + 起始码 9D 01 2A + 14 位宽 + 14 位高
+    if (c0 === 0x56 && c1 === 0x50 && c2 === 0x38 && c3 === 0x20 && p + 10 <= u8.length) {
+      if (!(u8[p + 3] === 0x9d && u8[p + 4] === 0x01 && u8[p + 5] === 0x2a)) return null;
+      const w = (u8[p + 6] | u8[p + 7] << 8) & 0x3fff;
+      const h = (u8[p + 8] | u8[p + 9] << 8) & 0x3fff;
+      return (w > 0 && h > 0) ? { width: w, height: h } : null;
+    }
+    off = p + size + (size % 2);
+  }
+  return null;
+}
+
+/**
+ * 从文件头读原始像素尺寸（不解码、不联网、纯函数）。
+ * 解析不出来返回 null —— 调用方必须能接受 null（退化为按字节数估算）。
+ */
+export function imageDimensions(bytes, format) {
+  const u8 = toU8(bytes);
+  const fmt = format || sniffFormat(u8);
+  try {
+    if (fmt === 'png') return pngDimensions(u8);
+    if (fmt === 'jpeg') return jpegDimensions(u8);
+    if (fmt === 'webp') return webpDimensions(u8);
+  } catch (_) {}
+  return null;
+}
+
 /**
  * 动图检测：APNG(acTL) / 动态 WebP(ANIM) 都要拒绝——契约要求输出与输入同为静态图，
  * 而我们只编码第一帧，静默丢帧属于数据损失，必须如实拒绝。
