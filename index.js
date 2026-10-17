@@ -91678,7 +91678,10 @@ async function compressCachedImages(options = {}) {
     const cheapSkipReason = function(img) {
       const entry = indexByUuid[img.uuid];
       const mark = entry && entry.compress;
-      if (mark && mark.v === 1 && mark.level === level) return "已压缩";
+      // 只有真的转成了 JPEG/WebP 才算「已压缩」。之前只跑过 oxipng（结果仍是 PNG）的不算——
+      // 否则一旦被标记就永远跳过，明明没压小也不会再重试（用户 9000 张「只省 1/10」就是这么被卡住的）。
+      const reallyShrunk = !!(mark && mark.v === 1 && mark.level === level && (mark.codec === "mozjpeg" || mark.codec === "libwebp"));
+      if (reallyShrunk) return "已压缩";
       if (img.isVideo) return "视频";
       if (img.source === "server" || img.path) return "酒馆存储";
       if (typeof img.size === "number" && img.size > 0 && img.size < COMPRESS_MIN_BYTES) return "小于 64KB";
