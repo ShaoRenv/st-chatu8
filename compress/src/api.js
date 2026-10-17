@@ -468,6 +468,7 @@ async function compress(input, options) {
     const level = normalizeLevel(opt.level);
     const allowFormatChange = opt.allowFormatChange === true;
     const fast = opt.fast === true;
+    const flattenAlpha = opt.flattenAlpha === true;
     const verify = opt.verify === undefined ? true : opt.verify;
 
     const format = sniffFormat(bytes);
@@ -500,9 +501,10 @@ async function compress(input, options) {
       level,
       allowFormatChange,
       fast,
+      flattenAlpha,
       verify,
       mime: MIME_BY_FORMAT[format],
-    }, [buffer], COMPRESS_TIMEOUT_MS));
+    }, null, COMPRESS_TIMEOUT_MS));   // 注意：不再 transfer 输入缓冲，避免调用方手里的字节被掏空
     const ms = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0;
 
     const outFormat = (res && res.outputFormat) || format;
@@ -513,6 +515,7 @@ async function compress(input, options) {
       pngBytes: res && res.pngBytes !== undefined ? res.pngBytes : null,
       jpegBytes: res && res.jpegBytes !== undefined ? res.jpegBytes : null,
       skippedPngOptimise: !!(res && res.skippedPngOptimise),
+      flattened: !!(res && res.flattened),
       fastMode: !!(res && res.fastMode) || fast,
       verified: !!(res && res.verified),
       poolSize: state.maxConcurrent > 0 ? Math.min(poolSize, state.maxConcurrent) : poolSize,

@@ -69,6 +69,24 @@ async function decodeToImageData(bytes, format) {
  * 只把即将写回库里的字节再解一次，确认浏览器读得懂。解不开就是坏结果，必须如实报失败。
  * 没有 createImageBitmap 时按"通过"处理（与 v1.1.1 主线程侧的行为一致）。
  */
+/** 把带 alpha 的 RGBA 铺到纯色背景上，得到完全不透明的像素（用于 PNG→JPEG）。 */
+async function flattenToOpaque(imageData, r, g, b) {
+  const width = imageData.width;
+  const height = imageData.height;
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) throw new Error('OffscreenCanvas 2d context unavailable');
+  ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+  ctx.fillRect(0, 0, width, height);
+  const tmp = new OffscreenCanvas(width, height);
+  const tctx = tmp.getContext('2d');
+  if (!tctx) throw new Error('OffscreenCanvas 2d context unavailable');
+  tctx.putImageData(imageData, 0, 0);
+  ctx.drawImage(tmp, 0, 0);
+  const out = ctx.getImageData(0, 0, width, height);
+  return { data: out.data, width, height };
+}
+
 async function canDecodeOutput(u8, mime) {
   if (typeof createImageBitmap !== 'function') return true;
   try {
@@ -102,6 +120,7 @@ async function runCompress(msg) {
   }
 
   const allowFormatChange = msg.allowFormatChange === true;
+  const flattenAlpha = msg.flattenAlpha === true;   // 透明 PNG 铺白背景后仍转 JPEG（批量压缩用）
   let out = null;
   let width = 0;
   let height = 0;
@@ -110,6 +129,7 @@ async function runCompress(msg) {
   let pngBytes = null;          // 诊断用：PNG→JPEG 两条路各自的字节数（跳过 oxipng 时为 null）
   let jpegBytes = null;
   let skippedPngOptimise = false; // true = 未再跑 oxipng（提速 / 极速路径）
+  let flattened = false;          // true = 透明 PNG 被铺白后转 JPEG
 
   const failMeta = () => ({
     codec: CODEC_ID[outputFormat],
@@ -171,6 +191,15 @@ async function runCompress(msg) {
       } catch (_) {
         imageData = null;
         hasAlpha = headerNoAlpha ? false : null; // 解码失败：只保留 IHDR 能确定的部分
+      }
+      if (imageData && hasAlpha === true && flattenAlpha) {
+        // 铺白：NovelAI 的 PNG 常带 alpha 通道（多数像素其实全不透明），只跑 oxipng 只能省 10~20%；
+        // 铺白后转 JPEG 能到原图 1/10 以下。代价：透明区域变成白色。
+        try {
+          imageData = await flattenToOpaque(imageData, 255, 255, 255);
+          hasAlpha = false;
+          flattened = true;
+        } catch (_) { /* 铺白失败就退回只跑 oxipng */ }
       }
       if (imageData && hasAlpha === false) {
         // 先跑便宜的那条：MozJPEG（1024² 约 0.2s，2048² 约 1.2s）
@@ -236,6 +265,7 @@ async function runCompress(msg) {
     height,
     format,
     skippedPngOptimise,
+    flattened,
     fastMode: fast,
   };
   if (after >= before) {

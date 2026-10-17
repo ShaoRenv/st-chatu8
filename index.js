@@ -3066,6 +3066,7 @@ var init_config = __esm({
       compressBoostStorage: "false",
       compressBoostLevel: "balanced",
       compressBoostFast: "false",
+      compressBoostFlatten: "false",
       compressBoostConcurrency: "auto",
       jiuguanStorage: {},
       banana: {
@@ -91393,6 +91394,10 @@ function resolveCompressLevel() {
 function resolveCompressFast() {
   return String((extension_settings[extensionName] || {}).compressBoostFast) === "true";
 }
+// 透明 PNG 铺白转 JPEG（批量压缩用）：默认关；开了才会把带 alpha 的 PNG 也压成 JPEG。
+function resolveCompressFlatten() {
+  return String((extension_settings[extensionName] || {}).compressBoostFlatten) === "true";
+}
 // 压缩并发（v1.2.0）："auto" = 按设备自动（手机 2 / 桌面最多 4）；也可显式 1~4。
 var COMPRESS_CONCURRENCY_VALUES = ["auto", "1", "2", "3", "4"];
 function resolveCompressConcurrency() {
@@ -91740,10 +91745,14 @@ async function compressCachedImages(options = {}) {
         compressTask.attemptedBytes += before;
         // 字节直传（可 transfer，省掉一次 Blob 拷贝）；校验已下沉到 worker：
         // 批量前 3 张全校验，其余只在换格式时校验，主线程不再做解码校验。
-        const result = await compressApi.compress(view, {
+        // 输入传副本：绝不把从库里读出来的缓冲交给 worker 转移，避免原数据被掏空
+        const inputCopy = view.byteOffset === 0 && view.byteLength === view.buffer.byteLength
+          ? view.buffer.slice(0)
+          : view.slice().buffer;
+        const result = await compressApi.compress(inputCopy, {
           level,
           allowFormatChange: true,
-          fast: fastMode,
+          flattenAlpha: resolveCompressFlatten(),
           verify: idx < 3 ? true : "auto",
           concurrency
         });
@@ -91758,12 +91767,22 @@ async function compressCachedImages(options = {}) {
           return;
         }
         // 直接用 worker transfer 回来的字节写库（不再 blob→arrayBuffer 拷贝）
-        const outBuffer = result.bytes ? result.bytes.buffer : null;
-        if (!outBuffer || outBuffer.byteLength !== after) {
+        if (!result.bytes || result.bytes.byteLength !== after) {
           noteSkip("无收益");
           return;
         }
-        await storeReadWrite({ id: img.uuid, data: outBuffer });
+        // 安全写回：写独立副本 → 立刻回读校验 → 长度不符就把原始字节写回去。
+        // （之前为了省一次拷贝直接复用 worker 缓冲，一旦写坏就是"有条目、取不出字节"，图片会丢。）
+        const outCopy = new Uint8Array(after);
+        outCopy.set(result.bytes);
+        await storeReadWrite({ id: img.uuid, data: outCopy.buffer });
+        const back = await storeReadOnly(img.uuid);
+        const backLen = back && back.data ? back.data.byteLength : 0;
+        if (!back || !back.data || backLen !== after) {
+          try { await storeReadWrite({ id: img.uuid, data: view.byteOffset === 0 && view.byteLength === view.buffer.byteLength ? view.buffer : view.slice().buffer }); } catch (eRestore) { console.error("[st-chatu8] 写回失败且还原失败:", img.uuid, eRestore); }
+          noteSkip("写回校验失败已还原");
+          return;
+        }
         if (entry) {
           entry.size = after;
           entry.compress = {
@@ -113330,15 +113349,15 @@ async function initUI({ check_update: check_update2 }) {
     saveSettingsDebounced71();
     toastr.info("压缩强度已设为：" + (COMPRESS_LEVEL_LABELS[resolveCompressLevel()] || resolveCompressLevel()) + "（下次压缩生效）", "压缩加强");
   });
-  settingsModal.find("#compressBoostFast").prop("checked", resolveCompressFast());
-  settingsModal.find("#compressBoostFast").on("change", function() {
+  settingsModal.find("#compressBoostFlatten").prop("checked", resolveCompressFlatten());
+  settingsModal.find("#compressBoostFlatten").on("change", function() {
     const isEnabled = $(this).prop("checked");
-    settings2.compressBoostFast = isEnabled.toString();
+    settings2.compressBoostFlatten = isEnabled.toString();
     saveSettingsDebounced71();
     if (isEnabled) {
-      toastr.info("极速模式已开启：PNG 不再做无损重压缩，只跑 MozJPEG；透明 PNG 原样保留（更快，但体积可能更大）", "压缩加强");
+      toastr.info("已开启：带透明通道的 PNG 会先铺白背景再转 JPEG（体积可降到 1/10 以下，但透明区域会变成白色）", "压缩加强");
     } else {
-      toastr.info("极速模式已关闭：PNG 会做无损重压缩（更小、更慢）", "压缩加强");
+      toastr.info("已关闭：带透明的 PNG 只做无损重压缩（保住透明，通常只省 10~20%）", "压缩加强");
     }
   });
   settingsModal.find("#compressBoostConcurrency").val(resolveCompressConcurrency());

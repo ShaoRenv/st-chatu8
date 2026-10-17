@@ -589,6 +589,7 @@
       const level = normalizeLevel(opt.level);
       const allowFormatChange = opt.allowFormatChange === true;
       const fast = opt.fast === true;
+      const flattenAlpha = opt.flattenAlpha === true;
       const verify = opt.verify === void 0 ? true : opt.verify;
       const format = sniffFormat(bytes);
       if (SUPPORTED_FORMATS.indexOf(format) < 0) return { ok: false, reason: "unsupported", message: "format=" + format };
@@ -618,9 +619,10 @@
         level,
         allowFormatChange,
         fast,
+        flattenAlpha,
         verify,
         mime: MIME_BY_FORMAT[format]
-      }, [buffer], COMPRESS_TIMEOUT_MS));
+      }, null, COMPRESS_TIMEOUT_MS));
       const ms = (typeof performance !== "undefined" ? performance.now() : Date.now()) - t0;
       const outFormat = res && res.outputFormat || format;
       const outMime = MIME_BY_FORMAT[outFormat] || MIME_BY_FORMAT[format];
@@ -630,6 +632,7 @@
         pngBytes: res && res.pngBytes !== void 0 ? res.pngBytes : null,
         jpegBytes: res && res.jpegBytes !== void 0 ? res.jpegBytes : null,
         skippedPngOptimise: !!(res && res.skippedPngOptimise),
+        flattened: !!(res && res.flattened),
         fastMode: !!(res && res.fastMode) || fast,
         verified: !!(res && res.verified),
         poolSize: state.maxConcurrent > 0 ? Math.min(poolSize, state.maxConcurrent) : poolSize,

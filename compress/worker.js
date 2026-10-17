@@ -4842,6 +4842,22 @@
       if (typeof bitmap.close === "function") bitmap.close();
     }
   }
+  async function flattenToOpaque(imageData, r, g, b) {
+    const width = imageData.width;
+    const height = imageData.height;
+    const canvas = new OffscreenCanvas(width, height);
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) throw new Error("OffscreenCanvas 2d context unavailable");
+    ctx.fillStyle = "rgb(" + r + "," + g + "," + b + ")";
+    ctx.fillRect(0, 0, width, height);
+    const tmp = new OffscreenCanvas(width, height);
+    const tctx = tmp.getContext("2d");
+    if (!tctx) throw new Error("OffscreenCanvas 2d context unavailable");
+    tctx.putImageData(imageData, 0, 0);
+    ctx.drawImage(tmp, 0, 0);
+    const out = ctx.getImageData(0, 0, width, height);
+    return { data: out.data, width, height };
+  }
   async function canDecodeOutput(u8, mime) {
     if (typeof createImageBitmap !== "function") return true;
     try {
@@ -4872,6 +4888,7 @@
       return { ok: false, reason: "codec-unavailable", message: (errors() || {})[format] || format + " codec init failed", before };
     }
     const allowFormatChange = msg.allowFormatChange === true;
+    const flattenAlpha = msg.flattenAlpha === true;
     let out = null;
     let width = 0;
     let height = 0;
@@ -4880,6 +4897,7 @@
     let pngBytes = null;
     let jpegBytes = null;
     let skippedPngOptimise = false;
+    let flattened = false;
     const failMeta = () => ({
       codec: CODEC_ID[outputFormat],
       mime: MIME_BY_FORMAT[outputFormat],
@@ -4933,6 +4951,14 @@
         } catch (_) {
           imageData = null;
           hasAlpha = headerNoAlpha ? false : null;
+        }
+        if (imageData && hasAlpha === true && flattenAlpha) {
+          try {
+            imageData = await flattenToOpaque(imageData, 255, 255, 255);
+            hasAlpha = false;
+            flattened = true;
+          } catch (_) {
+          }
         }
         if (imageData && hasAlpha === false) {
           const jpegOut = await encodeJpegForConversion(imageData, level);
@@ -4992,6 +5018,7 @@
       height,
       format,
       skippedPngOptimise,
+      flattened,
       fastMode: fast
     };
     if (after >= before) {
