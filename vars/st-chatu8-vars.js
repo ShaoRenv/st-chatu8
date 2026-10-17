@@ -1073,7 +1073,7 @@ function __stFindVarBox(obj, depth, path) {
 }
 
 window.stChatu8Vars = {
-  version: "1.3.0",
+  version: "1.3.1",
 
   // 生图 LLM 输出：摘掉 <变量更新> 块并写入该楼层，返回摘干净后的提示词
   // id 不给 = 写当前楼层（正在处理的那一楼）
@@ -1148,8 +1148,38 @@ window.stChatu8Vars = {
   render: function (text, id) {
     try {
       var s = __stSys();
-      var root = __stTagsAt(id == null ? __stWriteId() : id);
-      if (!root || !Object.keys(root).length) return text;
+      var at = (id == null) ? __stWriteId() : id;
+      var root = __stTagsAt(at);
+      var from = at;
+      // v1.3.1：变量是按楼层的累积快照，写楼层很可能没有本层的 <变量更新>（或生图被排队后楼层漂移），
+      // 此时只读死楼层会拿到空表 → $路径$ 全部不展开，表现为"正文 tag 不用于生图、当前计数 0、
+      // 只剩固定预设"。改成往前找最近一份非空快照，这正是"读上一楼"的同一语义。
+      if (!root || !Object.keys(root).length) {
+        var hi = Math.max(at, __stLastId());
+        var scanned = 0;
+        for (var k = hi; k >= 0 && scanned < 400; k--, scanned++) {
+          if (k === at) continue;
+          var rk = __stTagsAt(k);
+          if (rk && Object.keys(rk).length) { root = rk; from = k; break; }
+        }
+      }
+      if (!root || !Object.keys(root).length) {
+        try { console.warn("[ChatU8 vars] render: 楼层 " + at + " 及之前都没有变量，$路径$ 不展开（提示词会缺正文 tag）"); } catch (e0) { }
+        return text;
+      }
+      if (from !== at) { try { console.warn("[ChatU8 vars] render: 楼层 " + at + " 无变量，改用楼层 " + from + " 的快照"); } catch (e1) { } }
+      // v1.3.1 关键修复：NAI4/4.5 的多角色提示词用「;」分段：
+      //   Scene Composition:...;Character 1 Prompt:...|centers:C3;Character 1 UC:...;
+      // 而 evaluate() 按逗号拆段再用「, 」拼回去，会把所有「;」抹成「, 」，
+      // 导致 parsePromptStringWithCoordinates 的正则（要求 ; 结尾）整段匹配失败 →
+      // 解析结果 {"Scene Composition": ""} → 用于生成的 Tag 为空 → 只剩固定提示词预设。
+      // 所以：文本里有「;」时，先把 ; 换成哨兵字符跑完求值，再换回来，保证结构逐字不变。
+      var SEP = "\u0001";
+      var src = String(text);
+      if (src.indexOf(";") >= 0) {
+        var out = evaluate(root, src.split(";").join(SEP), src.split(";").join(SEP));
+        return String(out).split(SEP).join(";");
+      }
       return evaluate(root, text, text);
     } catch (e) {
       console.warn("[ChatU8 vars] render failed", e);
