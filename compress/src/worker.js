@@ -195,7 +195,9 @@ async function runCompress(msg) {
         decodeFailed = true;                     // 解码失败：如实上报，不再静默降级成 oxipng
         hasAlpha = headerNoAlpha ? false : null; // 只保留 IHDR 能确定的部分
       }
-      if (imageData && hasAlpha === true && flattenAlpha) {
+      // 不再用 alpha 判定拦住 JPEG：能解码就一律算一条 JPEG，最后和 oxipng 比大小取更小的。
+      // （alpha 判定在部分 WebView 上不可靠，一旦判错就整批静默降级成 oxipng，正是这个 bug 的来源）
+      if (imageData && hasAlpha === true) {
         // 铺白：NovelAI 的 PNG 常带 alpha 通道（多数像素其实全不透明），只跑 oxipng 只能省 10~20%；
         // 铺白后转 JPEG 能到原图 1/10 以下。代价：透明区域变成白色。
         try {
@@ -204,7 +206,11 @@ async function runCompress(msg) {
           flattened = true;
         } catch (_) { /* 铺白失败就退回只跑 oxipng */ }
       }
-      if (imageData && hasAlpha === false) {
+      if (!imageData) {
+        // 解码不出来：如实报出来，不再悄悄退化成 oxipng
+        return Object.assign({ ok: false, reason: 'decode-unavailable', message: 'PNG 解码失败（WebView 缺少 OffscreenCanvas/createImageBitmap？）' }, failMeta());
+      }
+      if (imageData) {
         // 先跑便宜的那条：MozJPEG（1024² 约 0.2s，2048² 约 1.2s）
         const jpegOut = await encodeJpegForConversion(imageData, level);
         jpegBytes = jpegOut.byteLength;

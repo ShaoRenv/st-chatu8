@@ -4954,7 +4954,7 @@
           decodeFailed = true;
           hasAlpha = headerNoAlpha ? false : null;
         }
-        if (imageData && hasAlpha === true && flattenAlpha) {
+        if (imageData && hasAlpha === true) {
           try {
             imageData = await flattenToOpaque(imageData, 255, 255, 255);
             hasAlpha = false;
@@ -4962,7 +4962,10 @@
           } catch (_) {
           }
         }
-        if (imageData && hasAlpha === false) {
+        if (!imageData) {
+          return Object.assign({ ok: false, reason: "decode-unavailable", message: "PNG 解码失败（WebView 缺少 OffscreenCanvas/createImageBitmap？）" }, failMeta());
+        }
+        if (imageData) {
           const jpegOut = await encodeJpegForConversion(imageData, level);
           jpegBytes = jpegOut.byteLength;
           const pixels = width * height;
