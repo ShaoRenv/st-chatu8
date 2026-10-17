@@ -516,6 +516,7 @@ async function compress(input, options) {
       jpegBytes: res && res.jpegBytes !== undefined ? res.jpegBytes : null,
       skippedPngOptimise: !!(res && res.skippedPngOptimise),
       flattened: !!(res && res.flattened),
+      decodeFailed: !!(res && res.decodeFailed),
       fastMode: !!(res && res.fastMode) || fast,
       verified: !!(res && res.verified),
       poolSize: state.maxConcurrent > 0 ? Math.min(poolSize, state.maxConcurrent) : poolSize,

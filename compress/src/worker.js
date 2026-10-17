@@ -120,7 +120,8 @@ async function runCompress(msg) {
   }
 
   const allowFormatChange = msg.allowFormatChange === true;
-  const flattenAlpha = msg.flattenAlpha === true;   // 透明 PNG 铺白背景后仍转 JPEG（批量压缩用）
+  // 铺白背景后转 JPEG：默认启用（不再提供开关）。图片本身没有透明像素时铺白是空操作。
+  const flattenAlpha = msg.flattenAlpha !== false;
   let out = null;
   let width = 0;
   let height = 0;
@@ -130,6 +131,7 @@ async function runCompress(msg) {
   let jpegBytes = null;
   let skippedPngOptimise = false; // true = 未再跑 oxipng（提速 / 极速路径）
   let flattened = false;          // true = 透明 PNG 被铺白后转 JPEG
+  let decodeFailed = false;       // true = 无法解码（WebView 缺 OffscreenCanvas/createImageBitmap）
 
   const failMeta = () => ({
     codec: CODEC_ID[outputFormat],
@@ -190,7 +192,8 @@ async function runCompress(msg) {
         hasAlpha = headerNoAlpha ? false : hasTransparentPixels(imageData);
       } catch (_) {
         imageData = null;
-        hasAlpha = headerNoAlpha ? false : null; // 解码失败：只保留 IHDR 能确定的部分
+        decodeFailed = true;                     // 解码失败：如实上报，不再静默降级成 oxipng
+        hasAlpha = headerNoAlpha ? false : null; // 只保留 IHDR 能确定的部分
       }
       if (imageData && hasAlpha === true && flattenAlpha) {
         // 铺白：NovelAI 的 PNG 常带 alpha 通道（多数像素其实全不透明），只跑 oxipng 只能省 10~20%；
@@ -266,6 +269,7 @@ async function runCompress(msg) {
     format,
     skippedPngOptimise,
     flattened,
+    decodeFailed,
     fastMode: fast,
   };
   if (after >= before) {
@@ -284,7 +288,7 @@ async function runCompress(msg) {
   }
 
   const buffer = out.byteOffset === 0 && out.byteLength === out.buffer.byteLength ? out.buffer : out.slice().buffer;
-  return Object.assign({ ok: true, __transfer: [buffer], buffer, verified, fastMode: fast }, meta);
+  return Object.assign({ ok: true, __transfer: [buffer], buffer, verified, flattened, decodeFailed, fastMode: fast }, meta);
 }
 
 const queue = { chain: Promise.resolve() };

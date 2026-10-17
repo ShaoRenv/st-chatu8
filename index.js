@@ -91395,8 +91395,9 @@ function resolveCompressFast() {
   return String((extension_settings[extensionName] || {}).compressBoostFast) === "true";
 }
 // 透明 PNG 铺白转 JPEG（批量压缩用）：默认关；开了才会把带 alpha 的 PNG 也压成 JPEG。
+// 透明 PNG 铺白转 JPEG：默认开启（用户要求不要开关）。没有透明像素时铺白是空操作，无副作用。
 function resolveCompressFlatten() {
-  return String((extension_settings[extensionName] || {}).compressBoostFlatten) === "true";
+  return true;
 }
 // 压缩并发（v1.2.0）："auto" = 按设备自动（手机 2 / 桌面最多 4）；也可显式 1~4。
 var COMPRESS_CONCURRENCY_VALUES = ["auto", "1", "2", "3", "4"];
@@ -91506,7 +91507,7 @@ function buildCompressSummaryText(task, skipReasons) {
     stat("oxipng", "oxipng");
     stat("mozjpeg", "MozJPEG");
     stat("libwebp", "libwebp");
-    if (task.paths.fastSkip) segs.push("极速跳过 " + task.paths.fastSkip + " 张");
+    if (task.paths.decodeFail) segs.push("解码失败 " + task.paths.decodeFail + " 张");
     if (task.paths.verified) segs.push("校验 " + task.paths.verified + " 张");
     if (task.paths.msCount) segs.push("平均 " + Math.round(task.paths.msTotal / task.paths.msCount) + " ms/张");
     if (segs.length > 0) lines.push("路径：" + segs.join(" · "));
@@ -91671,7 +91672,7 @@ async function compressCachedImages(options = {}) {
     const lanes = concurrency === "auto"
       ? (typeof compressApi.computeBaseSlots === "function" ? compressApi.computeBaseSlots() : 2)
       : concurrency;
-    compressTask.paths = { oxipng: [], mozjpeg: [], libwebp: [], fastSkip: 0, verified: 0, msTotal: 0, msCount: 0 };
+    compressTask.paths = { oxipng: [], mozjpeg: [], libwebp: [], fastSkip: 0, decodeFail: 0, verified: 0, msTotal: 0, msCount: 0 };
     compressTask.processed = 0;
     // 只做内存里就能判断的廉价跳过（不读库）
     const cheapSkipReason = function(img) {
@@ -91800,6 +91801,7 @@ async function compressCachedImages(options = {}) {
         const bucket = result.codec === "oxipng" ? "oxipng" : result.codec === "mozjpeg" ? "mozjpeg" : result.codec === "libwebp" ? "libwebp" : null;
         const cost = result.msWorker || result.ms || 0;
         if (bucket) compressTask.paths[bucket].push(cost);
+        if (result.decodeFailed) compressTask.paths.decodeFail++;
         if (result.verified) compressTask.paths.verified++;
         compressTask.paths.msTotal += cost;
         compressTask.paths.msCount++;
@@ -113349,17 +113351,7 @@ async function initUI({ check_update: check_update2 }) {
     saveSettingsDebounced71();
     toastr.info("压缩强度已设为：" + (COMPRESS_LEVEL_LABELS[resolveCompressLevel()] || resolveCompressLevel()) + "（下次压缩生效）", "压缩加强");
   });
-  settingsModal.find("#compressBoostFlatten").prop("checked", resolveCompressFlatten());
-  settingsModal.find("#compressBoostFlatten").on("change", function() {
-    const isEnabled = $(this).prop("checked");
-    settings2.compressBoostFlatten = isEnabled.toString();
-    saveSettingsDebounced71();
-    if (isEnabled) {
-      toastr.info("已开启：带透明通道的 PNG 会先铺白背景再转 JPEG（体积可降到 1/10 以下，但透明区域会变成白色）", "压缩加强");
-    } else {
-      toastr.info("已关闭：带透明的 PNG 只做无损重压缩（保住透明，通常只省 10~20%）", "压缩加强");
-    }
-  });
+
   settingsModal.find("#compressBoostConcurrency").val(resolveCompressConcurrency());
   settingsModal.find("#compressBoostConcurrency").on("change", function() {
     settings2.compressBoostConcurrency = String($(this).val() || "auto");

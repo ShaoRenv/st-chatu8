@@ -4888,7 +4888,7 @@
       return { ok: false, reason: "codec-unavailable", message: (errors() || {})[format] || format + " codec init failed", before };
     }
     const allowFormatChange = msg.allowFormatChange === true;
-    const flattenAlpha = msg.flattenAlpha === true;
+    const flattenAlpha = msg.flattenAlpha !== false;
     let out = null;
     let width = 0;
     let height = 0;
@@ -4898,6 +4898,7 @@
     let jpegBytes = null;
     let skippedPngOptimise = false;
     let flattened = false;
+    let decodeFailed = false;
     const failMeta = () => ({
       codec: CODEC_ID[outputFormat],
       mime: MIME_BY_FORMAT[outputFormat],
@@ -4950,6 +4951,7 @@
           hasAlpha = headerNoAlpha ? false : hasTransparentPixels(imageData);
         } catch (_) {
           imageData = null;
+          decodeFailed = true;
           hasAlpha = headerNoAlpha ? false : null;
         }
         if (imageData && hasAlpha === true && flattenAlpha) {
@@ -5019,6 +5021,7 @@
       format,
       skippedPngOptimise,
       flattened,
+      decodeFailed,
       fastMode: fast
     };
     if (after >= before) {
@@ -5034,7 +5037,7 @@
       verified = true;
     }
     const buffer = out.byteOffset === 0 && out.byteLength === out.buffer.byteLength ? out.buffer : out.slice().buffer;
-    return Object.assign({ ok: true, __transfer: [buffer], buffer, verified, fastMode: fast }, meta);
+    return Object.assign({ ok: true, __transfer: [buffer], buffer, verified, flattened, decodeFailed, fastMode: fast }, meta);
   }
   var queue = { chain: Promise.resolve() };
   function handle(message) {
