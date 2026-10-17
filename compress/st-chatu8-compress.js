@@ -1,4 +1,4 @@
-/*! st-chatu8-compress v1.2.0 | WASM 图像压缩模块（PNG/JPEG/WebP）
+/*! st-chatu8-compress v1.2.2 | WASM 图像压缩模块（PNG/JPEG/WebP）
  * 本地计算，不联网。第三方编码器许可见 THIRD-PARTY-LICENSES.md
  * codecs: oxipng (MIT) / MozJPEG (IJG+BSD-style) / libwebp (BSD-3-Clause)
  */
@@ -149,7 +149,7 @@
   }
 
   // src/api.js
-  var VERSION = "1.2.1";
+  var VERSION = "1.2.2";
   var DEFAULT_BASE_RELATIVE = "scripts/extensions/third-party/st-chatu8/compress";
   var INIT_TIMEOUT_MS = 12e4;
   var COMPRESS_TIMEOUT_MS = 3e5;
@@ -635,8 +635,7 @@
         flattened: !!(res && res.flattened),
         decodeFailed: !!(res && res.decodeFailed),
         workerVersion: res && res.workerVersion || "",
-        jpegBytes: res && res.jpegBytes !== void 0 ? res.jpegBytes : null,
-        pngBytes: res && res.pngBytes !== void 0 ? res.pngBytes : null,
+        jpegSource: res && res.jpegSource || "",
         fastMode: !!(res && res.fastMode) || fast,
         verified: !!(res && res.verified),
         poolSize: state.maxConcurrent > 0 ? Math.min(poolSize, state.maxConcurrent) : poolSize,

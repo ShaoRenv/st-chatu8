@@ -3,9 +3,9 @@
 // v1.2.0：结果解码校验下沉到本 worker；新增「极速模式」(fast)。
 
 import { sniffFormat, isAnimated, SUPPORTED_FORMATS, MIME_BY_FORMAT, pngHeaderInfo } from './sniff.js';
-import { initCodecs, status, errors, optimisePngBytes, encodeImageData, encodeJpegForConversion, hasTransparentPixels, normalizeLevel, CODEC_ID, LEVELS, DEFAULT_LEVEL, WASM_FILES } from './codec.js';
+import { initCodecs, status, errors, optimisePngBytes, encodeImageData, encodeJpegForConversion, jpegConversionQuality, hasTransparentPixels, normalizeLevel, CODEC_ID, LEVELS, DEFAULT_LEVEL, WASM_FILES } from './codec.js';
 
-const VERSION = '1.2.1';
+const VERSION = '1.2.2';
 const MSG_TAG = 1;
 
 // PNG→JPEG 提速阈值（两个条件都满足才跳过 oxipng，保守）：
@@ -87,6 +87,47 @@ async function flattenToOpaque(imageData, r, g, b) {
   return { data: out.data, width, height };
 }
 
+/**
+ * 浏览器兜底 JPEG 编码器（OffscreenCanvas.convertToBlob）。
+ * 为什么需要：MozJPEG 的 wasm 在个别 Android WebView / 低内存设备上会给出离谱的大文件
+ * （实测：1 MP 的 PNG 编出 ≥1.8 MB 的"JPEG"，比原图还大），于是 worker 里
+ * "JPEG 和 oxipng 比大小" 这条比较永远判给 oxipng —— 用户看到的就是
+ * 「压缩后还是 PNG、只省了 5~6%、路径是 oxipng」。此时用系统自带的 JPEG 编码器
+ * 再编一次，取更小的那个，PNG→JPEG 就不会因为编码器坏掉而整批失效。
+ */
+async function encodeCanvasJpeg(imageData, quality) {
+  try {
+    if (typeof OffscreenCanvas !== 'function' || typeof imageData !== 'object' || !imageData) return null;
+    const width = imageData.width;
+    const height = imageData.height;
+    if (!width || !height) return null;
+    const canvas = new OffscreenCanvas(width, height);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    // 先铺白，再把像素画上去：与 JPEG 无 alpha 通道的语义保持一致
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+    try {
+      const tmp = new OffscreenCanvas(width, height);
+      const tctx = tmp.getContext('2d');
+      if (tctx) {
+        tctx.putImageData(imageData, 0, 0);
+        ctx.drawImage(tmp, 0, 0);
+      } else {
+        ctx.drawImage(await createImageBitmap(new ImageData(imageData.data, width, height)), 0, 0);
+      }
+    } catch (_) {
+      ctx.drawImage(await createImageBitmap(new ImageData(imageData.data, width, height)), 0, 0);
+    }
+    if (typeof canvas.convertToBlob !== 'function') return null;
+    const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: quality });
+    if (!blob || !blob.size) return null;
+    return new Uint8Array(await blob.arrayBuffer());
+  } catch (_) {
+    return null;
+  }
+}
+
 async function canDecodeOutput(u8, mime) {
   if (typeof createImageBitmap !== 'function') return true;
   try {
@@ -129,6 +170,7 @@ async function runCompress(msg) {
   let hasAlpha = null;          // 仅 PNG 有意义：true=真的用到透明像素 / false=确定不透明 / null=未检测
   let pngBytes = null;          // 诊断用：PNG→JPEG 两条路各自的字节数（跳过 oxipng 时为 null）
   let jpegBytes = null;
+  let jpegUsedSource = '';      // 'mozjpeg' | 'canvas'：最终采用的 JPEG 由谁编出来（诊断用）
   let skippedPngOptimise = false; // true = 未再跑 oxipng（提速 / 极速路径）
   let flattened = false;          // true = 透明 PNG 被铺白后转 JPEG
   let decodeFailed = false;       // true = 无法解码（WebView 缺 OffscreenCanvas/createImageBitmap）
@@ -212,7 +254,17 @@ async function runCompress(msg) {
       }
       if (imageData) {
         // 先跑便宜的那条：MozJPEG（1024² 约 0.2s，2048² 约 1.2s）
-        const jpegOut = await encodeJpegForConversion(imageData, level);
+        let jpegOut = await encodeJpegForConversion(imageData, level);
+        let jpegSource = 'mozjpeg';
+        // 兜底：MozJPEG 给出"还不如原图一半"的结果，几乎只可能是 wasm 在该设备上编坏了
+        // （正常 1 MP 的图必然是原图的 1/5 以下）。这时用浏览器内置 JPEG 编码器重编一次，取小者。
+        if (jpegOut.byteLength > before * 0.5) {
+          const canvasOut = await encodeCanvasJpeg(imageData, jpegConversionQuality(level));
+          if (canvasOut && canvasOut.byteLength > 0 && canvasOut.byteLength < jpegOut.byteLength) {
+            jpegOut = canvasOut;
+            jpegSource = 'canvas';
+          }
+        }
         jpegBytes = jpegOut.byteLength;
         const pixels = width * height;
         const densePng = pixels > 0 && before / pixels >= PNG_SKIP_MIN_BYTES_PER_PIXEL;
@@ -237,6 +289,7 @@ async function runCompress(msg) {
             out = pngOut;
           }
         }
+        if (outputFormat === 'jpeg') jpegUsedSource = jpegSource;
       } else if (fast) {
         // 真的有透明像素 / 解码失败：极速模式不冒险，原样保留
         return Object.assign({
@@ -276,6 +329,7 @@ async function runCompress(msg) {
     skippedPngOptimise,
     flattened,
     decodeFailed,
+    jpegSource: jpegUsedSource,
     fastMode: fast,
   };
   if (after >= before) {
@@ -294,7 +348,7 @@ async function runCompress(msg) {
   }
 
   const buffer = out.byteOffset === 0 && out.byteLength === out.buffer.byteLength ? out.buffer : out.slice().buffer;
-  return Object.assign({ ok: true, __transfer: [buffer], buffer, verified, flattened, decodeFailed, fastMode: fast, workerVersion: VERSION }, meta);
+  return Object.assign({ ok: true, __transfer: [buffer], buffer, verified, flattened, decodeFailed, jpegSource: jpegUsedSource, fastMode: fast, workerVersion: VERSION }, meta);
 }
 
 const queue = { chain: Promise.resolve() };

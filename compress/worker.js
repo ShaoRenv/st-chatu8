@@ -1,4 +1,4 @@
-/*! st-chatu8-compress v1.2.0 | WASM 图像压缩模块（PNG/JPEG/WebP）
+/*! st-chatu8-compress v1.2.2 | WASM 图像压缩模块（PNG/JPEG/WebP）
  * 本地计算，不联网。第三方编码器许可见 THIRD-PARTY-LICENSES.md
  * codecs: oxipng (MIT) / MozJPEG (IJG+BSD-style) / libwebp (BSD-3-Clause)
  */
@@ -4787,13 +4787,17 @@
     }
     return false;
   }
+  function jpegConversionQuality(level) {
+    const opts = PNG_TO_JPEG_LEVELS[normalizeLevel(level)] || PNG_TO_JPEG_LEVELS.balanced;
+    return Math.max(0.4, Math.min(1, (opts.quality || 88) / 100));
+  }
   async function encodeJpegForConversion(imageData, level) {
     const opts = PNG_TO_JPEG_LEVELS[normalizeLevel(level)] || PNG_TO_JPEG_LEVELS.balanced;
     return new Uint8Array(await encode(imageData, opts));
   }
 
   // src/worker.js
-  var VERSION = "1.2.1";
+  var VERSION = "1.2.2";
   var MSG_TAG = 1;
   var PNG_SKIP_OPTIMISE_RATIO = 0.4;
   var PNG_SKIP_MIN_BYTES_PER_PIXEL = 0.5;
@@ -4858,6 +4862,37 @@
     const out = ctx.getImageData(0, 0, width, height);
     return { data: out.data, width, height };
   }
+  async function encodeCanvasJpeg(imageData, quality) {
+    try {
+      if (typeof OffscreenCanvas !== "function" || typeof imageData !== "object" || !imageData) return null;
+      const width = imageData.width;
+      const height = imageData.height;
+      if (!width || !height) return null;
+      const canvas = new OffscreenCanvas(width, height);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, width, height);
+      try {
+        const tmp = new OffscreenCanvas(width, height);
+        const tctx = tmp.getContext("2d");
+        if (tctx) {
+          tctx.putImageData(imageData, 0, 0);
+          ctx.drawImage(tmp, 0, 0);
+        } else {
+          ctx.drawImage(await createImageBitmap(new ImageData(imageData.data, width, height)), 0, 0);
+        }
+      } catch (_) {
+        ctx.drawImage(await createImageBitmap(new ImageData(imageData.data, width, height)), 0, 0);
+      }
+      if (typeof canvas.convertToBlob !== "function") return null;
+      const blob = await canvas.convertToBlob({ type: "image/jpeg", quality });
+      if (!blob || !blob.size) return null;
+      return new Uint8Array(await blob.arrayBuffer());
+    } catch (_) {
+      return null;
+    }
+  }
   async function canDecodeOutput(u8, mime) {
     if (typeof createImageBitmap !== "function") return true;
     try {
@@ -4896,6 +4931,7 @@
     let hasAlpha = null;
     let pngBytes = null;
     let jpegBytes = null;
+    let jpegUsedSource = "";
     let skippedPngOptimise = false;
     let flattened = false;
     let decodeFailed = false;
@@ -4966,7 +5002,15 @@
           return Object.assign({ ok: false, reason: "decode-unavailable", message: "PNG 解码失败（WebView 缺少 OffscreenCanvas/createImageBitmap？）" }, failMeta());
         }
         if (imageData) {
-          const jpegOut = await encodeJpegForConversion(imageData, level);
+          let jpegOut = await encodeJpegForConversion(imageData, level);
+          let jpegSource = "mozjpeg";
+          if (jpegOut.byteLength > before * 0.5) {
+            const canvasOut = await encodeCanvasJpeg(imageData, jpegConversionQuality(level));
+            if (canvasOut && canvasOut.byteLength > 0 && canvasOut.byteLength < jpegOut.byteLength) {
+              jpegOut = canvasOut;
+              jpegSource = "canvas";
+            }
+          }
           jpegBytes = jpegOut.byteLength;
           const pixels = width * height;
           const densePng = pixels > 0 && before / pixels >= PNG_SKIP_MIN_BYTES_PER_PIXEL;
@@ -4988,6 +5032,7 @@
               out = pngOut;
             }
           }
+          if (outputFormat === "jpeg") jpegUsedSource = jpegSource;
         } else if (fast) {
           return Object.assign({
             ok: false,
@@ -5025,6 +5070,7 @@
       skippedPngOptimise,
       flattened,
       decodeFailed,
+      jpegSource: jpegUsedSource,
       fastMode: fast
     };
     if (after >= before) {
@@ -5040,7 +5086,7 @@
       verified = true;
     }
     const buffer = out.byteOffset === 0 && out.byteLength === out.buffer.byteLength ? out.buffer : out.slice().buffer;
-    return Object.assign({ ok: true, __transfer: [buffer], buffer, verified, flattened, decodeFailed, fastMode: fast, workerVersion: VERSION }, meta);
+    return Object.assign({ ok: true, __transfer: [buffer], buffer, verified, flattened, decodeFailed, jpegSource: jpegUsedSource, fastMode: fast, workerVersion: VERSION }, meta);
   }
   var queue = { chain: Promise.resolve() };
   function handle(message) {

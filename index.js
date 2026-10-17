@@ -91497,9 +91497,10 @@ function buildCompressSummaryText(task, skipReasons) {
     lines.push("诊断(首张): " + d.fmt + " " + (d.w || "?") + "x" + (d.h || "?")
       + " · alpha=" + String(d.hasAlpha)
       + " · 解码=" + (d.decodeFailed ? "失败" : "成功")
-      + " · JPEG=" + (d.jpegBytes == null ? "未算" : d.jpegBytes + "B")
+      + " · 原图=" + (d.before || 0) + "B"
+      + " · JPEG=" + (d.jpegBytes == null ? "未算" : d.jpegBytes + "B" + (d.jpegSource ? "(" + d.jpegSource + ")" : ""))
       + " · PNG=" + (d.pngBytes == null ? "未算" : d.pngBytes + "B")
-      + " · 采用=" + (d.chose || "?"));
+      + " · 采用=" + (d.chose || (d.reason || "?")));
   }
   const reasons = Object.keys(skipReasons || {}).filter(function(key) { return key !== "视频" && key !== "酒馆存储"; });
   if (reasons.length > 0) {
@@ -91772,6 +91773,15 @@ async function compressCachedImages(options = {}) {
           verify: idx < 3 ? true : "auto",
           concurrency
         });
+        // 自检：第一张 PNG 的判定原样记下来（成功失败都记），出问题不用再猜
+        if (!compressTask.diag && format === "png" && result) {
+          compressTask.diag = {
+            fmt: format, w: result.width, h: result.height, hasAlpha: result.hasAlpha,
+            decodeFailed: !!result.decodeFailed, jpegBytes: result.jpegBytes,
+            pngBytes: result.pngBytes, chose: result.outputFormat, before,
+            jpegSource: result.jpegSource || "", reason: result.ok ? "" : (result.reason || "")
+          };
+        }
         if (!result || !result.ok) {
           if (result && result.reason === "fast-mode-skip") compressTask.paths.fastSkip++;
           noteSkip(result && result.reason === "fast-mode-skip" ? "极速跳过" : (result && result.reason ? result.reason : "无收益"));
@@ -91817,13 +91827,6 @@ async function compressCachedImages(options = {}) {
         const cost = result.msWorker || result.ms || 0;
         if (bucket) compressTask.paths[bucket].push(cost);
         if (result.decodeFailed) compressTask.paths.decodeFail++;
-        if (!compressTask.diag && format === "png") {
-          compressTask.diag = {
-            fmt: format, w: result.width, h: result.height, hasAlpha: result.hasAlpha,
-            decodeFailed: !!result.decodeFailed, jpegBytes: result.jpegBytes,
-            pngBytes: result.pngBytes, chose: result.outputFormat
-          };
-        }
         compressTask.workerVersion = result.workerVersion || compressTask.workerVersion;
         if (result.verified) compressTask.paths.verified++;
         compressTask.paths.msTotal += cost;

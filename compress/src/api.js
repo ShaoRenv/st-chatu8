@@ -11,7 +11,7 @@
 import { sniffFormat, isAnimated, SUPPORTED_FORMATS, MIME_BY_FORMAT, imageDimensions } from './sniff.js';
 import { LEVELS, DEFAULT_LEVEL, normalizeLevel, CODEC_ID, PNG_TO_JPEG_LEVELS } from './codec.js';
 
-const VERSION = '1.2.1';
+const VERSION = '1.2.2';
 const DEFAULT_BASE_RELATIVE = 'scripts/extensions/third-party/st-chatu8/compress';
 const INIT_TIMEOUT_MS = 120000;
 const COMPRESS_TIMEOUT_MS = 300000;
@@ -518,8 +518,7 @@ async function compress(input, options) {
       flattened: !!(res && res.flattened),
       decodeFailed: !!(res && res.decodeFailed),
       workerVersion: (res && res.workerVersion) || "",
-      jpegBytes: res && res.jpegBytes !== undefined ? res.jpegBytes : null,
-      pngBytes: res && res.pngBytes !== undefined ? res.pngBytes : null,
+      jpegSource: (res && res.jpegSource) || "",
       fastMode: !!(res && res.fastMode) || fast,
       verified: !!(res && res.verified),
       poolSize: state.maxConcurrent > 0 ? Math.min(poolSize, state.maxConcurrent) : poolSize,

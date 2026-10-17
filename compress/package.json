@@ -1,6 +1,6 @@
 {
   "name": "st-chatu8-compress",
-  "version": "1.2.0",
+  "version": "1.2.2",
   "private": true,
   "type": "module",
   "description": "WASM/Web Worker image compression module for the st-chatu8 SillyTavern extension",

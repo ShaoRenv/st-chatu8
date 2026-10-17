@@ -154,6 +154,12 @@ export function hasTransparentPixels(rgba) {
   return false;
 }
 
+/** PNG→JPEG 转换档的质量（0~1，供浏览器兜底编码器使用）。 */
+export function jpegConversionQuality(level) {
+  const opts = PNG_TO_JPEG_LEVELS[normalizeLevel(level)] || PNG_TO_JPEG_LEVELS.balanced;
+  return Math.max(0.4, Math.min(1, (opts.quality || 88) / 100));
+}
+
 /** PNG→JPEG 转换专用编码器（与 JPEG 输入的档位表相互独立，互不影响）。 */
 export async function encodeJpegForConversion(imageData, level) {
   const opts = PNG_TO_JPEG_LEVELS[normalizeLevel(level)] || PNG_TO_JPEG_LEVELS.balanced;
