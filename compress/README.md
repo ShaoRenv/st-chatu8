@@ -81,4 +81,70 @@ PNG→JPEG 路径改成"先跑便宜的、够好就跳过贵的"：
 
 主线程：压缩 2048² PNG 期间页面心跳最大间隔 3.4 ms、longtask 0 次（对照组故意阻塞 300 ms 会被抓到）。
 `load()` 冷启动 50–72 ms；未点击按钮时 Worker 构造 0 次、wasm 请求 0 次。
-\n## 提速的正确性守卫（v1.1.1）\n\n跳过 oxipng 需要**同时**满足两个条件：\n\n1. JPEG 已压到原图 **40%** 以下（要赢它，无损重压缩得再省掉一大半）；\n2. 原 PNG **≥ 0.5 字节/像素**（" 稠密图\——PNG
+## 提速的正确性守卫（v1.1.1）
+
+跳过 oxipng 需要**同时**满足两个条件：
+
+1. JPEG 已压到原图 **40%** 以下（要赢它，无损重压缩得再省掉一大半）；
+2. 原 PNG **≥ 0.5 字节/像素**（"稠密图"——PNG 熵编码本就没优势、oxipng 通常只再省 10~30%）。
+
+反例（实测）：1024² 平滑渐变 PNG（0.096 B/px），JPEG 28,987 B 却输给 oxipng 的 19,608 B，
+所以低密度 PNG 一律照旧跑 oxipng 再比较。
+
+## v1.2.0：并行 + 校验下沉 + 免拷贝 + 极速模式
+
+### 新增选项（`compress(input, options)`）
+
+| 选项 | 取值 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `verify` | `'auto' \| true \| false` | `true` | `true`=一定校验；`'auto'`=**只在换格式时**校验；`false`=不校验 |
+| `fast` | bool | `false` | 极速模式：PNG 一律不跑 oxipng（见下） |
+| `concurrency` | number \| `'auto'` | `'auto'` | 并发上限；`'auto'` 由 `computeBaseSlots()` 决定 |
+
+`input` 可以是 `Blob` / `ArrayBuffer` / `Uint8Array`（后两者直接 transfer，省一次拷贝）。
+返回值新增 `bytes`（**输出字节本体，零拷贝，优先用它**）、`verified`、`fastMode`、`poolSize`、`dims`；
+`blob` 改为惰性 getter（不访问就不产生拷贝，兼容旧调用方）。
+新增失败 reason：`'verify-failed'`、`'fast-mode-skip'`。
+
+### 池策略（自适应 + 内存预算背压）
+
+```
+base   = clamp(1, hardwareConcurrency - 1, 4)      // 桌面 16 线程 → 4
+base   = 手机 ? min(base, 2) : base                 // 手机默认 2（大小核 / 发热 / 内存）
+budget = 手机 ? 96MB : 256MB
+cost   = 8 * width * height + inputBytes            // 尺寸从文件头解析，不解码
+准入    = running < 并发上限 && (在飞字节 + cost <= budget || 当前空闲)
+```
+
+- 尺寸解析（PNG IHDR / JPEG SOF / WebP VP8·VP8L·VP8X）在 `src/sniff.js` 的 `imageDimensions()`。
+- 单个 worker 初始化失败只缩小池，不影响其余；全部失败才返回 `codec-unavailable`。
+- 建池请求串行化，避免并发首次调用各自建一池。
+
+### 校验下沉
+
+输出解码校验（`createImageBitmap`）从**主线程**移到 **worker 内部**：主线程不再为每张图解码，
+既省掉 0.2~0.5s/张，也不再产生长任务。失败返回 `{ ok:false, reason:'verify-failed' }`，调用方按"跳过"处理。
+
+### 极速模式 `fast: true`
+
+| 输入 | 行为 |
+| --- | --- |
+| PNG 有透明像素（解码确认） | 不编码，`{ ok:false, reason:'fast-mode-skip' }`（原样保留） |
+| PNG 无透明像素 | 只跑 MozJPEG；**永不跑 oxipng** |
+| PNG 解码失败 | `fast-mode-skip`（保守） |
+| level = `lossless` | **不转 JPEG**（无损优先的承诺不能被极速模式推翻）；此时极速模式对 PNG 等于「原样保留」 |
+| JPEG / WebP | 与普通模式相同 |
+
+只影响**尚未压缩过**的图片；已带 `compress` 标记的一律跳过（避免二次画质损失）。
+
+### 实测并发扩展（本机 Ryzen 9 5900HX / 16 线程 / headless Chromium 143）
+
+4 张 700² PNG（每张单 worker 约 559 ms）：
+
+| 并发 | 总墙钟（3 次） | 实际并发峰值 | 相对串行 |
+| --- | --- | --- | --- |
+| 1（串行） | 2551 ms | 1 | 1.00× |
+| 2 | 1776 / 1758 / 2184 / 1387 ms | 2 / 2 / 2 | **1.44×** |
+| 4 | 958 / 826 / 1116 / 933 ms | 4 / 4 / 4 | **2.66×** |
+
+并发不改变输出字节（差分测试逐字节比对通过）。手机端受大小核与发热限制，2 路预期 1.4~1.7×。
