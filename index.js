@@ -91804,7 +91804,19 @@ async function compressCachedImages(options = {}) {
         await storeReadWrite({ id: img.uuid, data: outCopy.buffer });
         const back = await storeReadOnly(img.uuid);
         const backLen = back && back.data ? back.data.byteLength : 0;
-        if (!back || !back.data || backLen !== after) {
+        // 光比长度不够：缓冲被掏空/写坏时长度可能对得上、字节却是废的（之前丢图就是这么丢的）。
+        // 回读之后再用浏览器解一次，解不开就当写坏，立刻把原始字节写回去。
+        let backDecodable = true;
+        if (back && back.data && backLen === after && typeof createImageBitmap === "function") {
+          try {
+            const probe = await createImageBitmap(new Blob([back.data], { type: result.mime || mime }));
+            if (probe && typeof probe.close === "function") probe.close();
+          } catch (eBack) {
+            backDecodable = false;
+            console.error("[st-chatu8] 写回结果无法解码，准备还原:", img.uuid, eBack);
+          }
+        }
+        if (!back || !back.data || backLen !== after || !backDecodable) {
           try { await storeReadWrite({ id: img.uuid, data: view.byteOffset === 0 && view.byteLength === view.buffer.byteLength ? view.buffer : view.slice().buffer }); } catch (eRestore) { console.error("[st-chatu8] 写回失败且还原失败:", img.uuid, eRestore); }
           noteSkip("写回校验失败已还原");
           return;
