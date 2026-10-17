@@ -3065,8 +3065,7 @@ var init_config = __esm({
       convertToJpegStorage: "false",
       compressBoostStorage: "false",
       compressBoostLevel: "balanced",
-      compressBoostFast: "false",
-      compressBoostConcurrency: "auto",
+      compressBoostLevel: "balanced",
       jiuguanStorage: {},
       banana: {
         apiKey: "123456",
@@ -91389,20 +91388,6 @@ function resolveCompressLevel() {
   const raw = String((extension_settings[extensionName] || {}).compressBoostLevel || "balanced");
   return COMPRESS_LEVELS.indexOf(raw) >= 0 ? raw : "balanced";
 }
-// 极速模式（v1.2.0）：PNG 一律不跑 oxipng，只用 MozJPEG；透明 PNG 直接原样保留。
-function resolveCompressFast() {
-  return String((extension_settings[extensionName] || {}).compressBoostFast) === "true";
-}
-// 压缩并发（v1.2.0）："auto" = 按设备自动（手机 2 / 桌面最多 4）；也可显式 1~4。
-var COMPRESS_CONCURRENCY_VALUES = ["auto", "1", "2", "3", "4"];
-function resolveCompressConcurrency() {
-  const raw = String((extension_settings[extensionName] || {}).compressBoostConcurrency || "auto");
-  return COMPRESS_CONCURRENCY_VALUES.indexOf(raw) >= 0 ? raw : "auto";
-}
-function compressConcurrencyOption() {
-  const raw = resolveCompressConcurrency();
-  return raw === "auto" ? "auto" : Number(raw);
-}
 var compressProgressToast = null;
 function getCompressTask() {
   if (!compressTask) return null;
@@ -91489,23 +91474,6 @@ function buildCompressSummaryText(task, skipReasons) {
   if (reasons.length > 0) {
     lines.push("跳过原因：" + reasons.map(function(key) { return key + " " + skipReasons[key]; }).join(" · "));
   }
-  // v1.2.0：按编码路径统计，方便一眼看出慢在哪（oxipng 通常比 MozJPEG 慢一个数量级）
-  if (task.paths) {
-    const segs = [];
-    const stat = function(key, label) {
-      const arr = task.paths[key] || [];
-      if (arr.length === 0) return;
-      const avg = Math.round(arr.reduce(function(a, b) { return a + b; }, 0) / arr.length);
-      segs.push(label + " " + arr.length + " 张(均 " + avg + " ms)");
-    };
-    stat("oxipng", "oxipng");
-    stat("mozjpeg", "MozJPEG");
-    stat("libwebp", "libwebp");
-    if (task.paths.fastSkip) segs.push("极速跳过 " + task.paths.fastSkip + " 张");
-    if (task.paths.verified) segs.push("校验 " + task.paths.verified + " 张");
-    if (task.paths.msCount) segs.push("平均 " + Math.round(task.paths.msTotal / task.paths.msCount) + " ms/张");
-    if (segs.length > 0) lines.push("路径：" + segs.join(" · "));
-  }
   return lines.join("\n");
 }
 
@@ -91536,8 +91504,17 @@ function sniffCachedImageFormat(view) {
   if (view[0] === 71 && view[1] === 73 && view[2] === 70) return "GIF 动图";
   return "非图片格式";
 }
-// v1.2.0：结果解码校验已下沉到 compress worker（见 compress/src/worker.js 的 canDecodeOutput），
-// 主线程不再解码，避免批量压缩时卡 UI。verify 策略见 compress/README.md。
+async function canDecodeCachedImage(blob) {
+  if (typeof createImageBitmap !== "function") return true;
+  try {
+    const bitmap = await createImageBitmap(blob);
+    if (bitmap && typeof bitmap.close === "function") bitmap.close();
+    return true;
+  } catch (error) {
+    console.warn("[st-chatu8] 压缩结果无法解码，已丢弃该结果:", error);
+    return false;
+  }
+}
 
 // ===== 压缩加强：主流程 =====
 var COMPRESS_MIN_BYTES = 64 * 1024;
@@ -91650,7 +91627,7 @@ async function compressCachedImages(options = {}) {
         updateCompressToast("正在加载压缩组件（首次使用需要加载本地编码器）...");
       }
       compressApi = await loadCompressModule();
-      if (typeof compressApi.load === "function") await compressApi.load({ concurrency: compressConcurrencyOption() });
+      if (typeof compressApi.load === "function") await compressApi.load();
     } catch (error) {
       console.error("[st-chatu8] 压缩组件加载失败:", error);
       clearCompressToast();
@@ -91660,112 +91637,66 @@ async function compressCachedImages(options = {}) {
     }
     compressTask.started = true;
     recalcStartedAt = Date.now();
-    // ===== v1.2.0：多路流水线（真正的并发上限由 compress 模块的内存预算背压控制）=====
-    const fastMode = resolveCompressFast();
-    const concurrency = compressConcurrencyOption();
-    const lanes = concurrency === "auto"
-      ? (typeof compressApi.computeBaseSlots === "function" ? compressApi.computeBaseSlots() : 2)
-      : concurrency;
-    compressTask.paths = { oxipng: [], mozjpeg: [], libwebp: [], fastSkip: 0, verified: 0, msTotal: 0, msCount: 0 };
-    compressTask.processed = 0;
-    // 只做内存里就能判断的廉价跳过（不读库）
-    const cheapSkipReason = function(img) {
-      const entry = indexByUuid[img.uuid];
-      const mark = entry && entry.compress;
-      if (mark && mark.v === 1 && mark.level === level) return "已压缩";
-      if (img.isVideo) return "视频";
-      if (img.source === "server" || img.path) return "酒馆存储";
-      if (typeof img.size === "number" && img.size > 0 && img.size < COMPRESS_MIN_BYTES) return "小于 64KB";
-      return null;
-    };
-    // 预读窗口：提前把接下来要处理的图片字节从 IndexedDB 读出来，和编码重叠
-    let workCursor = 0;
-    let readCursor = 0;
-    const prefetch = new Map();
-    const primePrefetch = function() {
-      while (readCursor < targets.length && prefetch.size < lanes) {
-        const idx = readCursor++;
-        if (cheapSkipReason(targets[idx])) continue;
-        prefetch.set(idx, storeReadOnly(targets[idx].uuid).catch(function(err) { return { __error: err }; }));
-      }
-    };
-    const takeRow = function(idx) {
-      const pending = prefetch.get(idx);
-      if (pending) prefetch.delete(idx);
-      primePrefetch();
-      return pending || storeReadOnly(targets[idx].uuid).catch(function(err) { return { __error: err }; });
-    };
-    const processOne = async function(idx) {
-      const img = targets[idx];
-      const early = cheapSkipReason(img);
-      if (early) {
-        noteSkip(early);
-        return;
-      }
+    for (let i = 0; i < targets.length; i++) {
+      if (compressTask.cancelled) break;
+      const img = targets[i];
       const progressText = "已压缩 " + compressTask.done + " 张 · 节省 " + formatMB(compressTask.savedBytes) + " · 跳过 " + compressTask.skipped + " · 失败 " + compressTask.failed;
-      compressTask.lastProgress = { phase: "compress", current: compressTask.processed, total: targets.length, detail: progressText };
+      compressTask.lastProgress = { phase: "compress", current: i, total: targets.length, detail: progressText };
       if (document.getElementById("image-cache-recalc-progress")) {
         renderRecalcProgress(compressTask.lastProgress);
       } else {
-        updateCompressToast("正在压缩 " + Math.min(compressTask.processed + 1, targets.length) + " / " + targets.length + " · " + progressText);
+        updateCompressToast("正在压缩 " + (i + 1) + " / " + targets.length + " · " + progressText);
       }
       try {
         const entry = indexByUuid[img.uuid];
-        const row = await takeRow(idx);
-        if (!row || row.__error || !row.data) {
-          if (row && row.__error) console.warn("[st-chatu8] 读取缓存字节失败:", img.uuid, row.__error);
+        const mark = entry && entry.compress;
+        if (mark && mark.v === 1 && mark.level === level) {
+          noteSkip("已压缩");
+          continue;
+        }
+        const row = await storeReadOnly(img.uuid);
+        if (!row || !row.data) {
           noteSkip("无字节");
-          return;
+          continue;
         }
         const view = row.data instanceof Uint8Array ? row.data : new Uint8Array(row.data);
         const before = view.byteLength;
         if (before === 0) {
           noteSkip("0 字节");
-          return;
+          continue;
         }
         if (typeof img.size === "number" && img.size > 0 && Math.abs(img.size - before) > 1) {
           noteSkip("记录已变化");
-          return;
+          continue;
         }
         if (before < COMPRESS_MIN_BYTES) {
           noteSkip("小于 64KB");
-          return;
+          continue;
         }
         const format = sniffCachedImageFormat(view);
         if (format !== "png" && format !== "jpeg" && format !== "webp") {
           noteSkip(format);
-          return;
+          continue;
         }
         const mime = format === "jpeg" ? "image/jpeg" : format === "webp" ? "image/webp" : "image/png";
         compressTask.attemptedBytes += before;
-        // 字节直传（可 transfer，省掉一次 Blob 拷贝）；校验已下沉到 worker：
-        // 批量前 3 张全校验，其余只在换格式时校验，主线程不再做解码校验。
-        const result = await compressApi.compress(view, {
-          level,
-          allowFormatChange: true,
-          fast: fastMode,
-          verify: idx < 3 ? true : "auto",
-          concurrency
-        });
+        const result = await compressApi.compress(new Blob([view], { type: mime }), { level, allowFormatChange: true });
         if (!result || !result.ok) {
-          if (result && result.reason === "fast-mode-skip") compressTask.paths.fastSkip++;
-          noteSkip(result && result.reason === "fast-mode-skip" ? "极速跳过" : (result && result.reason ? result.reason : "无收益"));
-          return;
+          noteSkip(result && result.reason ? result.reason : "无收益");
+          continue;
         }
-        const after = result.after;
-        if (!after || after >= before * COMPRESS_MIN_GAIN) {
+        const after = await result.blob.arrayBuffer();
+        if (!after || after.byteLength === 0 || after.byteLength >= before * COMPRESS_MIN_GAIN) {
           noteSkip("无收益");
-          return;
+          continue;
         }
-        // 直接用 worker transfer 回来的字节写库（不再 blob→arrayBuffer 拷贝）
-        const outBuffer = result.bytes ? result.bytes.buffer : null;
-        if (!outBuffer || outBuffer.byteLength !== after) {
-          noteSkip("无收益");
-          return;
+        if (!await canDecodeCachedImage(result.blob)) {
+          noteSkip("解码校验失败");
+          continue;
         }
-        await storeReadWrite({ id: img.uuid, data: outBuffer });
+        await storeReadWrite({ id: img.uuid, data: after });
         if (entry) {
-          entry.size = after;
+          entry.size = after.byteLength;
           entry.compress = {
             v: 1,
             level,
@@ -91776,29 +91707,13 @@ async function compressCachedImages(options = {}) {
           };
           metadataDirty = true;
         }
-        compressTask.savedBytes += before - after;
+        compressTask.savedBytes += before - after.byteLength;
         compressTask.done++;
-        const bucket = result.codec === "oxipng" ? "oxipng" : result.codec === "mozjpeg" ? "mozjpeg" : result.codec === "libwebp" ? "libwebp" : null;
-        const cost = result.msWorker || result.ms || 0;
-        if (bucket) compressTask.paths[bucket].push(cost);
-        if (result.verified) compressTask.paths.verified++;
-        compressTask.paths.msTotal += cost;
-        compressTask.paths.msCount++;
       } catch (itemError) {
         console.error("[st-chatu8] 压缩失败:", img.uuid, itemError);
         compressTask.failed++;
       }
-    };
-    const laneLoop = async function() {
-      while (!compressTask.cancelled) {
-        const idx = workCursor++;
-        if (idx >= targets.length) return;
-        await processOne(idx);
-        compressTask.processed++;
-      }
-    };
-    primePrefetch();
-    await Promise.all(Array.from({ length: lanes }, laneLoop));
+    }
   } finally {
     if (metadataDirty) {
       try {
@@ -91849,72 +91764,16 @@ async function compressGeneratedImage(input) {
     if (typeof api.load === "function") await api.load();
     const blob = await imageInputToBlob(input);
     if (!blob || !blob.size) return input;
-    const result = await api.compress(blob, {
-      level: resolveCompressLevel(),
-      allowFormatChange: true,
-      fast: resolveCompressFast(),
-      verify: true,
-      concurrency: compressConcurrencyOption()
-    });
-    if (!result || !result.ok || !result.after) return input;
-    if (result.after >= blob.size * COMPRESS_MIN_GAIN) return input;
+    const result = await api.compress(blob, { level: resolveCompressLevel(), allowFormatChange: true });
+    if (!result || !result.ok || !result.blob) return input;
+    if (result.blob.size >= blob.size * COMPRESS_MIN_GAIN) return input;
+    if (!await canDecodeCachedImage(result.blob)) return input;
     return await blobToBase64(result.blob);
   } catch (error) {
     console.warn("[st-chatu8] 生图时「压缩加强」失败，保留原图:", error);
     return input;
   }
 }
-// ===== 压缩加强：一次性并发基准（诊断用，不进 UI）=====
-// 用法（F12 控制台）：await window.stChatu8CompressBench({ count: 3 })
-// 取缓存里最大的一张图，分别用 1/2/3/4 路各跑 count 次，报墙钟时间与每张耗时，用来定手机上的默认并发。
-window.stChatu8CompressBench = async function(options) {
-  const opt = options || {};
-  const count = Math.max(1, Math.min(Number(opt.count) || 3, 8));
-  try {
-    const api = await loadCompressModule();
-    if (!api || typeof api.compress !== "function") return { ok: false, reason: "no-api" };
-    if (typeof api.load === "function") await api.load();
-    const targets = await collectCacheTargets();
-    const usable = targets.filter(function(img) { return !img.isVideo && img.source !== "server" && !img.path; });
-    if (usable.length === 0) return { ok: false, reason: "no-sample" };
-    usable.sort(function(a, b) { return (b.size || 0) - (a.size || 0); });
-    const sample = opt.uuid ? (usable.filter(function(i) { return i.uuid === opt.uuid; })[0] || usable[0]) : usable[0];
-    const row = await storeReadOnly(sample.uuid);
-    if (!row || !row.data) return { ok: false, reason: "no-bytes" };
-    const view = row.data instanceof Uint8Array ? row.data : new Uint8Array(row.data);
-    const level = resolveCompressLevel();
-    const fast = resolveCompressFast();
-    const runOne = async function(pool) {
-      const t0 = performance.now();
-      let ok = 0;
-      let bytes = 0;
-      for (let i = 0; i < count; i++) {
-        const r = await api.compress(view.slice(), { level, allowFormatChange: true, fast, verify: false, concurrency: pool });
-        if (r && r.ok) { ok++; bytes += r.after; }
-      }
-      const total = performance.now() - t0;
-      return { pool, count, ok, totalMs: Math.round(total), msPerImage: Math.round(total / count), outputBytes: ok ? Math.round(bytes / ok) : null };
-    };
-    // 预热：先把池建满、wasm 全部就绪，避免把创建成本算进 pool=4
-    await api.compress(view.slice(), { level, allowFormatChange: true, fast, verify: false, concurrency: 4 });
-    const results = [];
-    for (const pool of [1, 2, 3, 4]) results.push(await runOne(pool));
-    const best = results.slice().sort(function(a, b) { return a.totalMs - b.totalMs; })[0];
-    const out = {
-      ok: true,
-      sample: { uuid: sample.uuid, bytes: view.byteLength, level, fast },
-      hardwareConcurrency: (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || null,
-      mobile: !!(api.isMobile && api.isMobile()),
-      results,
-      best
-    };
-    console.log("[st-chatu8] 压缩并发基准", out);
-    return out;
-  } catch (error) {
-    console.warn("[st-chatu8] 并发基准失败:", error);
-    return { ok: false, reason: String((error && error.message) || error) };
-  }
-};
 function initImageCache(settingsModal) {
   settingsModal.find('a[data-tab="image-cache"]').on("click", async () => {
     await loadImageCache();
@@ -113329,24 +113188,6 @@ async function initUI({ check_update: check_update2 }) {
     settings2.compressBoostLevel = String($(this).val() || "balanced");
     saveSettingsDebounced71();
     toastr.info("压缩强度已设为：" + (COMPRESS_LEVEL_LABELS[resolveCompressLevel()] || resolveCompressLevel()) + "（下次压缩生效）", "压缩加强");
-  });
-  settingsModal.find("#compressBoostFast").prop("checked", resolveCompressFast());
-  settingsModal.find("#compressBoostFast").on("change", function() {
-    const isEnabled = $(this).prop("checked");
-    settings2.compressBoostFast = isEnabled.toString();
-    saveSettingsDebounced71();
-    if (isEnabled) {
-      toastr.info("极速模式已开启：PNG 不再做无损重压缩，只跑 MozJPEG；透明 PNG 原样保留（更快，但体积可能更大）", "压缩加强");
-    } else {
-      toastr.info("极速模式已关闭：PNG 会做无损重压缩（更小、更慢）", "压缩加强");
-    }
-  });
-  settingsModal.find("#compressBoostConcurrency").val(resolveCompressConcurrency());
-  settingsModal.find("#compressBoostConcurrency").on("change", function() {
-    settings2.compressBoostConcurrency = String($(this).val() || "auto");
-    saveSettingsDebounced71();
-    const label = resolveCompressConcurrency() === "auto" ? "自动" : resolveCompressConcurrency() + " 路";
-    toastr.info("压缩并发已设为：" + label + "（下次压缩生效）", "压缩加强");
   });
   settingsModal.find("#autoLLMImageGen").on("change", async function() {
     const isEnabled = $(this).prop("checked");

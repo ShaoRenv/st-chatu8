@@ -1,4 +1,4 @@
-/*! st-chatu8-compress v1.2.0 | WASM 图像压缩模块（PNG/JPEG/WebP）
+/*! st-chatu8-compress v1.0.0 | WASM 图像压缩模块（PNG/JPEG/WebP）
  * 本地计算，不联网。第三方编码器许可见 THIRD-PARTY-LICENSES.md
  * codecs: oxipng (MIT) / MozJPEG (IJG+BSD-style) / libwebp (BSD-3-Clause)
  */
@@ -4793,7 +4793,7 @@
   }
 
   // src/worker.js
-  var VERSION = "1.2.0";
+  var VERSION = "1.1.0";
   var MSG_TAG = 1;
   var PNG_SKIP_OPTIMISE_RATIO = 0.4;
   var PNG_SKIP_MIN_BYTES_PER_PIXEL = 0.5;
@@ -4842,25 +4842,12 @@
       if (typeof bitmap.close === "function") bitmap.close();
     }
   }
-  async function canDecodeOutput(u8, mime) {
-    if (typeof createImageBitmap !== "function") return true;
-    try {
-      const blob = new Blob([u8], { type: mime });
-      const bitmap = await createImageBitmap(blob);
-      if (bitmap && typeof bitmap.close === "function") bitmap.close();
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
   async function runCompress(msg) {
     const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
     const bytes = msg.bytes instanceof ArrayBuffer ? new Uint8Array(msg.bytes) : new Uint8Array(0);
     const before = bytes.byteLength;
     const level = normalizeLevel(msg.level);
     const format = sniffFormat(bytes);
-    const fast = msg.fast === true;
-    const verifyOpt = msg.verify === void 0 ? true : msg.verify;
     if (SUPPORTED_FORMATS.indexOf(format) < 0) {
       return { ok: false, reason: "unsupported", message: "format=" + format, before };
     }
@@ -4872,7 +4859,7 @@
       return { ok: false, reason: "codec-unavailable", message: (errors() || {})[format] || format + " codec init failed", before };
     }
     const allowFormatChange = msg.allowFormatChange === true;
-    let out = null;
+    let out;
     let width = 0;
     let height = 0;
     let outputFormat = format;
@@ -4880,51 +4867,12 @@
     let pngBytes = null;
     let jpegBytes = null;
     let skippedPngOptimise = false;
-    const failMeta = () => ({
-      codec: CODEC_ID[outputFormat],
-      mime: MIME_BY_FORMAT[outputFormat],
-      outputFormat,
-      hasAlpha,
-      pngBytes,
-      jpegBytes,
-      before,
-      after: before,
-      level,
-      width,
-      height,
-      format,
-      skippedPngOptimise,
-      fastMode: fast,
-      verified: false
-    });
     if (format === "png") {
+      const wantConversion = allowFormatChange && level !== "lossless";
       const info = pngHeaderInfo(bytes);
       const headerNoAlpha = !!(info && !info.hasAlphaChannel);
-      const wantConversion = allowFormatChange && level !== "lossless";
-      if (!wantConversion) {
-        if (fast) {
-          hasAlpha = headerNoAlpha ? false : null;
-          return Object.assign({ ok: false, reason: "fast-mode-skip", message: "fast mode: png kept as-is (format change disabled)" }, failMeta());
-        }
-        const pngOut = await optimisePngBytes(bytes, level);
-        pngBytes = pngOut.byteLength;
-        out = pngOut;
-        if (headerNoAlpha) {
-          hasAlpha = false;
-        } else if (level !== "lossless") {
-          try {
-            const imageData = await decodeToImageData(bytes, "png");
-            width = imageData.width;
-            height = imageData.height;
-            hasAlpha = hasTransparentPixels(imageData);
-          } catch (_) {
-            hasAlpha = null;
-          }
-        } else {
-          hasAlpha = null;
-        }
-      } else {
-        let imageData = null;
+      let imageData = null;
+      if (wantConversion) {
         try {
           imageData = await decodeToImageData(bytes, "png");
           width = imageData.width;
@@ -4939,11 +4887,7 @@
           jpegBytes = jpegOut.byteLength;
           const pixels = width * height;
           const densePng = pixels > 0 && before / pixels >= PNG_SKIP_MIN_BYTES_PER_PIXEL;
-          if (fast) {
-            out = jpegOut;
-            outputFormat = "jpeg";
-            skippedPngOptimise = true;
-          } else if (densePng && jpegOut.byteLength <= before * PNG_SKIP_OPTIMISE_RATIO) {
+          if (densePng && jpegOut.byteLength <= before * PNG_SKIP_OPTIMISE_RATIO) {
             out = jpegOut;
             outputFormat = "jpeg";
             skippedPngOptimise = true;
@@ -4957,16 +4901,28 @@
               out = pngOut;
             }
           }
-        } else if (fast) {
-          return Object.assign({
-            ok: false,
-            reason: "fast-mode-skip",
-            message: imageData ? "fast mode: transparent png kept as-is" : "fast mode: png decode failed"
-          }, failMeta());
         } else {
           const pngOut = await optimisePngBytes(bytes, level);
           pngBytes = pngOut.byteLength;
           out = pngOut;
+        }
+      } else {
+        const pngOut = await optimisePngBytes(bytes, level);
+        pngBytes = pngOut.byteLength;
+        out = pngOut;
+        if (headerNoAlpha) {
+          hasAlpha = false;
+        } else if (level !== "lossless") {
+          try {
+            imageData = await decodeToImageData(bytes, "png");
+            width = imageData.width;
+            height = imageData.height;
+            hasAlpha = hasTransparentPixels(imageData);
+          } catch (_) {
+            hasAlpha = null;
+          }
+        } else {
+          hasAlpha = null;
         }
       }
     } else {
@@ -4991,23 +4947,13 @@
       width,
       height,
       format,
-      skippedPngOptimise,
-      fastMode: fast
+      skippedPngOptimise
     };
     if (after >= before) {
       return Object.assign({ ok: false, reason: "not-smaller" }, meta);
     }
-    let verified = false;
-    const shouldVerify = verifyOpt === true || verifyOpt === "auto" && outputFormat !== format;
-    if (shouldVerify) {
-      const okOutput = await canDecodeOutput(out, MIME_BY_FORMAT[outputFormat]);
-      if (!okOutput) {
-        return Object.assign({ ok: false, reason: "verify-failed", message: "output could not be decoded" }, meta);
-      }
-      verified = true;
-    }
     const buffer = out.byteOffset === 0 && out.byteLength === out.buffer.byteLength ? out.buffer : out.slice().buffer;
-    return Object.assign({ ok: true, __transfer: [buffer], buffer, verified, fastMode: fast }, meta);
+    return Object.assign({ ok: true, __transfer: [buffer], buffer }, meta);
   }
   var queue = { chain: Promise.resolve() };
   function handle(message) {
