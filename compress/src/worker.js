@@ -5,7 +5,7 @@
 import { sniffFormat, isAnimated, SUPPORTED_FORMATS, MIME_BY_FORMAT, pngHeaderInfo } from './sniff.js';
 import { initCodecs, status, errors, optimisePngBytes, encodeImageData, encodeJpegForConversion, hasTransparentPixels, normalizeLevel, CODEC_ID, LEVELS, DEFAULT_LEVEL, WASM_FILES } from './codec.js';
 
-const VERSION = '1.2.0';
+const VERSION = '1.2.1';
 const MSG_TAG = 1;
 
 // PNG→JPEG 提速阈值（两个条件都满足才跳过 oxipng，保守）：
@@ -279,7 +279,7 @@ async function runCompress(msg) {
     fastMode: fast,
   };
   if (after >= before) {
-    return Object.assign({ ok: false, reason: 'not-smaller' }, meta);
+    return Object.assign({ ok: false, reason: 'not-smaller', workerVersion: VERSION }, meta);
   }
 
   // 校验策略：true=一定校验；'auto'=只在换格式时校验；false=不校验
@@ -294,7 +294,7 @@ async function runCompress(msg) {
   }
 
   const buffer = out.byteOffset === 0 && out.byteLength === out.buffer.byteLength ? out.buffer : out.slice().buffer;
-  return Object.assign({ ok: true, __transfer: [buffer], buffer, verified, flattened, decodeFailed, fastMode: fast }, meta);
+  return Object.assign({ ok: true, __transfer: [buffer], buffer, verified, flattened, decodeFailed, fastMode: fast, workerVersion: VERSION }, meta);
 }
 
 const queue = { chain: Promise.resolve() };

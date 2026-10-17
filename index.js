@@ -91491,6 +91491,16 @@ function buildCompressSummaryText(task, skipReasons) {
     "跳过 " + task.skipped + " 张（视频 " + (task.videoSkipped || 0) + " · 酒馆存储 " + (task.serverSkipped || 0) + "）｜失败 " + task.failed + " 张",
     "用时 " + elapsed + "s"
   ];
+  // 自检：把第一张图的实际判定打出来，省得再靠猜
+  if (task.diag) {
+    const d = task.diag;
+    lines.push("诊断(首张): " + d.fmt + " " + (d.w || "?") + "x" + (d.h || "?")
+      + " · alpha=" + String(d.hasAlpha)
+      + " · 解码=" + (d.decodeFailed ? "失败" : "成功")
+      + " · JPEG=" + (d.jpegBytes == null ? "未算" : d.jpegBytes + "B")
+      + " · PNG=" + (d.pngBytes == null ? "未算" : d.pngBytes + "B")
+      + " · 采用=" + (d.chose || "?"));
+  }
   const reasons = Object.keys(skipReasons || {}).filter(function(key) { return key !== "视频" && key !== "酒馆存储"; });
   if (reasons.length > 0) {
     lines.push("跳过原因：" + reasons.map(function(key) { return key + " " + skipReasons[key]; }).join(" · "));
@@ -91510,7 +91520,7 @@ function buildCompressSummaryText(task, skipReasons) {
     if (task.paths.decodeFail) segs.push("解码失败 " + task.paths.decodeFail + " 张");
     if (task.paths.verified) segs.push("校验 " + task.paths.verified + " 张");
     if (task.paths.msCount) segs.push("平均 " + Math.round(task.paths.msTotal / task.paths.msCount) + " ms/张");
-    if (task.moduleVersion) segs.push("模块 v" + task.moduleVersion);
+    if (task.workerVersion) segs.push("worker v" + task.workerVersion);
     if (segs.length > 0) lines.push("路径：" + segs.join(" · "));
   }
   return lines.join("\n");
@@ -91807,6 +91817,14 @@ async function compressCachedImages(options = {}) {
         const cost = result.msWorker || result.ms || 0;
         if (bucket) compressTask.paths[bucket].push(cost);
         if (result.decodeFailed) compressTask.paths.decodeFail++;
+        if (!compressTask.diag && format === "png") {
+          compressTask.diag = {
+            fmt: format, w: result.width, h: result.height, hasAlpha: result.hasAlpha,
+            decodeFailed: !!result.decodeFailed, jpegBytes: result.jpegBytes,
+            pngBytes: result.pngBytes, chose: result.outputFormat
+          };
+        }
+        compressTask.workerVersion = result.workerVersion || compressTask.workerVersion;
         if (result.verified) compressTask.paths.verified++;
         compressTask.paths.msTotal += cost;
         compressTask.paths.msCount++;

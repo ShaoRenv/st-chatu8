@@ -4793,7 +4793,7 @@
   }
 
   // src/worker.js
-  var VERSION = "1.2.0";
+  var VERSION = "1.2.1";
   var MSG_TAG = 1;
   var PNG_SKIP_OPTIMISE_RATIO = 0.4;
   var PNG_SKIP_MIN_BYTES_PER_PIXEL = 0.5;
@@ -5028,7 +5028,7 @@
       fastMode: fast
     };
     if (after >= before) {
-      return Object.assign({ ok: false, reason: "not-smaller" }, meta);
+      return Object.assign({ ok: false, reason: "not-smaller", workerVersion: VERSION }, meta);
     }
     let verified = false;
     const shouldVerify = verifyOpt === true || verifyOpt === "auto" && outputFormat !== format;
@@ -5040,7 +5040,7 @@
       verified = true;
     }
     const buffer = out.byteOffset === 0 && out.byteLength === out.buffer.byteLength ? out.buffer : out.slice().buffer;
-    return Object.assign({ ok: true, __transfer: [buffer], buffer, verified, flattened, decodeFailed, fastMode: fast }, meta);
+    return Object.assign({ ok: true, __transfer: [buffer], buffer, verified, flattened, decodeFailed, fastMode: fast, workerVersion: VERSION }, meta);
   }
   var queue = { chain: Promise.resolve() };
   function handle(message) {

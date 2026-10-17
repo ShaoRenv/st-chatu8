@@ -149,7 +149,7 @@
   }
 
   // src/api.js
-  var VERSION = "1.2.0";
+  var VERSION = "1.2.1";
   var DEFAULT_BASE_RELATIVE = "scripts/extensions/third-party/st-chatu8/compress";
   var INIT_TIMEOUT_MS = 12e4;
   var COMPRESS_TIMEOUT_MS = 3e5;
@@ -634,6 +634,9 @@
         skippedPngOptimise: !!(res && res.skippedPngOptimise),
         flattened: !!(res && res.flattened),
         decodeFailed: !!(res && res.decodeFailed),
+        workerVersion: res && res.workerVersion || "",
+        jpegBytes: res && res.jpegBytes !== void 0 ? res.jpegBytes : null,
+        pngBytes: res && res.pngBytes !== void 0 ? res.pngBytes : null,
         fastMode: !!(res && res.fastMode) || fast,
         verified: !!(res && res.verified),
         poolSize: state.maxConcurrent > 0 ? Math.min(poolSize, state.maxConcurrent) : poolSize,
