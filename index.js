@@ -91510,6 +91510,7 @@ function buildCompressSummaryText(task, skipReasons) {
     if (task.paths.decodeFail) segs.push("解码失败 " + task.paths.decodeFail + " 张");
     if (task.paths.verified) segs.push("校验 " + task.paths.verified + " 张");
     if (task.paths.msCount) segs.push("平均 " + Math.round(task.paths.msTotal / task.paths.msCount) + " ms/张");
+    if (task.moduleVersion) segs.push("模块 v" + task.moduleVersion);
     if (segs.length > 0) lines.push("路径：" + segs.join(" · "));
   }
   return lines.join("\n");
@@ -91656,6 +91657,7 @@ async function compressCachedImages(options = {}) {
         updateCompressToast("正在加载压缩组件（首次使用需要加载本地编码器）...");
       }
       compressApi = await loadCompressModule();
+      compressTask.moduleVersion = (compressApi && compressApi.version) || "";
       if (typeof compressApi.load === "function") await compressApi.load({ concurrency: compressConcurrencyOption() });
     } catch (error) {
       console.error("[st-chatu8] 压缩组件加载失败:", error);
