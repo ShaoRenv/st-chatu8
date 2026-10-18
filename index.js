@@ -2319,7 +2319,11 @@ var init_config = __esm({
     init_themePresets();
     init_defaultToolCallConfig();
     extensionName = "st-chatu8";
-    extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
+    // 目录名交给顶层的 __resolveExtensionFolder() 探测（酒馆用仓库名当目录名，
+    // 写死 st-chatu8 会让从 GitHub 装下来的副本取不到 jszip.min.js 等相对资源）
+    extensionFolderPath = (typeof window !== "undefined" && window.__stChatu8Folder)
+      ? window.__stChatu8Folder
+      : `scripts/extensions/third-party/${extensionName}`;
     EventType = {
       GENERATE_IMAGE_REQUEST: "generate-image-request",
       GENERATE_IMAGE_RESPONSE: "generate-image-response"
@@ -80430,7 +80434,7 @@ function initAiAssistant(modal) {
       return;
     }
     const chatBody = dom.chatBody;
-    const icon = '<img src="/scripts/extensions/third-party/st-chatu8/html/settings/\u667A\u7ED8\u59EC\u5934\u50CF.png" alt="\u667A\u7ED8\u59EC" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%; image-rendering: -webkit-optimize-contrast; image-rendering: crisp-edges;">';
+    const icon = '<img src="/' + extensionFolderPath + '/html/settings/\u667A\u7ED8\u59EC\u5934\u50CF.png" alt="\u667A\u7ED8\u59EC" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%; image-rendering: -webkit-optimize-contrast; image-rendering: crisp-edges;">';
     const messageHtml = `
             <div class="st-chatu8-ai-msg system-msg">
                 <div class="msg-avatar">${icon}</div>
@@ -114119,6 +114123,88 @@ eventSource47.on(event_types7.STREAM_TOKEN_RECEIVED, (text) => {
   }
 });
 
+// —— 扩展目录自适应 ——
+// 酒馆安装扩展时用「仓库名」当目录名：https://github.com/ShaoRenv/st-chatu8.private
+// 会被落到 extensions/third-party/st-chatu8.private，而原作者的仓库名字就叫 st-chatu8。
+// 这里以前把目录写死成 st-chatu8，于是从 GitHub 装下来的副本取 jszip.min.js、crypto-js、
+// msgpack、compress/ 这些相对资源全部 404，报「Failed to fetch JSZip source: 404 Not Found」，
+// 整个扩展加载失败——这就是"只能手动覆盖，酒馆里安装/更新都不行"的原因。
+// 现在用本仓库独有的 compress/checksums.json 反查真实目录（原作者的版本没有 compress 目录，
+// 不会误认），只有一次 fetch 的开销。
+async function __stChatu8ResolveFolder() {
+  var BASE = "scripts/extensions/third-party/";
+  var found = [];
+  var push = function (name) {
+    if (!name) return;
+    var clean = String(name).replace(/^\/+|\/+$/g, "");
+    if (clean && found.indexOf(clean) < 0) found.push(clean);
+  };
+  // ① 页面里真的加载过的 .../third-party/<目录>/index.js
+  try {
+    var entries = performance.getEntriesByType("resource");
+    for (var i = 0; i < entries.length; i++) {
+      var full = String(entries[i].name || "");
+      var at = full.lastIndexOf("/third-party/");
+      if (at < 0) continue;
+      var rest = full.slice(at + 13);
+      var slash = rest.indexOf("/");
+      if (slash > 0 && rest.slice(slash + 1) === "index.js") push(rest.slice(0, slash));
+    }
+  } catch (_) {}
+  // ② 常见目录名（仓库名 / 手动解压出来的目录名）
+  ["st-chatu8", "st-chatu8.private", "st-chatu8-private", "st-chatu8-main", "st-chatu8-master"].forEach(push);
+  // ③ 服务端枚举：被改成别的名字的目录也认
+  try {
+    var tokenRes = await fetch("/csrf-token", { cache: "no-cache" });
+    var tokenJson = await tokenRes.json();
+    var listRes = await fetch("/api/extensions/discover", { headers: { "X-CSRF-Token": tokenJson.token } });
+    if (listRes.ok) {
+      var list = await listRes.json();
+      for (var j = 0; j < (list || []).length; j++) {
+        var item = list[j];
+        if (item && (item.type === "local" || item.type === "global")) push(item.name);
+      }
+    }
+  } catch (_) {}
+  for (var k = 0; k < found.length; k++) {
+    try {
+      var probe = await fetch(BASE + found[k] + "/compress/checksums.json", { cache: "no-cache" });
+      if (probe.ok) return BASE + found[k];
+    } catch (_) {}
+  }
+  return BASE + "st-chatu8";
+}
+try {
+  window.__stChatu8Folder = await __stChatu8ResolveFolder();
+  console.log("[st-chatu8] 扩展目录:", window.__stChatu8Folder);
+  // 直接覆盖模块级变量：config 里的初始化可能已经跑过了（它只赋一次初值）
+  extensionFolderPath = window.__stChatu8Folder;
+  // settings.html 是静态文件，里面有两处写死的 /scripts/extensions/third-party/st-chatu8/ 头像路径，
+  // 目录名一变就 404（设置面板的头像变空白）。这里在 DOM 里统一改写。
+  var HARD = "/third-party/st-chatu8/";
+  var NOW = "/" + window.__stChatu8Folder + "/";
+  if (NOW.indexOf(HARD) < 0) {
+    var fixAsset = function (node) {
+      if (!node || node.nodeType !== 1) return;
+      var imgs = node.querySelectorAll ? node.querySelectorAll('img[src*="/third-party/st-chatu8/"]') : [];
+      for (var i = 0; i < imgs.length; i++) {
+        var bad = imgs[i].getAttribute("src") || "";
+        var at = bad.indexOf(HARD);
+        if (at >= 0) imgs[i].setAttribute("src", NOW + bad.slice(at + HARD.length));
+      }
+    };
+    fixAsset(document.documentElement);
+    try {
+      new MutationObserver(function (muts) {
+        for (var mi = 0; mi < muts.length; mi++) {
+          var nodes = muts[mi].addedNodes;
+          for (var ni = 0; ni < nodes.length; ni++) fixAsset(nodes[ni]);
+        }
+      }).observe(document.documentElement, { childList: true, subtree: true });
+    } catch (_) {}
+  }
+} catch (_) {}
+
 // index.js
 init_errorCollector();
 init_imageGenStats();
@@ -114929,6 +115015,24 @@ async function main() {
       mergedSettings.chatu8_fab_video_paths.dragging = mergedSettings.chatu8_fab_video_paths.dragging.replace("\u62D6\u52A8.mp4", "dragging.chatu8").replace(/\.mp4$/, ".chatu8");
       pathsChanged = true;
     }
+    // 目录名会因为安装方式不同而变化（st-chatu8 / st-chatu8.private ...），
+    // 旧设置里存的是绝对路径，这里统一改写当前真实目录，免得浮动按钮的视频 404。
+    const __folderNow = (typeof window !== "undefined" && window.__stChatu8Folder) || extensionFolderPath;
+    const __fixAssetDir = function (p) {
+      if (typeof p !== "string") return p;
+      const mark = "/third-party/";
+      const at = p.indexOf(mark);
+      if (at < 0) return p;
+      const rest = p.slice(at + mark.length);
+      const slash = rest.indexOf("/");
+      if (slash < 0) return p;
+      const lead = p.charAt(0) === "/" ? "/" : "";
+      const want = lead + __folderNow + "/" + rest.slice(slash + 1);
+      if (want !== p) pathsChanged = true;
+      return want;
+    };
+    mergedSettings.chatu8_fab_video_paths.idle = __fixAssetDir(mergedSettings.chatu8_fab_video_paths.idle);
+    mergedSettings.chatu8_fab_video_paths.dragging = __fixAssetDir(mergedSettings.chatu8_fab_video_paths.dragging);
     if (pathsChanged) {
       console.log("[st-chatu8] \u81EA\u52A8\u8FC1\u79FB\u65E7\u7248\u89C6\u9891\u914D\u7F6E\u8DEF\u5F84 -> .chatu8");
     }
