@@ -1,4 +1,4 @@
-/*! st-chatu8-compress v1.2.2 | WASM 图像压缩模块（PNG/JPEG/WebP）
+/*! st-chatu8-compress v1.2.3 | WASM 图像压缩模块（PNG/JPEG/WebP）
  * 本地计算，不联网。第三方编码器许可见 THIRD-PARTY-LICENSES.md
  * codecs: oxipng (MIT) / MozJPEG (IJG+BSD-style) / libwebp (BSD-3-Clause)
  */
@@ -3014,6 +3014,266 @@
     return false;
   }
 
+  // src/meta.js
+  var PNG_SIG = [137, 80, 78, 71, 13, 10, 26, 10];
+  function u32be(u8, i) {
+    return (u8[i] << 24 | u8[i + 1] << 16 | u8[i + 2] << 8 | u8[i + 3]) >>> 0;
+  }
+  function chunkType(u8, i) {
+    return String.fromCharCode(u8[i], u8[i + 1], u8[i + 2], u8[i + 3]);
+  }
+  async function inflateDeflate(bytes) {
+    if (typeof DecompressionStream !== "function") return null;
+    try {
+      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate"));
+      const buf = await new Response(stream).arrayBuffer();
+      return new Uint8Array(buf);
+    } catch (_) {
+      return null;
+    }
+  }
+  function utf8Decode(bytes) {
+    try {
+      return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+    } catch (_) {
+      return "";
+    }
+  }
+  async function readPngTextChunks(bytes) {
+    const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    if (u8.length < 16) return [];
+    for (let i = 0; i < 8; i++) if (u8[i] !== PNG_SIG[i]) return [];
+    const out = [];
+    let off = 8;
+    for (let guard = 0; guard < 4096 && off + 8 <= u8.length; guard++) {
+      const len = u32be(u8, off);
+      const type = chunkType(u8, off + 4);
+      const start = off + 8;
+      const end = start + len;
+      if (end > u8.length) break;
+      if (type === "IEND") break;
+      if (type === "tEXt" || type === "zTXt" || type === "iTXt") {
+        const data = u8.subarray(start, end);
+        let nul = -1;
+        for (let i = 0; i < data.length && i < 80; i++) {
+          if (data[i] === 0) {
+            nul = i;
+            break;
+          }
+        }
+        if (nul > 0) {
+          const keyword = utf8Decode(data.subarray(0, nul));
+          let text = null;
+          try {
+            if (type === "tEXt") {
+              text = utf8Decode(data.subarray(nul + 1));
+            } else if (type === "zTXt") {
+              const raw = await inflateDeflate(data.subarray(nul + 2));
+              text = raw ? utf8Decode(raw) : null;
+            } else {
+              const flag = data[nul + 1];
+              let p = nul + 3;
+              for (let k = 0; k < 2 && p < data.length; k++) {
+                while (p < data.length && data[p] !== 0) p++;
+                p++;
+              }
+              const body = data.subarray(p);
+              if (flag === 1) {
+                const raw = await inflateDeflate(body);
+                text = raw ? utf8Decode(raw) : null;
+              } else {
+                text = utf8Decode(body);
+              }
+            }
+          } catch (_) {
+            text = null;
+          }
+          if (text != null) out.push({ keyword, text, chunk: type });
+        }
+      }
+      off = end + 4;
+    }
+    return out;
+  }
+  var TYPE_ASCII = 2;
+  var TYPE_UNDEFINED = 7;
+  function asciiBytes(str) {
+    const s = String(str == null ? "" : str);
+    const out = new Uint8Array(s.length + 1);
+    for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 255;
+    out[s.length] = 0;
+    return out;
+  }
+  function allAscii(str) {
+    const s = String(str);
+    for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) > 126) return false;
+    return true;
+  }
+  function userCommentBytes(text) {
+    const s = String(text == null ? "" : text);
+    if (allAscii(s)) {
+      const body = asciiBytes(s);
+      const out2 = new Uint8Array(8 + body.length);
+      const tag2 = "ASCII";
+      for (let i = 0; i < tag2.length; i++) out2[i] = tag2.charCodeAt(i);
+      out2.set(body, 8);
+      return out2;
+    }
+    const out = new Uint8Array(8 + s.length * 2);
+    const tag = "UNICODE";
+    for (let i = 0; i < tag.length; i++) out[i] = tag.charCodeAt(i);
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      out[8 + i * 2] = c & 255;
+      out[8 + i * 2 + 1] = c >> 8 & 255;
+    }
+    return out;
+  }
+  function buildExifSegment(fields) {
+    const entries = [];
+    const pushEntry = (tag, type, data) => {
+      const count = type === TYPE_ASCII ? data.length : data.length;
+      entries.push({ tag, type, count, data });
+    };
+    if (fields.description) pushEntry(270, TYPE_ASCII, asciiBytes(fields.description));
+    if (fields.software) pushEntry(305, TYPE_ASCII, asciiBytes(fields.software));
+    if (fields.userComment != null) pushEntry(37510, TYPE_UNDEFINED, userCommentBytes(fields.userComment));
+    if (!entries.length) return null;
+    const ifdSize = 2 + entries.length * 12 + 4;
+    const tiffHeader = 8;
+    let dataCursor = tiffHeader + ifdSize;
+    const blobs = [];
+    for (const e of entries) {
+      if (e.data.length > 4) {
+        if (dataCursor & 1) dataCursor++;
+        e.offset = dataCursor;
+        blobs.push(e.data);
+        dataCursor += e.data.length;
+      } else {
+        e.offset = 0;
+      }
+    }
+    const tiff = new Uint8Array(dataCursor);
+    tiff[0] = 73;
+    tiff[1] = 73;
+    tiff[2] = 42;
+    tiff[3] = 0;
+    tiff[4] = 8;
+    tiff[5] = 0;
+    tiff[6] = 0;
+    tiff[7] = 0;
+    tiff[8] = entries.length & 255;
+    tiff[9] = entries.length >> 8 & 255;
+    let p = 10;
+    for (const e of entries) {
+      tiff[p] = e.tag & 255;
+      tiff[p + 1] = e.tag >> 8 & 255;
+      tiff[p + 2] = e.type & 255;
+      tiff[p + 3] = e.type >> 8 & 255;
+      tiff[p + 4] = e.count & 255;
+      tiff[p + 5] = e.count >> 8 & 255;
+      tiff[p + 6] = 0;
+      tiff[p + 7] = 0;
+      if (e.data.length > 4) {
+        tiff[p + 8] = e.offset & 255;
+        tiff[p + 9] = e.offset >> 8 & 255;
+        tiff[p + 10] = 0;
+        tiff[p + 11] = 0;
+      } else {
+        for (let i = 0; i < 4; i++) tiff[p + 8 + i] = i < e.data.length ? e.data[i] : 0;
+      }
+      p += 12;
+    }
+    for (let i = 0; i < 4; i++) tiff[p + i] = 0;
+    for (const b of blobs) {
+      const e = entries.find((x) => x.offset && x.data === b);
+      if (e) tiff.set(b, e.offset);
+    }
+    const payloadLen = 6 + tiff.length;
+    const seg = new Uint8Array(2 + 2 + payloadLen);
+    seg[0] = 255;
+    seg[1] = 225;
+    const len = payloadLen + 2;
+    seg[2] = len >> 8 & 255;
+    seg[3] = len & 255;
+    seg[4] = 69;
+    seg[5] = 120;
+    seg[6] = 105;
+    seg[7] = 102;
+    seg[8] = 0;
+    seg[9] = 0;
+    seg.set(tiff, 10);
+    return seg;
+  }
+  function extractJpegMetadataSegments(bytes) {
+    const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const out = [];
+    if (u8.length < 4 || u8[0] !== 255 || u8[1] !== 216) return out;
+    let i = 2;
+    for (let guard = 0; guard < 64 && i + 4 <= u8.length; guard++) {
+      if (u8[i] !== 255) break;
+      const marker = u8[i + 1];
+      if (marker === 218) break;
+      if (marker === 217) break;
+      const len = u8[i + 2] << 8 | u8[i + 3];
+      if (len < 2 || i + 2 + len > u8.length) break;
+      const isApp = marker >= 225 && marker <= 239;
+      if (isApp || marker === 254) out.push(u8.slice(i, i + 2 + len));
+      i += 2 + len;
+    }
+    return out;
+  }
+  function injectJpegSegments(jpegBytes, segments) {
+    const u8 = jpegBytes instanceof Uint8Array ? jpegBytes : new Uint8Array(jpegBytes);
+    if (!segments || !segments.length) return u8;
+    if (u8.length < 4 || u8[0] !== 255 || u8[1] !== 216) return u8;
+    let head = 2;
+    if (u8[head] === 255 && u8[head + 1] === 224) {
+      const len = u8[head + 2] << 8 | u8[head + 3];
+      if (len >= 2 && head + 2 + len <= u8.length) head += 2 + len;
+    }
+    let extra = 0;
+    for (const s of segments) extra += s.length;
+    const out = new Uint8Array(u8.length + extra);
+    out.set(u8.subarray(0, head), 0);
+    let p = head;
+    for (const s of segments) {
+      out.set(s, p);
+      p += s.length;
+    }
+    out.set(u8.subarray(head), p);
+    return out;
+  }
+  async function buildPngMetadataSegments(pngBytes, software) {
+    const chunks = await readPngTextChunks(pngBytes);
+    if (!chunks.length) return { segments: [], fields: [] };
+    const map = {};
+    for (const c of chunks) map[String(c.keyword)] = c.text;
+    const fields = Object.keys(map);
+    const comment = map.Comment || map.comment || "";
+    const parts = [];
+    if (map.Description) parts.push(String(map.Description));
+    if (comment) parts.push(String(comment));
+    const userComment = comment || parts.join("\n") || "";
+    let head = map.Description || "";
+    if (!head && comment) {
+      try {
+        const obj = JSON.parse(comment);
+        head = String(obj && (obj.prompt || obj.description) || "");
+      } catch (_) {
+        head = "";
+      }
+      if (!head) head = comment.slice(0, 400);
+    }
+    const description = (head || map.Title || "").replace(/[^\x20-\x7e]/g, " ").slice(0, 1e3);
+    const seg = buildExifSegment({
+      description: description || void 0,
+      software: software || "st-chatu8-compress",
+      userComment: userComment || void 0
+    });
+    return { segments: seg ? [seg] : [], fields };
+  }
+
   // node_modules/@jsquash/jpeg/codec/enc/mozjpeg_enc.js
   var Module = /* @__PURE__ */ (() => {
     var _scriptDir = "about:blank";
@@ -4797,7 +5057,7 @@
   }
 
   // src/worker.js
-  var VERSION = "1.2.2";
+  var VERSION = "1.2.3";
   var MSG_TAG = 1;
   var PNG_SKIP_OPTIMISE_RATIO = 0.4;
   var PNG_SKIP_MIN_BYTES_PER_PIXEL = 0.5;
@@ -4924,6 +5184,9 @@
     }
     const allowFormatChange = msg.allowFormatChange === true;
     const flattenAlpha = msg.flattenAlpha !== false;
+    const keepMetadata = msg.keepMetadata === true;
+    let metaSegments = 0;
+    let metaFields = [];
     let out = null;
     let width = 0;
     let height = 0;
@@ -4936,6 +5199,8 @@
     let flattened = false;
     let decodeFailed = false;
     const failMeta = () => ({
+      metaSegments,
+      metaFields,
       codec: CODEC_ID[outputFormat],
       mime: MIME_BY_FORMAT[outputFormat],
       outputFormat,
@@ -5011,6 +5276,22 @@
               jpegSource = "canvas";
             }
           }
+          if (keepMetadata) {
+            try {
+              var metaRes = null;
+              if (format === "png") metaRes = await buildPngMetadataSegments(bytes, "st-chatu8-compress " + VERSION);
+              else if (format === "jpeg") {
+                var oldSegs = extractJpegMetadataSegments(bytes);
+                metaRes = { segments: oldSegs, fields: oldSegs.length ? ["jpeg-app"] : [] };
+              }
+              if (metaRes && metaRes.segments && metaRes.segments.length) {
+                jpegOut = injectJpegSegments(jpegOut, metaRes.segments);
+                metaSegments = metaRes.segments.length;
+                metaFields = metaRes.fields || [];
+              }
+            } catch (_) {
+            }
+          }
           jpegBytes = jpegOut.byteLength;
           const pixels = width * height;
           const densePng = pixels > 0 && before / pixels >= PNG_SKIP_MIN_BYTES_PER_PIXEL;
@@ -5071,6 +5352,8 @@
       flattened,
       decodeFailed,
       jpegSource: jpegUsedSource,
+      metaSegments,
+      metaFields,
       fastMode: fast
     };
     if (after >= before) {

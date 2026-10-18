@@ -11,7 +11,7 @@
 import { sniffFormat, isAnimated, SUPPORTED_FORMATS, MIME_BY_FORMAT, imageDimensions } from './sniff.js';
 import { LEVELS, DEFAULT_LEVEL, normalizeLevel, CODEC_ID, PNG_TO_JPEG_LEVELS } from './codec.js';
 
-const VERSION = '1.2.2';
+const VERSION = '1.2.3';
 const DEFAULT_BASE_RELATIVE = 'scripts/extensions/third-party/st-chatu8/compress';
 const INIT_TIMEOUT_MS = 120000;
 const COMPRESS_TIMEOUT_MS = 300000;
@@ -503,6 +503,7 @@ async function compress(input, options) {
       fast,
       flattenAlpha,
       verify,
+      keepMetadata: opt.keepMetadata === true,
       mime: MIME_BY_FORMAT[format],
     }, null, COMPRESS_TIMEOUT_MS));   // 注意：不再 transfer 输入缓冲，避免调用方手里的字节被掏空
     const ms = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0;
@@ -519,6 +520,8 @@ async function compress(input, options) {
       decodeFailed: !!(res && res.decodeFailed),
       workerVersion: (res && res.workerVersion) || "",
       jpegSource: (res && res.jpegSource) || "",
+      metaSegments: (res && res.metaSegments) || 0,
+      metaFields: (res && res.metaFields) || [],
       fastMode: !!(res && res.fastMode) || fast,
       verified: !!(res && res.verified),
       poolSize: state.maxConcurrent > 0 ? Math.min(poolSize, state.maxConcurrent) : poolSize,

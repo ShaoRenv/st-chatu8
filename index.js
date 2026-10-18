@@ -3069,6 +3069,7 @@ var init_config = __esm({
       convertToJpegStorage: "false",
       compressBoostStorage: "false",
       compressBoostLevel: "balanced",
+  compressKeepMetadata: "true",
       compressBoostFast: "false",
       compressBoostFlatten: "false",
       compressBoostConcurrency: "auto",
@@ -91394,6 +91395,11 @@ function resolveCompressLevel() {
   const raw = String((extension_settings[extensionName] || {}).compressBoostLevel || "balanced");
   return COMPRESS_LEVELS.indexOf(raw) >= 0 ? raw : "balanced";
 }
+// 压缩时是否把图内的生成参数（NovelAI 的 Comment 等 PNG 文本块）转写进 JPEG 的 EXIF。
+// 默认开：浏览器解码必然丢元数据，不转写就再也找不回来了。
+function resolveCompressKeepMeta() {
+  return String((extension_settings[extensionName] || {}).compressKeepMetadata) !== "false";
+}
 // 极速模式（v1.2.0）：PNG 一律不跑 oxipng，只用 MozJPEG；透明 PNG 直接原样保留。
 function resolveCompressFast() {
   return String((extension_settings[extensionName] || {}).compressBoostFast) === "true";
@@ -91504,7 +91510,8 @@ function buildCompressSummaryText(task, skipReasons) {
       + " · 原图=" + (d.before || 0) + "B"
       + " · JPEG=" + (d.jpegBytes == null ? "未算" : d.jpegBytes + "B" + (d.jpegSource ? "(" + d.jpegSource + ")" : ""))
       + " · PNG=" + (d.pngBytes == null ? "未算" : d.pngBytes + "B")
-      + " · 采用=" + (d.chose || (d.reason || "?")));
+      + " · 采用=" + (d.chose || (d.reason || "?"))
+      + " · 元数据=" + ((d.metaFields && d.metaFields.length) ? d.metaFields.join("/") : "无"));
   }
   const reasons = Object.keys(skipReasons || {}).filter(function(key) { return key !== "视频" && key !== "酒馆存储"; });
   if (reasons.length > 0) {
@@ -91774,6 +91781,7 @@ async function compressCachedImages(options = {}) {
           level,
           allowFormatChange: true,
           flattenAlpha: resolveCompressFlatten(),
+          keepMetadata: resolveCompressKeepMeta(),
           verify: idx < 3 ? true : "auto",
           concurrency
         });
@@ -91783,7 +91791,9 @@ async function compressCachedImages(options = {}) {
             fmt: format, w: result.width, h: result.height, hasAlpha: result.hasAlpha,
             decodeFailed: !!result.decodeFailed, jpegBytes: result.jpegBytes,
             pngBytes: result.pngBytes, chose: result.outputFormat, before,
-            jpegSource: result.jpegSource || "", reason: result.ok ? "" : (result.reason || "")
+            jpegSource: result.jpegSource || "",
+            metaFields: result.metaFields || [], metaSegments: result.metaSegments || 0,
+            reason: result.ok ? "" : (result.reason || "")
           };
         }
         if (!result || !result.ok) {
@@ -91916,6 +91926,7 @@ async function compressGeneratedImage(input) {
       level: resolveCompressLevel(),
       allowFormatChange: true,
       fast: resolveCompressFast(),
+      keepMetadata: resolveCompressKeepMeta(),
       verify: true,
       concurrency: compressConcurrencyOption()
     });
@@ -113385,6 +113396,18 @@ async function initUI({ check_update: check_update2 }) {
       addLog("[缓存] 压缩加强已启用（生图时自动压缩）");
     } else {
       toastr.info("已关闭：新生成的图片按原样存储", "压缩加强已关闭");
+    }
+  });
+  settingsModal.find("#compressKeepMetadata").prop("checked", resolveCompressKeepMeta());
+  settingsModal.find("#compressKeepMetadata").on("change", function() {
+    const isEnabled = $(this).prop("checked");
+    settings2.compressKeepMetadata = isEnabled.toString();
+    saveSettingsDebounced71();
+    if (isEnabled) {
+      toastr.info("压缩时会把图内的生成参数（NovelAI 的 Comment 等）写进 JPEG 的 EXIF", "保留生成参数已开启");
+      addLog("[缓存] 压缩保留元数据已开启（PNG 文本块 → JPEG EXIF）");
+    } else {
+      toastr.info("压缩后不再保留图内元数据（体积会略小一点点）", "保留生成参数已关闭");
     }
   });
   settingsModal.find("#compressBoostLevel").val(resolveCompressLevel());

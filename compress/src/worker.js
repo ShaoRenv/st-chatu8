@@ -3,9 +3,10 @@
 // v1.2.0：结果解码校验下沉到本 worker；新增「极速模式」(fast)。
 
 import { sniffFormat, isAnimated, SUPPORTED_FORMATS, MIME_BY_FORMAT, pngHeaderInfo } from './sniff.js';
+import { buildPngMetadataSegments, extractJpegMetadataSegments, injectJpegSegments } from './meta.js';
 import { initCodecs, status, errors, optimisePngBytes, encodeImageData, encodeJpegForConversion, jpegConversionQuality, hasTransparentPixels, normalizeLevel, CODEC_ID, LEVELS, DEFAULT_LEVEL, WASM_FILES } from './codec.js';
 
-const VERSION = '1.2.2';
+const VERSION = '1.2.3';
 const MSG_TAG = 1;
 
 // PNG→JPEG 提速阈值（两个条件都满足才跳过 oxipng，保守）：
@@ -163,6 +164,10 @@ async function runCompress(msg) {
   const allowFormatChange = msg.allowFormatChange === true;
   // 铺白背景后转 JPEG：默认启用（不再提供开关）。图片本身没有透明像素时铺白是空操作。
   const flattenAlpha = msg.flattenAlpha !== false;
+  // 保留元数据：浏览器解码必然丢掉 PNG 的 tEXt/iTXt/zTXt，这里在编码完成后自己搬进 JPEG EXIF。
+  const keepMetadata = msg.keepMetadata === true;
+  let metaSegments = 0;
+  let metaFields = [];
   let out = null;
   let width = 0;
   let height = 0;
@@ -176,6 +181,8 @@ async function runCompress(msg) {
   let decodeFailed = false;       // true = 无法解码（WebView 缺 OffscreenCanvas/createImageBitmap）
 
   const failMeta = () => ({
+    metaSegments,
+    metaFields,
     codec: CODEC_ID[outputFormat],
     mime: MIME_BY_FORMAT[outputFormat],
     outputFormat,
@@ -265,6 +272,23 @@ async function runCompress(msg) {
             jpegSource = 'canvas';
           }
         }
+        if (keepMetadata) {
+          // NAI 的生成参数在 PNG 的 Comment 文本块里；JPEG 没有 tEXt，转写成 EXIF（UserComment +
+          // ImageDescription + Software）。JPEG→JPEG 时把原图的 APPn/COM 段原样带过去。
+          try {
+            var metaRes = null;
+            if (format === 'png') metaRes = await buildPngMetadataSegments(bytes, 'st-chatu8-compress ' + VERSION);
+            else if (format === 'jpeg') {
+              var oldSegs = extractJpegMetadataSegments(bytes);
+              metaRes = { segments: oldSegs, fields: oldSegs.length ? ['jpeg-app'] : [] };
+            }
+            if (metaRes && metaRes.segments && metaRes.segments.length) {
+              jpegOut = injectJpegSegments(jpegOut, metaRes.segments);
+              metaSegments = metaRes.segments.length;
+              metaFields = metaRes.fields || [];
+            }
+          } catch (_) { /* 元数据搬不过去不影响压缩本身 */ }
+        }
         jpegBytes = jpegOut.byteLength;
         const pixels = width * height;
         const densePng = pixels > 0 && before / pixels >= PNG_SKIP_MIN_BYTES_PER_PIXEL;
@@ -330,6 +354,8 @@ async function runCompress(msg) {
     flattened,
     decodeFailed,
     jpegSource: jpegUsedSource,
+    metaSegments,
+    metaFields,
     fastMode: fast,
   };
   if (after >= before) {
